@@ -91,7 +91,7 @@ One DynamoDB table in on-demand mode, with TTL enabled and streams on (new and o
 | Rule | `RULE#<ruleId>` | `META` | GSI1: `CHAIN#<chainId>#RULES` / `RULE#<ruleId>`, set only while active |
 | Match | `MATCH#<matchId>` | `META` | status `pending`, `confirmed` or `retracted`; TTL 30 days; GSI1: `RULE#<ruleId>` / `<blockNumber>#<logIndex>`; GSI2 while pending: `CHAIN#<chainId>#PENDING` / `<blockNumber>` |
 | Delivery | `MATCH#<matchId>` | `DELIVERY#<actionId>#<event>` | attempts, last error, status |
-| Signer | `SIGNER#<signerId>` | `META` | address, KMS key id, policy |
+| Signer | `SIGNER#<signerId>` | `META` | address, KMS key id, policy, `webhooks` (URLs subscribed to this signer's `tx.*` events) |
 | Signer nonce | `SIGNER#<signerId>` | `NONCE#<chainId>` | atomic counter |
 | Transaction | `TX#<txId>` | `META` | status, nonce, raw signed tx, hash, fee history; GSI2 while unsettled: `TXPENDING#<chainId>` / `<submittedAt>` |
 | Idempotency | `IDEMP#<apiKeyHash>#<key>` | `META` | maps to `txId`, TTL 24 hours |
@@ -126,7 +126,7 @@ GSI2 is sparse: an item only appears in it while it has work outstanding, so the
 1. Load the cursor. Fetch the head with `eth_blockNumber`.
 2. Fetch the header of `cursor.block + 1` and compare its `parentHash` with the stored hash for `cursor.block`.
 3. On mismatch, walk back through `hashes`, fetching canonical headers, until a stored hash matches the canonical chain. Mark matches in orphaned blocks `retracted`, then set the cursor to the common ancestor. A reorg deeper than 256 blocks halts that chain's poller and raises an alarm. It does not guess.
-4. Fetch logs from `cursor.block + 1` to `min(head, cursor.block + maxRange)`, filtered by the union of addresses and topics across active rules. When the RPC rejects a range, halve it and retry, down to a single block.
+4. Fetch logs from `cursor.block + 1` to `min(head, cursor.block + maxRange)`, where `maxRange` defaults to 2,000 blocks per chain and is configurable, filtered by the union of addresses and topics across active rules. When the RPC rejects a range, halve it and retry, down to a single block.
 5. Decode each log against the ABI of every matching rule and evaluate conditions.
 6. Write matches with the conditional put described above.
 7. Update the cursor with the new block and hashes, conditioned on `version`. If another invocation advanced it first, stop without error.
@@ -142,7 +142,8 @@ The dispatcher reads stream records and enqueues a delivery when:
 
 - a match is inserted as `pending` and its rule is in `fast` mode,
 - a match moves to `confirmed` and its rule is in `confirmed` or `finalized` mode,
-- a match moves to `retracted` and its rule is in `fast` mode (a retraction notice).
+- a match moves to `retracted` and its rule is in `fast` mode (a retraction notice),
+- a transaction item changes status, in which case it enqueues a `tx.<status>` delivery to each URL in the signer's `webhooks`.
 
 Each delivery is keyed by `matchId`, `actionId` and event, and written with a conditional put, so stream redelivery does not cause duplicate sends.
 
@@ -160,8 +161,8 @@ Webhooks are POSTed with `X-Blockwarden-Signature` (HMAC-SHA256 of timestamp and
    - parses the DER signature into `r` and `s`, normalises `s` to the lower half of the curve order (EIP-2), and finds `v` by recovering against the signer's known address,
    - stores the raw signed transaction, sends it with `eth_sendRawTransaction`, and sets status `submitted`.
 5. The sweeper queries GSI2 `TXPENDING#<chainId>` every minute:
-   - A receipt is found: set `mined`, then `confirmed` after the chain's confirmation count. Drop out of GSI2.
-   - No receipt after the chain's stuck threshold: re-sign the same nonce with fees raised by the greater of 12.5% and the current estimate, capped at the policy's maximum fee, and resend.
+   - A receipt is found: set `mined`, then `confirmed` after the chain's confirmation count (default 5 blocks on Base Sepolia and Arbitrum Sepolia). Drop out of GSI2.
+   - No receipt after the chain's stuck threshold (default 90 seconds since the last send): re-sign the same nonce with fees raised by the greater of 12.5% and the current estimate, capped at the policy's maximum fee, and resend.
    - A receipt disappears after a reorg: set back to `submitted` and rebroadcast the stored raw transaction.
    - A transaction fails permanently after its nonce was reserved: send a 0-value self-transfer at that nonce so later transactions are not blocked.
 
