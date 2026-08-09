@@ -1,0 +1,8 @@
+{
+  "chainId": 8453,
+  "addresses": ["0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"],
+  "event": "event Transfer(address indexed from, address indexed to, uint256 value)",
+  "conditions": { "field": "args.value", "op": "gte", "value": "1000000000000" },
+  "confirmation": { "mode": "finalized" },
+  "actions": []
+}
