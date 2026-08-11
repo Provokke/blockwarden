@@ -1,0 +1,30 @@
+version: 2
+# Security updates skip the cooldown, and pnpm refuses packages under a day old, so CI can fail on one for up to a day.
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      aws-sdk:
+        patterns: ['@aws-sdk/*']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+  - package-ecosystem: terraform
+    directory: /infra/terraform/envs/demo
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+  - package-ecosystem: terraform
+    directory: /infra/terraform/modules/blockwarden
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
