@@ -43,6 +43,21 @@ vi.mock('../../src/chain.js', async (importOriginal) => {
 const { runCycle } = await import('../../src/cycle.js')
 const { handler, requestTimeoutMs } = await import('../../src/handler.js')
 
+function metricLines(output: string[]) {
+  return output
+    .join('\n')
+    .split('\n')
+    .filter((line) => line.trim().startsWith('{'))
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((line) => '_aws' in line)
+}
+
+function metricNames(line: Record<string, unknown>) {
+  return (line._aws as { CloudWatchMetrics: { Metrics: { Name: string }[] }[] }).CloudWatchMetrics.flatMap((group) =>
+    group.Metrics.map((metric) => metric.Name),
+  )
+}
+
 const BUSY: CycleResult = {
   status: 'busy',
   head: 0,
@@ -197,6 +212,32 @@ describe('handler', () => {
       dropped: 1,
     })
   })
+
+  it.each([
+    ['laggingNode', 'laggingNodeSkips', 'deadlineSkips'],
+    ['deadlineHit', 'deadlineSkips', 'laggingNodeSkips'],
+  ] as const)(
+    'publishes %s as %s with a count of 1, and neither skip metric when no flag is set',
+    async (flag, metric, other) => {
+      const observed = { ...BUSY, status: 'ok' as const, head: 100, finalized: 36, durableBlock: 30, durableLag: 6 }
+      vi.mocked(runCycle).mockResolvedValueOnce({ ...observed, [flag]: true })
+
+      await handler(undefined)
+
+      const [flagged] = metricLines(output)
+      expect(metricNames(flagged!)).toContain(metric)
+      expect(metricNames(flagged!)).not.toContain(other)
+      expect(flagged![metric]).toBe(1)
+
+      output.length = 0
+      vi.mocked(runCycle).mockResolvedValueOnce(observed)
+      await handler(undefined)
+
+      const [quiet] = metricLines(output)
+      expect(metricNames(quiet!)).not.toContain('laggingNodeSkips')
+      expect(metricNames(quiet!)).not.toContain('deadlineSkips')
+    },
+  )
 })
 
 describe('requestTimeoutMs', () => {
