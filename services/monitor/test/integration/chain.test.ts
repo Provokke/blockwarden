@@ -242,6 +242,37 @@ describe('createChainReader against a stub RPC server', () => {
     expect(store.cursors.get(CHAIN_ID)?.durableBlock).toBe(80)
   })
 
+  it.each([
+    ['a JSON-RPC error', { error: { code: -32603, message: 'internal error' } }],
+    ['a result that is not hex', { result: '0xnothex' }],
+  ])('never halves a range when only the batched head fails, with %s', async (_, batchHeadAnswer) => {
+    const primary = await stub('chain', { head: 100, batchHeadAnswer })
+    const backup = await stub('chain', { head: 100, batchHeadAnswer })
+    const reader = createChainReader([primary.url, backup.url], 2_000)
+
+    const outcome = await outcomeOf(reader.getLogsWithHead(filter, 81, 90))
+
+    expect(outcome).toHaveProperty('rejected')
+    expect(isHalvableError((outcome as { rejected: unknown }).rejected)).toBe(false)
+    // moves on to the next node after one pair, like a failed pre-read
+    expect(primary.bodies().map(methodsOf)).toEqual([HEAD, PAIR])
+    expect(backup.bodies().map(methodsOf)).toEqual([HEAD, PAIR])
+
+    const store = new InMemoryStore()
+    store.rules.push(pingRule('final', { mode: 'finalized' }))
+    const chain: ChainReader = {
+      ...createChainReader([primary.url, backup.url], 2_000),
+      getHead: async () => 100,
+      getFinalized: async () => ({ number: 100, timestamp: 1_700_000_000 }),
+    }
+    await expect(
+      runCycle({ chainId: CHAIN_ID, chain, store, maxRange: 10, timeBudgetMs: 50_000, startBlock: 80 }),
+    ).rejects.toBeTruthy()
+    expect(primary.bodies().map(methodsOf)).toEqual([HEAD, PAIR, HEAD, PAIR])
+    expect(backup.bodies().map(methodsOf)).toEqual([HEAD, PAIR, HEAD, PAIR])
+    expect(store.cursors.get(CHAIN_ID)?.durableBlock).toBe(80)
+  })
+
   it('re-sends the whole pair once on a transport failure and stays on that node when it succeeds', async () => {
     const primary = await stub('chain', { head: 60, failFirstBatches: 1 })
     const backup = await stub('chain', { head: 50 })
