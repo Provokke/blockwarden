@@ -882,6 +882,25 @@ describe('runCycle', () => {
       expect(store.cursors.get(CHAIN_ID)).toEqual({ durableBlock: 0, fastBlock: 70, version: 2 })
       expect(chain.getLogsCalls).toBe(0)
     })
+
+    it('saves a head below the fast cursor before scanning, so a run stopped before its first chunk keeps it', async () => {
+      const chain = new FakeChain(100)
+      chain.finalizedFault = () => 'rpc-error'
+      chain.staleHeadBy = 10
+      const store = new InMemoryStore()
+      store.rules.push(pingRule('fast', { mode: 'fast' }))
+      store.cursors.set(CHAIN_ID, { durableBlock: 0, fastBlock: 100, version: 1 })
+      const getLogs = vi.spyOn(chain, 'getLogs').mockRejectedValue(new DeadlineError())
+
+      expect(await runCycle(deps(chain, store))).toMatchObject({
+        status: 'ok',
+        head: 90,
+        fastBlock: 90,
+        deadlineHit: true,
+      })
+      expect(getLogs.mock.calls.map(([, from, to]) => [from, to])).toEqual([[81, 90]])
+      expect(store.cursors.get(CHAIN_ID)).toEqual({ durableBlock: 0, fastBlock: 90, version: 2 })
+    })
   })
 
   it('makes no fast getLogs call when no rule is in fast mode', async () => {
