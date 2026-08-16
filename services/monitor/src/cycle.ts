@@ -3,6 +3,7 @@ import {
   buildLogFilter,
   compileRule,
   DeadlineError,
+  dedupeLogs,
   fetchLogsAdaptive,
   matchKey,
   matchLog,
@@ -176,7 +177,7 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
               shouldStop,
               // a transaction's logs share one block and a sub-range never splits a block, so ordinals stay whole
               onChunk: async (f, t, logs) => {
-                for (const match of assignOrdinals(logs.flatMap((l) => matchLog(rules, l)))) {
+                for (const match of assignOrdinals(dedupeLogs(logs).flatMap((l) => matchLog(rules, l)))) {
                   if ((await store.writeFinal(toNewMatch(chainId, match, firstSeenAt))) !== 'unchanged') counts.final++
                 }
                 cursor = await store.saveCursor(chainId, { ...cursor, durableBlock: t })
@@ -232,7 +233,7 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
           while (reached < head) {
             const end = Math.min(head, reached + deps.maxRange)
             const logs = await fetchLogs(chain, filter, reached + 1, end, shouldStop)
-            for (const match of assignOrdinals(logs.flatMap((l) => matchLog(fastRules, l)))) {
+            for (const match of assignOrdinals(dedupeLogs(logs).flatMap((l) => matchLog(fastRules, l)))) {
               if (await store.writeProvisional(toNewMatch(chainId, match, firstSeenAt))) counts.provisional++
             }
             reached = end
