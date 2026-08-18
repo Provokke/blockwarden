@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 
+// only infra/terraform is mounted, not the Lambda bundle the module zips, so plan and apply are not supported here
 const tf = resolve('infra/terraform')
 const terraform = 'hashicorp/terraform:1.16.2'
 const tflint = 'ghcr.io/terraform-linters/tflint:v0.64.0'
