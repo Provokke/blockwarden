@@ -179,6 +179,19 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
     ),
     cacheTime: 0,
   })
+  // viem's http transport retries an oversized body on the same URL (utils/buildRequest.ts:322) and fallback walks on
+  // to the next URL unless shouldThrow stops it (clients/transports/fallback.ts:162); listing each URL twice with no
+  // transport retries keeps two attempts per URL, and an oversized body stops at once so the fast scan halves
+  const logsClient = createPublicClient({
+    transport: fallback(
+      rpcUrls.flatMap((url) => {
+        const transport = http(url, { timeout: timeoutMs, retryCount: 0, fetchFn })
+        return [transport, transport]
+      }),
+      { retryCount: 0, shouldThrow: (err) => err instanceof ResponseBodyTooLargeError || causedByHardStop(err) },
+    ),
+    cacheTime: 0,
+  })
   // fallback fails over each call on its own, which would pair one node's head with another node's logs;
   // viem retries each call on its own too, so retries happen per pair in getLogsWithHead
   const nodeClients = rpcUrls.map((url) =>
@@ -251,7 +264,7 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
         }
       }),
 
-    getLogs: (filter, from, to) => guarded(() => requestLogs(client, filter, from, to)),
+    getLogs: (filter, from, to) => guarded(() => requestLogs(logsClient, filter, from, to)),
 
     async getLogsWithHead(filter, from, to, options) {
       const rpcErrors: unknown[] = []
