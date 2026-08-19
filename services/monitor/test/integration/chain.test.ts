@@ -480,6 +480,8 @@ describe('createChainReader against a stub RPC server', () => {
       expect((outcome as { rejected: unknown }).rejected).toBeInstanceOf(DeadlineError)
     }
     expect(backup.httpRequestCount()).toBe(0)
+    // one request per call reached the node before the hard stop aborted it, and nothing was sent after it
+    expect(primary.httpRequestCount()).toBe(4)
   }, 20_000)
 
   it('fails every request at once, without sending it, after the hard stop has passed, until it is cleared', async () => {
