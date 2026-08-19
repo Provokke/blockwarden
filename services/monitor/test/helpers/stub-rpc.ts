@@ -63,23 +63,30 @@ export function startStubRpc(
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    let body: unknown
+    let batch: (JsonRpcRequest | null)[] = []
+    let carriesLogs = false
+    let nth = 0
+    let nthLogBatch = 0
+    // counted on arrival, so a request the client aborts while delayMs holds it back still counts as an attempt
+    req.on('end', () => {
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+      } catch {
+        body = {}
+      }
+      nth = ++httpCount
+      seen.push(body)
+      // viem may batch several JSON-RPC calls into one HTTP request; each
+      // entry in that batch is still one RPC attempt, so count them all.
+      batch = (Array.isArray(body) ? body : [body]) as (JsonRpcRequest | null)[]
+      count += batch.length
+      carriesLogs = batch.some((entry) => entry?.method === 'eth_getLogs')
+      if (carriesLogs) nthLogBatch = ++logBatches
+    })
     req.on('end', () =>
       setTimeout(() => {
         if (res.destroyed) return
-        let body: unknown
-        try {
-          body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
-        } catch {
-          body = {}
-        }
-        httpCount++
-        seen.push(body)
-        // viem may batch several JSON-RPC calls into one HTTP request; each
-        // entry in that batch is still one RPC attempt, so count them all.
-        const batch = (Array.isArray(body) ? body : [body]) as (JsonRpcRequest | null)[]
-        count += batch.length
-        const carriesLogs = batch.some((entry) => entry?.method === 'eth_getLogs')
-        if (carriesLogs) logBatches++
 
         if (mode === 'stalled-body') {
           res.writeHead(200, { 'content-type': 'application/json' })
@@ -89,8 +96,8 @@ export function startStubRpc(
 
         if (
           mode === 'http-500' ||
-          httpCount <= (options.failFirst ?? 0) ||
-          (carriesLogs && logBatches <= (options.failFirstBatches ?? 0))
+          nth <= (options.failFirst ?? 0) ||
+          (carriesLogs && nthLogBatch <= (options.failFirstBatches ?? 0))
         ) {
           res.writeHead(500, { 'content-type': 'application/json' })
           res.end(JSON.stringify({ error: 'stub rpc: internal error' }))
