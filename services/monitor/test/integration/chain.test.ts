@@ -458,6 +458,60 @@ describe('createChainReader against a stub RPC server', () => {
     expect(backup.oversizedBytesSent()).toHaveLength(0)
   }, 30_000)
 
+  // viem backs off 150 ms before its first retry, or for as long as Retry-After asks
+  it.each([
+    [
+      'an invalid-params error, without retrying it',
+      'chain',
+      { logs: { code: -32602, message: 'invalid params' } },
+      1,
+      0,
+    ],
+    ['a limit-exceeded error, retried after a backoff', 'chain', { logs: LIMIT_EXCEEDED }, 2, 150],
+    ['an HTTP 500, retried after a backoff', 'http-500', {}, 2, 150],
+    [
+      'an HTTP 429, retried after its Retry-After',
+      'http-500',
+      { failWith: { status: 429, headers: { 'retry-after': '1' } } },
+      2,
+      1_000,
+    ],
+  ] as const)(
+    'retries a fast-scan log read on each URL as viem does for %s',
+    async (_, mode, options, attemptsPerUrl, backoffMs) => {
+      const primary = await stub(mode, options)
+      const backup = await stub(mode, options)
+      const reader = createChainReader([primary.url, backup.url], 5_000)
+
+      const started = Date.now()
+      const outcome = await outcomeOf(reader.getLogs(filter, 1, 2))
+      const elapsed = Date.now() - started
+
+      expect(outcome).toHaveProperty('rejected')
+      expect(primary.httpRequestCount()).toBe(attemptsPerUrl)
+      expect(backup.httpRequestCount()).toBe(attemptsPerUrl)
+      expect(elapsed).toBeGreaterThanOrEqual(2 * backoffMs)
+    },
+    20_000,
+  )
+
+  it('stops a fast-scan log read at the hard stop instead of backing off through every backup URL', async () => {
+    const primary = await stub('chain', { head: 100, delayMs: 8_000 })
+    const backups = await Promise.all(Array.from({ length: 6 }, () => stub('chain', { head: 100 })))
+    const reader = createChainReader([primary.url, ...backups.map((backup) => backup.url)], 10_000)
+    const started = Date.now()
+    reader.setHardStop(started + 500)
+
+    const outcome = await outcomeOf(reader.getLogs(filter, 1, 2))
+    const elapsed = Date.now() - started
+
+    expect((outcome as { rejected: unknown }).rejected).toBeInstanceOf(DeadlineError)
+    // the primary's retry backs off 150 ms before it is refused; walking on would wait that long again for each
+    // backup, which also refuses without sending anything, so six backups would add 900 ms
+    expect(elapsed).toBeLessThan(1_100)
+    for (const backup of backups) expect(backup.httpRequestCount()).toBe(0)
+  }, 20_000)
+
   it('rejects every request still in flight at the hard stop, well before its timeout, without walking on to the backup', async () => {
     const primary = await stub('chain', { head: 100, finalized: 90, delayMs: 8_000 })
     const backup = await stub('chain', { head: 100, finalized: 90 })

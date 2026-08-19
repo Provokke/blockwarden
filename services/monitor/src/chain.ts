@@ -73,11 +73,18 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304])
 // viem's default limit; it can only apply it to a body this fetch has already read, so the limit is enforced here too
 export const MAX_RESPONSE_BODY_BYTES = 10_485_760
 
+// viem retries an error that has no numeric code (utils/buildRequest.ts:291-322), which would download an oversized
+// body again from the same URL. A code viem neither retries nor maps to its own error classes (buildRequest.ts:171-263)
+// stops that, and the error still reaches us as this instance. The code is outside JSON-RPC's reserved range.
+class OversizedResponseError extends ResponseBodyTooLargeError {
+  readonly code = -39_001
+}
+
 async function readBodyWithinLimit(response: Response): Promise<Uint8Array<ArrayBuffer>> {
   const declared = Number(response.headers.get('content-length'))
   if (declared > MAX_RESPONSE_BODY_BYTES) {
     await response.body?.cancel().catch(() => {})
-    throw new ResponseBodyTooLargeError({ maxSize: MAX_RESPONSE_BODY_BYTES, size: declared })
+    throw new OversizedResponseError({ maxSize: MAX_RESPONSE_BODY_BYTES, size: declared })
   }
   const chunks: Uint8Array[] = []
   let size = 0
@@ -89,7 +96,7 @@ async function readBodyWithinLimit(response: Response): Promise<Uint8Array<Array
       size += value.byteLength
       if (size > MAX_RESPONSE_BODY_BYTES) {
         await reader.cancel().catch(() => {})
-        throw new ResponseBodyTooLargeError({ maxSize: MAX_RESPONSE_BODY_BYTES, size })
+        throw new OversizedResponseError({ maxSize: MAX_RESPONSE_BODY_BYTES, size })
       }
       chunks.push(value)
     }
@@ -179,15 +186,12 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
     ),
     cacheTime: 0,
   })
-  // viem's http transport retries an oversized body on the same URL (utils/buildRequest.ts:322) and fallback walks on
-  // to the next URL unless shouldThrow stops it (clients/transports/fallback.ts:162); listing each URL twice with no
-  // transport retries keeps two attempts per URL, and an oversized body stops at once so the fast scan halves
+  // the same retries as client, but fallback walks on to the next URL unless shouldThrow stops it
+  // (clients/transports/fallback.ts:162). An oversized body needs a smaller range, not another node, and after the
+  // hard stop every URL would refuse anyway, only after sitting through its retry backoff
   const logsClient = createPublicClient({
     transport: fallback(
-      rpcUrls.flatMap((url) => {
-        const transport = http(url, { timeout: timeoutMs, retryCount: 0, fetchFn })
-        return [transport, transport]
-      }),
+      rpcUrls.map((url) => http(url, { timeout: timeoutMs, retryCount: 1, fetchFn })),
       { retryCount: 0, shouldThrow: (err) => err instanceof ResponseBodyTooLargeError || causedByHardStop(err) },
     ),
     cacheTime: 0,
