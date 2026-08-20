@@ -1,0 +1,21 @@
+{
+  "name": "@blockwarden/dynamo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1131.0",
+    "@aws-sdk/lib-dynamodb": "3.1131.0"
+  },
+  "devDependencies": {
+    "testcontainers": "12.1.0"
+  }
+}
