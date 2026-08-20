@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toStorable } from '../../src/storable.js'
+import { toStorable } from '../src/storable.js'
 
 describe('toStorable', () => {
   it('turns bigints into decimal strings at any depth and leaves the rest alone', () => {
