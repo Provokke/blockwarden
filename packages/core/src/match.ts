@@ -6,6 +6,17 @@ import type { RawLog } from './types.js'
 export type LogMatch = { rule: CompiledRule; args: Record<string, unknown>; log: RawLog }
 export type KeyedMatch = LogMatch & { ordinal: number }
 
+// a provider can return one log twice; the copy would take the next ordinal and become a record of its own
+export function dedupeLogs(logs: RawLog[]): RawLog[] {
+  const seen = new Set<string>()
+  return logs.filter((log) => {
+    const key = `${log.blockHash.toLowerCase()}#${log.logIndex}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 export function assignOrdinals(matches: LogMatch[]): KeyedMatch[] {
   const ordinals: number[] = []
   const counts = new Map<string, number>()

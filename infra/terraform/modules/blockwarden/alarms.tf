@@ -10,6 +10,7 @@ resource "aws_sns_topic_subscription" "email" {
   endpoint  = var.alarm_email
 }
 
+# a busy run publishes no durableLag, so sustained busy runs also look like missing data and breach this alarm
 resource "aws_cloudwatch_metric_alarm" "durable_lag" {
   for_each            = var.chains
   alarm_name          = "${var.name}-monitor-${each.key}-durable-lag"

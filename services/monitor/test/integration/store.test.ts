@@ -88,6 +88,7 @@ describe('MonitorStore', () => {
     return {
       store: new MonitorStore(doc, tableName, () => new Date(NOW), { pageSize: options.pageSize }),
       queries: () => sent.filter((c) => c instanceof QueryCommand).length,
+      limits: () => sent.filter((c): c is QueryCommand => c instanceof QueryCommand).map((c) => c.input.Limit),
     }
   }
 
@@ -285,5 +286,33 @@ describe('MonitorStore', () => {
     expect(await racing.store.dropStaleProvisional(1, 10)).toBe(0)
     expect((await item(hash(1)))?.status).toBe('final')
     expect((await item(hash(2)))?.status).toBe('final')
+  })
+
+  it('asks DynamoDB for no more items than a query limit, across pages', async () => {
+    for (let id = 1; id <= 30; id++) await store.writeProvisional(match(id, id))
+    const provisional = {
+      IndexName: 'GSI2',
+      KeyConditionExpression: 'GSI2PK = :pk',
+      ExpressionAttributeValues: { ':pk': 'CHAIN#1#PROVISIONAL' },
+    }
+    type QueryAll = { queryAll(input: typeof provisional, limit?: number): Promise<Record<string, unknown>[]> }
+
+    const paged = interceptingStore({ pageSize: 7 })
+    expect(await (paged.store as unknown as QueryAll).queryAll(provisional, 10)).toHaveLength(10)
+    expect(paged.limits()).toEqual([7, 3])
+
+    const unpaged = interceptingStore()
+    expect(await (unpaged.store as unknown as QueryAll).queryAll(provisional, 5)).toHaveLength(5)
+    expect(unpaged.limits()).toEqual([5])
+  })
+
+  it('writes a rule input through toStorable, so a bigint in it is stored as a decimal string', async () => {
+    const rule = storedRule('big', 1, true)
+    const huge = 10n ** 30n
+    const conditions = { field: 'args.value', op: 'gte', value: huge }
+    await store.putRule({ ...rule, input: { ...rule.input, conditions } as unknown as StoredRule['input'] })
+
+    const [listed] = await store.listActiveRules(1)
+    expect(listed?.input.conditions).toEqual({ ...conditions, value: huge.toString() })
   })
 })
