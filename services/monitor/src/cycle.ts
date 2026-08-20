@@ -3,6 +3,7 @@ import {
   buildLogFilter,
   compileRule,
   DeadlineError,
+  dedupeLogs,
   fetchLogsAdaptive,
   matchKey,
   matchLog,
@@ -149,6 +150,10 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
       const filter = buildLogFilter(rules)
       // a range the RPC refused is likely refused again, so the next range starts at the size that fitted
       let span = deps.maxRange
+      // once a range is refused after an earlier read fitted, that read's size caps growth for the rest of the run,
+      // so the size stops alternating between one that fits and a doubled one that is refused
+      let ceiling = deps.maxRange
+      let lastFitted: number | undefined
       try {
         while (cursor.durableBlock < finalized) {
           if (!inTime()) {
@@ -162,6 +167,7 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
           }
           const from = cursor.durableBlock + 1
           const to = Math.min(finalized, cursor.durableBlock + span)
+          let halved = false
           await fetchLogsAdaptive(
             from,
             to,
@@ -171,12 +177,20 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
               shouldStop,
               // a transaction's logs share one block and a sub-range never splits a block, so ordinals stay whole
               onChunk: async (f, t, logs) => {
-                for (const match of assignOrdinals(logs.flatMap((l) => matchLog(rules, l)))) {
+                for (const match of assignOrdinals(dedupeLogs(logs).flatMap((l) => matchLog(rules, l)))) {
                   if ((await store.writeFinal(toNewMatch(chainId, match, firstSeenAt))) !== 'unchanged') counts.final++
                 }
                 cursor = await store.saveCursor(chainId, { ...cursor, durableBlock: t })
-                // a range read whole may mean the node recovered, so the size grows back towards maxRange
-                span = f === from && t === to ? Math.min(deps.maxRange, span * 2) : t - f + 1
+                const size = t - f + 1
+                if (f === from && t === to) {
+                  // a range read whole may mean the node recovered, so the size grows back towards the ceiling
+                  span = Math.min(ceiling, span * 2)
+                } else {
+                  if (!halved && lastFitted !== undefined) ceiling = Math.min(ceiling, lastFitted)
+                  halved = true
+                  span = size
+                }
+                lastFitted = size
               },
             },
           )
@@ -210,6 +224,8 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
       let from = Math.max(cursor.durableBlock, cursor.fastBlock - FAST_OVERLAP)
       if (head - from > FAST_MAX_RANGE) from = head - FAST_MAX_RANGE
       if (from < head) {
+        // saved before reading, so a run that stops before its first chunk still lowers the cursor to the head
+        if (head < cursor.fastBlock) cursor = await store.saveCursor(chainId, { ...cursor, fastBlock: head })
         const filter = buildLogFilter(fastRules)!
         let reached = from
         try {
@@ -217,7 +233,7 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
           while (reached < head) {
             const end = Math.min(head, reached + deps.maxRange)
             const logs = await fetchLogs(chain, filter, reached + 1, end, shouldStop)
-            for (const match of assignOrdinals(logs.flatMap((l) => matchLog(fastRules, l)))) {
+            for (const match of assignOrdinals(dedupeLogs(logs).flatMap((l) => matchLog(fastRules, l)))) {
               if (await store.writeProvisional(toNewMatch(chainId, match, firstSeenAt))) counts.provisional++
             }
             reached = end
@@ -227,9 +243,8 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
           log('the deadline passed inside the fast scan, stopping it this run', { chainId, fastBlock: reached })
           deadlineHit = true
         }
-        // the overlap starts behind the cursor, so a run stopped inside it must not pull the cursor back;
-        // a head below the cursor is the one case that moves it down
-        const fastBlock = head >= cursor.fastBlock ? Math.max(cursor.fastBlock, reached) : reached
+        // the overlap starts behind the cursor, so a run stopped inside it must not pull the cursor back
+        const fastBlock = Math.max(cursor.fastBlock, reached)
         // saved once, not per chunk, so a narrow maxRange does not multiply cursor writes
         if (reached > from && fastBlock !== cursor.fastBlock) {
           cursor = await store.saveCursor(chainId, { ...cursor, fastBlock })

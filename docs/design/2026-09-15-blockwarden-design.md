@@ -130,7 +130,7 @@ Each run takes the chain's lease, runs both scans inside a 50-second budget, and
 
 1. Read the chain's `finalized` block. A chain configured with `FINALITY_DEPTH` (for chains without the tag, typically 256) uses the head minus that depth instead. When `finalized` is unavailable and no depth is configured, the run skips the durable scan. It never guesses a depth, because a provider that normally supports the tag but errors once would otherwise send the durable scan into unfinalized blocks. The durable-lag alarm catches a persistent outage.
 2. Fetch logs from `durableBlock + 1` to `min(finalized, durableBlock + maxRange)`, where `maxRange` defaults to 2,000 blocks, filtered by the union of addresses and topic0s across active rules.
-   - **Halving.** When the RPC rejects a range, or answers with a body over 10 MB, halve it and retry, down to a single block. The next range starts at the size that last fitted. The size doubles again, up to `maxRange`, after a range that needed no halving.
+   - **Halving.** When the RPC rejects a range, or answers with a body over 10 MB, halve it and retry, down to a single block. The next range starts at the size that last fitted. The size doubles again, up to `maxRange`, after a range that needed no halving. Once a range is refused after an earlier read in the same run fitted, that read's size caps the range for the rest of the run, so the size does not keep alternating between one that fits and a doubled one that is refused.
    - **Head check.** Each `eth_getLogs` is batched with `eth_blockNumber` in one HTTP request. The range only counts as read when that head is at or past its end; otherwise the run stops the durable scan and retries next time. Erigon, Besu and reth answer a range past their head with fewer logs instead of an error, so a lagging failover backend must not advance the cursor.
    - **Pre-read head.** Erigon also runs batch entries concurrently. So when the head a node last returned during this invocation is below the range end, a standalone `eth_blockNumber` goes to that node first, and its answer must reach the range end too. A node whose pre-read fails is skipped, and the range is not halved for it.
    - **Deadline.** Every request checks the invocation deadline first. Each sub-range of a halved range is saved as soon as it is read and written, and a run that reaches the deadline stops with the cursor at the last one. A request still running a few seconds before the Lambda timeout is aborted, and the run stops the same way.
@@ -143,7 +143,7 @@ Each run takes the chain's lease, runs both scans inside a 50-second budget, and
 
 1. Scan from `max(durableBlock, fastBlock - 20)` to the head, at most 2,000 blocks per run, reading `maxRange` blocks at a time. When it is further behind, it skips ahead: the fast scan is best effort. The 20-block overlap catches logs that a shallow reorg moved.
 2. Write each match as `provisional`, unless a record with the same key already exists.
-3. Save `fastBlock` once, at the end of the last chunk read in full. It never moves behind its previous position, unless the head itself is below that position; then it follows the head down.
+3. Save `fastBlock` once, at the end of the last chunk read in full. It never moves behind its previous position, unless the head itself is below that position. Then a run that reaches the fast scan saves the head as `fastBlock` before it reads anything, so the cursor drops to the head even when the run stops before its first chunk. A run that stops for time before the fast scan leaves `fastBlock` where it was.
 
 ### Match keys
 
@@ -306,12 +306,12 @@ These are estimates from published AWS pricing and have to be measured after the
 | EventBridge Scheduler | within free invocations |
 | DynamoDB on-demand, small table | under $1 |
 | SQS | within the 1M free requests |
-| KMS: 2 keys, low sign volume | about $2 |
+| KMS: 2 keys, low sign volume, from milestone 2 | about $2 |
 | API Gateway HTTP API | cents at demo traffic |
 | CloudFront, S3 | within free tier at demo traffic |
 | SSM standard parameters, 10 alarms | free |
-| CloudWatch custom metrics: up to 5 per chain. `durableLag` and `finalizedAgeSeconds` are emitted on most runs. `deadlineSkips` is emitted whenever a run stops for time, which includes normal catch-up after a start block or an outage. `busySkips` and `laggingNodeSkips` are emitted only when they occur | the first 10 are free, then $0.30/metric/month |
-| **Total** | **about $2 to $4 per month** |
+| CloudWatch custom metrics: up to 5 per chain. `durableLag` and `finalizedAgeSeconds` are emitted on most runs. `deadlineSkips` is emitted whenever a run stops for time, which includes normal catch-up after a start block or an outage. `busySkips` and `laggingNodeSkips` are emitted only when they occur. Across 3 chains that is up to 15 metrics | the first 10 are free, then $0.30/metric/month, so up to $1.50 |
+| **Total** | **up to about $4.50 per month:** KMS about $2 from milestone 2, DynamoDB under $1, custom metrics up to $1.50 |
 
 The fast scan adds one `eth_getLogs` call per run on each chain that has `fast` rules.
 

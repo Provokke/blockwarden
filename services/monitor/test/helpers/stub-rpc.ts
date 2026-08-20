@@ -13,6 +13,8 @@ export type StubRpcOptions = {
   preReadHead?: number
   // chain mode only: answer a request whose only call is eth_blockNumber with this result or error instead
   preReadAnswer?: { result: unknown } | { error: JsonRpcErrorBody }
+  // chain mode only: answer eth_blockNumber inside a batch with this result or error instead
+  batchHeadAnswer?: { result: unknown } | { error: JsonRpcErrorBody }
   // chain mode only: return these logs, or reject eth_getLogs with this JSON-RPC error
   logs?: unknown[] | JsonRpcErrorBody
   // chain mode only: answer eth_getBlockByNumber("finalized") with this block number instead of an error
@@ -24,6 +26,8 @@ export type StubRpcOptions = {
   // chain mode only: answer a request that carries eth_getLogs with a body of this many bytes, sent as fast as
   // the client reads it, with or without a content-length header
   oversizedLogs?: { bytes: number; declareLength: boolean }
+  // http-500 mode only: answer with this status and these headers instead of a plain 500
+  failWith?: { status: number; headers?: Record<string, string> }
   // wait this long after a request arrives before answering it, whatever the mode
   delayMs?: number
 }
@@ -61,23 +65,30 @@ export function startStubRpc(
   const server: Server = createServer((req, res) => {
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    let body: unknown
+    let batch: (JsonRpcRequest | null)[] = []
+    let carriesLogs = false
+    let nth = 0
+    let nthLogBatch = 0
+    // counted on arrival, so a request the client aborts while delayMs holds it back still counts as an attempt
+    req.on('end', () => {
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+      } catch {
+        body = {}
+      }
+      nth = ++httpCount
+      seen.push(body)
+      // viem may batch several JSON-RPC calls into one HTTP request; each
+      // entry in that batch is still one RPC attempt, so count them all.
+      batch = (Array.isArray(body) ? body : [body]) as (JsonRpcRequest | null)[]
+      count += batch.length
+      carriesLogs = batch.some((entry) => entry?.method === 'eth_getLogs')
+      if (carriesLogs) nthLogBatch = ++logBatches
+    })
     req.on('end', () =>
       setTimeout(() => {
         if (res.destroyed) return
-        let body: unknown
-        try {
-          body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
-        } catch {
-          body = {}
-        }
-        httpCount++
-        seen.push(body)
-        // viem may batch several JSON-RPC calls into one HTTP request; each
-        // entry in that batch is still one RPC attempt, so count them all.
-        const batch = (Array.isArray(body) ? body : [body]) as (JsonRpcRequest | null)[]
-        count += batch.length
-        const carriesLogs = batch.some((entry) => entry?.method === 'eth_getLogs')
-        if (carriesLogs) logBatches++
 
         if (mode === 'stalled-body') {
           res.writeHead(200, { 'content-type': 'application/json' })
@@ -87,10 +98,11 @@ export function startStubRpc(
 
         if (
           mode === 'http-500' ||
-          httpCount <= (options.failFirst ?? 0) ||
-          (carriesLogs && logBatches <= (options.failFirstBatches ?? 0))
+          nth <= (options.failFirst ?? 0) ||
+          (carriesLogs && nthLogBatch <= (options.failFirstBatches ?? 0))
         ) {
-          res.writeHead(500, { 'content-type': 'application/json' })
+          const failure = mode === 'http-500' ? options.failWith : undefined
+          res.writeHead(failure?.status ?? 500, { 'content-type': 'application/json', ...failure?.headers })
           res.end(JSON.stringify({ error: 'stub rpc: internal error' }))
           return
         }
@@ -125,6 +137,7 @@ export function startStubRpc(
           const { id = null, method, params } = entry ?? {}
           if (mode === 'chain' && method === 'eth_blockNumber') {
             if (alone && options.preReadAnswer) return { jsonrpc: '2.0', id, ...options.preReadAnswer }
+            if (!alone && options.batchHeadAnswer) return { jsonrpc: '2.0', id, ...options.batchHeadAnswer }
             return { jsonrpc: '2.0', id, result: hex(alone ? (options.preReadHead ?? head) : head) }
           }
           if (mode === 'chain' && method === 'eth_getLogs') {
