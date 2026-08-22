@@ -36,11 +36,20 @@ export type VerifyWebhookOptions = {
 export async function verifyWebhook(options: VerifyWebhookOptions): Promise<WebhookEvent> {
   const { timestamp, signatures } = parseHeader(options.signature)
   const tolerance = options.toleranceSeconds ?? DEFAULT_TOLERANCE_SECONDS
+  if (!Number.isFinite(tolerance) || tolerance < 0) {
+    throw new WebhookVerificationError('toleranceSeconds must be a finite number that is not negative')
+  }
+  if (options.nowMs !== undefined && !Number.isFinite(options.nowMs)) {
+    throw new WebhookVerificationError('nowMs must be a finite number')
+  }
   const now = Math.floor((options.nowMs ?? Date.now()) / 1000)
   if (Math.abs(now - timestamp) > tolerance) {
     throw new WebhookVerificationError(`the signature timestamp is more than ${tolerance} seconds from now`)
   }
   const secrets = Array.isArray(options.secret) ? options.secret : [options.secret]
+  if (secrets.length === 0 || secrets.some((s) => s.length === 0)) {
+    throw new WebhookVerificationError('webhook secret must not be empty')
+  }
   let matched = false
   for (const secret of secrets) {
     const expected = await hmacHex(secret, `${timestamp}.${options.payload}`)
