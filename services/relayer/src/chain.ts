@@ -62,7 +62,9 @@ function rpcAnswer(err: unknown): RpcRequestError | undefined {
 // the request body, which for a send is the whole raw transaction.
 function describeError(err: unknown): string {
   const answer = rpcAnswer(err)
-  if (answer) return answer.details
+  // a node can answer with no "message" field, or with "error" as a bare string; details is then undefined and the
+  // chain below still has viem's own shortMessage to fall back on
+  if (answer?.details) return answer.details
   const parts: string[] = []
   let current: unknown = err
   for (let depth = 0; current && depth < 8; depth++) {
@@ -84,6 +86,15 @@ function isTransportError(err: unknown): boolean {
   return err instanceof BaseError
     ? Boolean(err.walk((e) => e instanceof HttpRequestError || e instanceof TimeoutError))
     : false
+}
+
+// viem also files geth's "gas required exceeds allowance" under ExecutionRevertedError, so when a node answered,
+// only its revert code or its own "execution reverted" counts. Shared by classifyEstimateError and the estimate
+// fallback below, so a revert is decisive in both places the same way.
+function isRevertAnswer(err: unknown): boolean {
+  const answer = rpcAnswer(err)
+  if (answer) return answer.code === 3 || /execution reverted/i.test(answer.details ?? '')
+  return err instanceof BaseError && err.walk((e) => e instanceof ExecutionRevertedError) !== null
 }
 
 // Node messages are the only stable signal: geth, op-geth, Nitro and Anvil share most of them, and viem's own
@@ -117,13 +128,7 @@ export function classifyEstimateError(err: unknown): EstimateError {
   if (isTransportError(err)) return new EstimateError('unavailable', 'the RPC did not answer the gas estimate')
   if (isRateLimit(err)) return new EstimateError('unavailable', 'the RPC rate-limited the gas estimate')
   if (err instanceof BaseError) {
-    // viem also files geth's "gas required exceeds allowance" under ExecutionRevertedError, so when a node answered,
-    // only its revert code or its own "execution reverted" counts
-    const answer = rpcAnswer(err)
-    const reverted = answer
-      ? answer.code === 3 || /execution reverted/i.test(answer.details)
-      : err.walk((e) => e instanceof ExecutionRevertedError)
-    if (reverted) {
+    if (isRevertAnswer(err)) {
       const withData = err.walk((e) => typeof (e as { data?: unknown }).data === 'string') as { data?: string } | null
       const data = withData?.data
       return new EstimateError(
@@ -150,15 +155,19 @@ export function createRelayerChain(chainId: number, rpcUrls: string[], timeoutMs
     })
   // reads keep viem's default and try the next URL, which helps when one node lags behind
   const client = clientWith()
-  // A node's refusal of a send or an estimate is an answer, but viem's default walks on past geth's -32000 refusals, so
-  // the last URL's answer, or its timeout, would replace it. Only transport failures and rate limits move on.
-  const decisive = clientWith((err) => rpcAnswer(err) !== undefined && !isRateLimit(err))
+  // A node's answer only stops the fallback when it settles the question: a refusal classifySendError recognises,
+  // or, for an estimate, a real revert. A transport failure, a rate limit, or a -32603/-32601/-32002-style answer
+  // means this node could not serve the call, not that it refused the tx or the call, so those still try the next
+  // URL — the raw tx or call is identical everywhere. A refusal from a lagging node, such as "insufficient funds"
+  // seconds after funding, is final for that call and the client may retry.
+  const decisiveSend = clientWith((err) => classifySendError(err).kind !== 'unknown')
+  const decisiveEstimate = clientWith((err) => isRevertAnswer(err) || classifySendError(err).kind !== 'unknown')
 
   return {
     chainId,
     async estimateGas({ from, to, data, value }) {
       try {
-        return await decisive.estimateGas({ account: from, to, data, value })
+        return await decisiveEstimate.estimateGas({ account: from, to, data, value })
       } catch (err) {
         throw classifyEstimateError(err)
       }
@@ -201,7 +210,7 @@ export function createRelayerChain(chainId: number, rpcUrls: string[], timeoutMs
     },
     async send(raw) {
       try {
-        await decisive.sendRawTransaction({ serializedTransaction: raw })
+        await decisiveSend.sendRawTransaction({ serializedTransaction: raw })
         return { kind: 'accepted' }
       } catch (err) {
         return classifySendError(err)
