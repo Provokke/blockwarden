@@ -6,6 +6,7 @@ import {
   fallback,
   http,
   HttpRequestError,
+  RpcRequestError,
   TimeoutError,
   TransactionNotFoundError,
   TransactionReceiptNotFoundError,
@@ -51,15 +52,32 @@ export interface RelayerChain {
   send(raw: Hex): Promise<SendOutcome>
 }
 
-function messages(err: unknown): string {
+// The JSON-RPC error a node answered with, if it answered at all.
+function rpcAnswer(err: unknown): RpcRequestError | undefined {
+  const found = err instanceof BaseError ? err.walk((e) => e instanceof RpcRequestError) : null
+  return found instanceof RpcRequestError ? found : undefined
+}
+
+// The node's own words when it answered, else viem's short messages. Never a BaseError's full message: that repeats
+// the request body, which for a send is the whole raw transaction.
+function describeError(err: unknown): string {
+  const answer = rpcAnswer(err)
+  if (answer) return answer.details
   const parts: string[] = []
   let current: unknown = err
   for (let depth = 0; current && depth < 8; depth++) {
     const e = current as { details?: unknown; shortMessage?: unknown; message?: unknown; cause?: unknown }
-    for (const part of [e.details, e.shortMessage, e.message]) if (typeof part === 'string') parts.push(part)
+    const own = current instanceof BaseError ? [e.shortMessage, e.details] : [e.message]
+    for (const part of own) if (typeof part === 'string' && part && !parts.includes(part)) parts.push(part)
     current = e.cause
   }
-  return parts.join(' | ').toLowerCase()
+  return parts.join(' | ')
+}
+
+// -32005 is the JSON-RPC limit-exceeded code; some providers put 429 in the body as the code instead
+function isRateLimit(err: unknown): boolean {
+  const code = rpcAnswer(err)?.code
+  return code === -32005 || code === 429
 }
 
 function isTransportError(err: unknown): boolean {
@@ -71,32 +89,40 @@ function isTransportError(err: unknown): boolean {
 // Node messages are the only stable signal: geth, op-geth, Nitro and Anvil share most of them, and viem's own
 // error classes lump "already known" together with "nonce too low".
 export function classifySendError(err: unknown): SendOutcome {
-  if (isTransportError(err)) return { kind: 'unknown', message: messages(err) }
-  const text = messages(err)
+  const message = describeError(err)
+  if (isTransportError(err)) return { kind: 'unknown', message }
+  const text = message.toLowerCase()
   if (/already known|already imported|known transaction/.test(text)) return { kind: 'already-known' }
-  if (/nonce too low|nonce has already been used/.test(text)) return { kind: 'nonce-too-low', message: text }
+  if (/nonce too low|nonce has already been used/.test(text)) return { kind: 'nonce-too-low', message }
   if (
-    /replacement transaction underpriced|transaction underpriced|max fee per gas less than block base fee|fee too low/.test(
+    /replacement transaction underpriced|transaction underpriced|gas price below minimum|max fee per gas less than block base fee|fee too low/.test(
       text,
     )
   ) {
-    return { kind: 'underpriced', message: text }
+    return { kind: 'underpriced', message }
   }
-  if (/insufficient funds/.test(text)) return { kind: 'insufficient-funds', message: text }
+  if (/insufficient funds/.test(text)) return { kind: 'insufficient-funds', message }
   if (
-    /intrinsic gas too (low|high)|exceeds block gas limit|gas limit too high|invalid chain id|invalid sender|oversized data|exceeds the configured cap|higher than max fee per gas|tip higher than fee cap/.test(
+    /intrinsic gas too (low|high)|floor data gas cost|transaction type not supported|exceeds block gas limit|gas limit too high|invalid chain id|invalid sender|oversized data|exceeds the configured cap|higher than max fee per gas|tip higher than fee cap/.test(
       text,
     )
   ) {
-    return { kind: 'rejected', message: text }
+    return { kind: 'rejected', message }
   }
-  return { kind: 'unknown', message: text }
+  // "nonce too high" stays unknown on purpose: the gap closes as earlier nonces land, and a filler would fail too
+  return { kind: 'unknown', message }
 }
 
 export function classifyEstimateError(err: unknown): EstimateError {
   if (isTransportError(err)) return new EstimateError('unavailable', 'the RPC did not answer the gas estimate')
+  if (isRateLimit(err)) return new EstimateError('unavailable', 'the RPC rate-limited the gas estimate')
   if (err instanceof BaseError) {
-    const reverted = err.walk((e) => e instanceof ExecutionRevertedError)
+    // viem also files geth's "gas required exceeds allowance" under ExecutionRevertedError, so when a node answered,
+    // only its revert code or its own "execution reverted" counts
+    const answer = rpcAnswer(err)
+    const reverted = answer
+      ? answer.code === 3 || /execution reverted/i.test(answer.details)
+      : err.walk((e) => e instanceof ExecutionRevertedError)
     if (reverted) {
       const withData = err.walk((e) => typeof (e as { data?: unknown }).data === 'string') as { data?: string } | null
       const data = withData?.data
@@ -106,27 +132,33 @@ export function classifyEstimateError(err: unknown): EstimateError {
         typeof data === 'string' && /^0x[0-9a-fA-F]*$/.test(data) ? (data as Hex) : '0x',
       )
     }
-    return new EstimateError('failed', err.shortMessage)
+    return new EstimateError('failed', describeError(err))
   }
   return new EstimateError('failed', err instanceof Error ? err.message : String(err))
 }
 
 export function createRelayerChain(chainId: number, rpcUrls: string[], timeoutMs = 10_000): RelayerChain {
   if (rpcUrls.length === 0) throw new Error(`no RPC URLs for chain ${chainId}`)
-  const client: PublicClient = createPublicClient({
-    transport: fallback(
-      rpcUrls.map((url) => http(url, { timeout: timeoutMs, retryCount: 1 })),
-      { retryCount: 0 },
-    ),
-    // viem otherwise caches the block number, and the sweeper compares heads between calls
-    cacheTime: 0,
-  })
+  const clientWith = (shouldThrow?: (err: Error) => boolean): PublicClient =>
+    createPublicClient({
+      transport: fallback(
+        rpcUrls.map((url) => http(url, { timeout: timeoutMs, retryCount: 1 })),
+        { retryCount: 0, shouldThrow },
+      ),
+      // viem otherwise caches the block number, and the sweeper compares heads between calls
+      cacheTime: 0,
+    })
+  // reads keep viem's default and try the next URL, which helps when one node lags behind
+  const client = clientWith()
+  // A node's refusal of a send or an estimate is an answer, but viem's default walks on past geth's -32000 refusals, so
+  // the last URL's answer, or its timeout, would replace it. Only transport failures and rate limits move on.
+  const decisive = clientWith((err) => rpcAnswer(err) !== undefined && !isRateLimit(err))
 
   return {
     chainId,
     async estimateGas({ from, to, data, value }) {
       try {
-        return await client.estimateGas({ account: from, to, data, value })
+        return await decisive.estimateGas({ account: from, to, data, value })
       } catch (err) {
         throw classifyEstimateError(err)
       }
@@ -169,7 +201,7 @@ export function createRelayerChain(chainId: number, rpcUrls: string[], timeoutMs
     },
     async send(raw) {
       try {
-        await client.sendRawTransaction({ serializedTransaction: raw })
+        await decisive.sendRawTransaction({ serializedTransaction: raw })
         return { kind: 'accepted' }
       } catch (err) {
         return classifySendError(err)
