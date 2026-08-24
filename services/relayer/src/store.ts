@@ -8,9 +8,9 @@ import {
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb'
 import { GSI2, isConditionFailure } from '@blockwarden/dynamo'
-import type { Address } from 'viem'
+import { size, type Address } from 'viem'
 import { keys } from './keys.js'
-import { policySchema } from './policy.js'
+import { MAX_DATA_BYTES, policySchema } from './policy.js'
 import { SETTLED, type ApiKeyRecord, type SignerRecord, type TxRecord } from './records.js'
 
 export const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
@@ -31,10 +31,43 @@ export class TxConflictError extends Error {
 
 type Cancellation = { CancellationReasons?: { Code?: string }[] }
 
-function failedIndexes(err: unknown): number[] | undefined {
+function cancellationCodes(err: unknown): string[] | undefined {
   if ((err as Error | undefined)?.name !== 'TransactionCanceledException') return undefined
-  const reasons = (err as Cancellation).CancellationReasons ?? []
-  return reasons.flatMap((r, i) => (r.Code === 'ConditionalCheckFailed' ? [i] : []))
+  return ((err as Cancellation).CancellationReasons ?? []).map((r) => r.Code ?? 'None')
+}
+
+function failedIndexes(err: unknown): number[] | undefined {
+  return cancellationCodes(err)?.flatMap((code, i) => (code === 'ConditionalCheckFailed' ? [i] : []))
+}
+
+// Real DynamoDB refuses a write that overlaps another transaction on the same item: a transaction is cancelled
+// with the reason TransactionConflict, a plain write throws TransactionConflictException. Nothing was written and
+// the SDK does not retry either. DynamoDB Local never produces them.
+function isTransactionConflict(err: unknown): boolean {
+  if ((err as Error | undefined)?.name === 'TransactionConflictException') return true
+  const codes = cancellationCodes(err)
+  return !!codes && codes.includes('TransactionConflict') && !codes.includes('ConditionalCheckFailed')
+}
+
+const TRANSACTION_CONFLICT_RETRIES = 3
+
+// a counter race is resolved in a handful of rounds; one that goes on this long is a bug or a stampede
+const NONCE_ATTEMPTS = 25
+
+async function retryingConflicts(what: string, send: () => Promise<unknown>): Promise<void> {
+  for (let retry = 0; ; retry++) {
+    try {
+      await send()
+      return
+    } catch (err) {
+      if (!isTransactionConflict(err)) throw err
+      if (retry >= TRANSACTION_CONFLICT_RETRIES) {
+        throw new Error(`${what} kept conflicting with other DynamoDB transactions`, { cause: err })
+      }
+      // full jitter, so the writers that collided do not collide again
+      await new Promise((resolve) => setTimeout(resolve, Math.random() * 25 * 2 ** retry))
+    }
+  }
 }
 
 // the item layout of a transaction: GSI2 holds it only while it still has work outstanding
@@ -120,43 +153,48 @@ export class RelayerStore {
     if (!tx.idempotencyKey || !tx.apiKeyHash) throw new Error('a relayed transaction needs an idempotency key')
     // the condition below passes on the first reservation of the day whatever its size, so a cost over the cap stops here
     if (spend.costGwei > spend.capGwei) return { created: false, reason: 'spend-cap' }
+    // checkPolicy refuses this first; the store holds the item size limit for any caller that skipped it
+    if (size(tx.data) > MAX_DATA_BYTES) throw new Error(`calldata is larger than ${MAX_DATA_BYTES} bytes`)
+    const claim = keys.idempotency(tx.apiKeyHash, tx.idempotencyKey)
     try {
-      await this.doc.send(
-        new TransactWriteCommand({
-          TransactItems: [
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: txItem(tx),
-                ConditionExpression: 'attribute_not_exists(PK)',
-              },
-            },
-            {
-              Put: {
-                TableName: this.tableName,
-                Item: {
-                  ...keys.idempotency(tx.apiKeyHash, tx.idempotencyKey),
-                  txId: tx.txId,
-                  expiresAt: Math.floor(nowMs / 1000) + IDEMPOTENCY_TTL_SECONDS,
-                },
-                ConditionExpression: 'attribute_not_exists(PK)',
-              },
-            },
-            {
-              Update: {
-                TableName: this.tableName,
-                Key: keys.spend(tx.signerId, tx.chainId, spend.day),
-                UpdateExpression: 'ADD spentGwei :cost SET expiresAt = if_not_exists(expiresAt, :expires)',
-                ConditionExpression: 'attribute_not_exists(spentGwei) OR spentGwei <= :room',
-                ExpressionAttributeValues: {
-                  ':cost': spend.costGwei,
-                  ':room': spend.capGwei - spend.costGwei,
-                  ':expires': Math.floor(nowMs / 1000) + SPEND_TTL_SECONDS,
+      await retryingConflicts(`creating transaction ${tx.txId}`, () =>
+        this.doc.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: txItem(tx),
+                  ConditionExpression: 'attribute_not_exists(PK)',
                 },
               },
-            },
-          ],
-        }),
+              {
+                Put: {
+                  TableName: this.tableName,
+                  Item: {
+                    ...claim,
+                    txId: tx.txId,
+                    expiresAt: Math.floor(nowMs / 1000) + IDEMPOTENCY_TTL_SECONDS,
+                  },
+                  ConditionExpression: 'attribute_not_exists(PK)',
+                },
+              },
+              {
+                Update: {
+                  TableName: this.tableName,
+                  Key: keys.spend(tx.signerId, tx.chainId, spend.day),
+                  UpdateExpression: 'ADD spentGwei :cost SET expiresAt = if_not_exists(expiresAt, :expires)',
+                  ConditionExpression: 'attribute_not_exists(spentGwei) OR spentGwei <= :room',
+                  ExpressionAttributeValues: {
+                    ':cost': spend.costGwei,
+                    ':room': spend.capGwei - spend.costGwei,
+                    ':expires': Math.floor(nowMs / 1000) + SPEND_TTL_SECONDS,
+                  },
+                },
+              },
+            ],
+          }),
+        ),
       )
       return { created: true }
     } catch (err) {
@@ -181,7 +219,7 @@ export class RelayerStore {
         }),
       )
     } catch (err) {
-      if (isConditionFailure(err)) throw new TxConflictError(tx.txId)
+      if (isConditionFailure(err) || isTransactionConflict(err)) throw new TxConflictError(tx.txId)
       throw err
     }
     return next
@@ -214,7 +252,7 @@ export class RelayerStore {
         }),
       )
     } catch (err) {
-      if (failedIndexes(err)?.length) throw new TxConflictError(failed.txId)
+      if (failedIndexes(err)?.length || isTransactionConflict(err)) throw new TxConflictError(failed.txId)
       throw err
     }
     return { failed: next, filler }
@@ -247,35 +285,39 @@ export class RelayerStore {
   // Takes the next nonce and writes it onto the tx in one transaction, so a crash can never leave a nonce
   // reserved with no tx holding it. A tx that already has a nonce is returned as it is.
   async assignNonce(tx: TxRecord, nowIso: string): Promise<TxRecord> {
-    for (;;) {
+    for (let attempt = 0; attempt < NONCE_ATTEMPTS; attempt++) {
       if (tx.nonce !== undefined) return tx
       const current = (await this.getNextNonce(tx.signerId, tx.chainId)) ?? 0
       const next: TxRecord = { ...tx, nonce: current, version: tx.version + 1, updatedAt: nowIso }
       try {
-        await this.doc.send(
-          new TransactWriteCommand({
-            TransactItems: [
-              {
-                Update: {
-                  TableName: this.tableName,
-                  Key: keys.nonce(tx.signerId, tx.chainId),
-                  UpdateExpression: 'SET nextNonce = :next',
-                  ConditionExpression:
-                    current === 0 ? 'attribute_not_exists(nextNonce) OR nextNonce = :current' : 'nextNonce = :current',
-                  ExpressionAttributeValues: { ':next': current + 1, ':current': current },
+        await retryingConflicts(`assigning a nonce to transaction ${tx.txId}`, () =>
+          this.doc.send(
+            new TransactWriteCommand({
+              TransactItems: [
+                {
+                  Update: {
+                    TableName: this.tableName,
+                    Key: keys.nonce(tx.signerId, tx.chainId),
+                    UpdateExpression: 'SET nextNonce = :next',
+                    ConditionExpression:
+                      current === 0
+                        ? 'attribute_not_exists(nextNonce) OR nextNonce = :current'
+                        : 'nextNonce = :current',
+                    ExpressionAttributeValues: { ':next': current + 1, ':current': current },
+                  },
                 },
-              },
-              {
-                Put: {
-                  TableName: this.tableName,
-                  Item: txItem(next),
-                  ConditionExpression: '#version = :version',
-                  ExpressionAttributeNames: { '#version': 'version' },
-                  ExpressionAttributeValues: { ':version': tx.version },
+                {
+                  Put: {
+                    TableName: this.tableName,
+                    Item: txItem(next),
+                    ConditionExpression: '#version = :version',
+                    ExpressionAttributeNames: { '#version': 'version' },
+                    ExpressionAttributeValues: { ':version': tx.version },
+                  },
                 },
-              },
-            ],
-          }),
+              ],
+            }),
+          ),
         )
         return next
       } catch (err) {
@@ -286,6 +328,9 @@ export class RelayerStore {
         throw err
       }
     }
+    throw new Error(
+      `the nonce counter for ${tx.signerId} on chain ${tx.chainId} kept moving; gave up after ${NONCE_ATTEMPTS} attempts`,
+    )
   }
 
   async listPending(chainId: number, limit: number): Promise<TxRecord[]> {
