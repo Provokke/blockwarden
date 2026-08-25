@@ -1,6 +1,7 @@
 import { toDigestSignerAccount } from '@blockwarden/kms-signer'
 import { createLocalDigestSigner } from '@blockwarden/kms-signer/testing'
 import type { Address, Hex, LocalAccount } from 'viem'
+import type { TxQueue } from '../../src/queue.js'
 import type { SignerRecord, TxRecord } from '../../src/records.js'
 
 export const TARGET: Address = '0x5FbDB2315678afecb367f032d93F642f64180aa3'
@@ -26,6 +27,19 @@ export function signerRecord(overrides: Partial<SignerRecord> = {}): SignerRecor
 // the in-process stand-in for a KMS key, behind the same interface the Lambda uses
 export function localAccount(privateKey: Hex = SIGNER_KEY): Promise<LocalAccount> {
   return toDigestSignerAccount(createLocalDigestSigner(privateKey))
+}
+
+export class RecordingQueue implements TxQueue {
+  sent: { txId: string; enqueues: number }[] = []
+  failNext = false
+
+  async send(tx: TxRecord): Promise<void> {
+    if (this.failNext) {
+      this.failNext = false
+      throw new Error('queue unavailable')
+    }
+    this.sent.push({ txId: tx.txId, enqueues: tx.enqueues })
+  }
 }
 
 export function queuedTx(from: Address, overrides: Partial<TxRecord> = {}): TxRecord {
