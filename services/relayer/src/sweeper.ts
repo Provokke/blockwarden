@@ -13,6 +13,9 @@ export type ChainSettings = {
   confirmations: number
   // how long a signature may go without a receipt before it is replaced
   stuckAfterMs: number
+  // how long a nonce must read as used, with no receipt for any of our hashes, before the transaction is failed;
+  // sweeps run a minute apart, so the confirmation depth alone would pass on the second sweep
+  nonceUsedMinAgeMs?: number
 }
 
 export type SweeperDeps = {
@@ -47,6 +50,8 @@ export type SweepSummary = {
 export const MAX_ATTEMPTS = 10
 
 const LIST_LIMIT = 100
+
+export const DEFAULT_NONCE_USED_MIN_AGE_MS = 10 * 60_000
 
 export async function sweepChain(deps: SweeperDeps, deadlineMs: number): Promise<SweepSummary> {
   const summary: SweepSummary = {
@@ -180,31 +185,45 @@ async function checkSubmitted(
   // newest first: a replacement is the likeliest to have been mined
   for (const attempt of [...tx.attempts].reverse()) {
     const receipt = await deps.chain.getReceipt(attempt.hash)
-    if (!receipt) continue
-    const { nonceUsedAtBlock: _n, needsBump: _b, ...rest } = tx
-    const mined = await deps.store.saveTx({ ...withStatus(rest, 'mined', at), mined: receipt }, at)
-    summary.mined++
-    if (head - receipt.blockNumber + 1 >= deps.settings.confirmations) {
-      await deps.store.saveTx(withStatus(mined, 'confirmed', at), at)
-      summary.confirmed++
-    }
-    return
+    if (receipt) return markMined(deps, tx, receipt, head, summary)
   }
 
   const minedNonce = await deps.chain.getNonce(tx.from, 'latest')
   if (minedNonce > tx.nonce!) {
-    // The nonce is used, but by none of our hashes. A lagging node can show that briefly, so wait the
-    // confirmation depth before deciding the transaction was replaced from outside.
-    if (tx.nonceUsedAtBlock === undefined) {
-      await deps.store.saveTx({ ...tx, nonceUsedAtBlock: head }, at)
-    } else if (head - tx.nonceUsedAtBlock >= deps.settings.confirmations) {
-      await deps.store.saveTx(
-        { ...withStatus(tx, 'failed', at), error: 'the nonce was used by a transaction this relayer did not send' },
-        at,
-      )
-      summary.failed++
+    // The nonce is used, but by none of our hashes. A lagging node can show that for a while, so wait both the
+    // confirmation depth and a minimum age, then ask every URL, before deciding it was replaced from outside.
+    if (tx.nonceUsedAtBlock === undefined || tx.nonceUsedAt === undefined) {
+      await deps.store.saveTx({ ...tx, nonceUsedAtBlock: tx.nonceUsedAtBlock ?? head, nonceUsedAt: at }, at)
+      return
     }
+    const minAge = deps.settings.nonceUsedMinAgeMs ?? DEFAULT_NONCE_USED_MIN_AGE_MS
+    if (head - tx.nonceUsedAtBlock < deps.settings.confirmations) return
+    if (deps.now().getTime() - Date.parse(tx.nonceUsedAt) < minAge) return
+    for (const attempt of [...tx.attempts].reverse()) {
+      let receipt
+      try {
+        receipt = await deps.chain.findReceipt(attempt.hash)
+      } catch (err) {
+        // a URL that could not answer might be the one with the receipt
+        deps.log('receipt check failed on an RPC URL; not failing the transaction this sweep', {
+          txId: tx.txId,
+          error: (err as Error).message,
+        })
+        return
+      }
+      if (receipt) return markMined(deps, tx, receipt, head, summary)
+    }
+    await deps.store.saveTx(
+      { ...withStatus(tx, 'failed', at), error: 'the nonce was used by a transaction this relayer did not send' },
+      at,
+    )
+    summary.failed++
     return
+  }
+  if (tx.nonceUsedAtBlock !== undefined || tx.nonceUsedAt !== undefined) {
+    // the node that read the nonce as used was ahead or wrong; a later sighting starts the wait again
+    const { nonceUsedAtBlock: _n, nonceUsedAt: _t, ...rest } = tx
+    tx = await deps.store.saveTx(rest, at)
   }
 
   const stuck = deps.now().getTime() - latestAttempt(tx)!.signedAt >= deps.settings.stuckAfterMs
@@ -217,6 +236,23 @@ async function checkSubmitted(
   if (live && !(await deps.chain.isKnown(live.hash))) {
     await deps.chain.send(live.raw)
     summary.rebroadcast++
+  }
+}
+
+async function markMined(
+  deps: SweeperDeps,
+  tx: TxRecord,
+  receipt: NonNullable<TxRecord['mined']>,
+  head: number,
+  summary: SweepSummary,
+): Promise<void> {
+  const at = deps.now().toISOString()
+  const { nonceUsedAtBlock: _n, nonceUsedAt: _t, needsBump: _b, ...rest } = tx
+  const mined = await deps.store.saveTx({ ...withStatus(rest, 'mined', at), mined: receipt }, at)
+  summary.mined++
+  if (head - receipt.blockNumber + 1 >= deps.settings.confirmations) {
+    await deps.store.saveTx(withStatus(mined, 'confirmed', at), at)
+    summary.confirmed++
   }
 }
 
