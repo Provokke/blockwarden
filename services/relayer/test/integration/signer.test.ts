@@ -45,6 +45,19 @@ describe('processTx', () => {
     }
   })
 
+  // counts KMS signatures, so a test can prove bytes were resent rather than signed again
+  const countSignatures = () => {
+    const counter = { signatures: 0 }
+    deps.accountFor = async () => ({
+      ...account,
+      signTransaction: (...args: Parameters<LocalAccount['signTransaction']>) => {
+        counter.signatures++
+        return account.signTransaction(...args)
+      },
+    })
+    return counter
+  }
+
   const create = async (overrides = {}) => {
     const tx = queuedTx(account.address, overrides)
     await store.createTx(tx, { day: '2026-09-17', costGwei: 1, capGwei: 10 ** 9 }, NOW.getTime())
@@ -161,6 +174,58 @@ describe('processTx', () => {
     expect(stored.attempts).toHaveLength(1)
     expect(parseTransaction(stored.attempts[0]!.raw).nonce).toBe(3)
     expect(chain.sent).toHaveLength(2)
+    // the refused signature at nonce 0 is kept, apart from the attempts the sweeper checks
+    expect(stored.abandonedAttempts).toHaveLength(1)
+    expect(stored.abandonedAttempts![0]).toMatchObject({ raw: chain.sent[0], rejected: 'nonce too low' })
+    expect(parseTransaction(stored.abandonedAttempts![0]!.raw).nonce).toBe(0)
+  })
+
+  it('leaves a redelivered transaction to the sweeper on nonce too low instead of signing at a new nonce', async () => {
+    const tx = await create()
+    // the first run's send reached the node, then the run died before recording it
+    chain.send = async (raw) => {
+      chain.sent.push(raw)
+      throw new Error('Lambda timed out')
+    }
+    await expect(processTx(deps, tx.txId)).rejects.toThrow('Lambda timed out')
+    const crashed = (await store.getTx(tx.txId))!
+    delete (chain as { send?: unknown }).send
+
+    // the transaction was mined, but the node answering the receipt read lags behind
+    const counter = countSignatures()
+    chain.sendOutcomes = [{ kind: 'nonce-too-low', message: 'nonce too low' }]
+    expect(await processTx(deps, tx.txId)).toBe('submitted')
+    const stored = (await store.getTx(tx.txId))!
+    expect(stored).toMatchObject({ status: 'submitted', nonce: 0 })
+    expect(stored.attempts).toEqual(crashed.attempts)
+    expect(stored.abandonedAttempts).toBeUndefined()
+    expect(counter.signatures).toBe(0)
+    expect(chain.sent).toEqual([crashed.attempts[0]!.raw, crashed.attempts[0]!.raw])
+    expect(await store.getNextNonce('billing', CHAIN_ID)).toBe(1)
+  })
+
+  it('resends the same bytes when the save after an accepted send conflicts', async () => {
+    const tx = await create()
+    const counter = countSignatures()
+    const realSave = store.saveTx.bind(store)
+    store.saveTx = async (next, at) => {
+      if (chain.sent.length === 1 && next.status === 'submitted') {
+        // another writer moves the version first, so this save loses
+        await realSave((await store.getTx(tx.txId))!, at)
+      }
+      return realSave(next, at)
+    }
+    await expect(processTx(deps, tx.txId)).rejects.toMatchObject({ name: 'TxConflictError' })
+    store.saveTx = realSave
+    const first = (await store.getTx(tx.txId))!
+    expect(first).toMatchObject({ status: 'queued', nonce: 0 })
+
+    chain.sendOutcomes = [{ kind: 'already-known' }]
+    expect(await processTx(deps, tx.txId)).toBe('submitted')
+    const stored = (await store.getTx(tx.txId))!
+    expect(stored.attempts).toEqual(first.attempts)
+    expect(chain.sent).toEqual([first.attempts[0]!.raw, first.attempts[0]!.raw])
+    expect(counter.signatures).toBe(1)
   })
 
   it('gives up after repeated nonce too low so SQS retries later', async () => {
@@ -168,6 +233,20 @@ describe('processTx', () => {
     chain.sendOutcomes = Array.from({ length: 5 }, () => ({ kind: 'nonce-too-low', message: 'nonce too low' }) as const)
     await expect(processTx(deps, tx.txId)).rejects.toThrow(/kept hitting nonce too low/)
     expect(chain.sent).toHaveLength(3)
+    // it holds the third nonce with the signature it last sent, and keeps the two it gave up
+    const held = (await store.getTx(tx.txId))!
+    expect(held).toMatchObject({ status: 'queued', nonce: 2 })
+    expect(held.attempts.map((a) => a.raw)).toEqual([chain.sent[2]])
+    expect(held.abandonedAttempts?.map((a) => a.raw)).toEqual([chain.sent[0], chain.sent[1]])
+
+    // the redelivery did not take that nonce, so it hands the transaction to the sweeper rather than throwing again
+    const counter = countSignatures()
+    expect(await processTx(deps, tx.txId)).toBe('submitted')
+    const settled = (await store.getTx(tx.txId))!
+    expect(settled).toMatchObject({ status: 'submitted', nonce: 2 })
+    expect(settled.attempts).toEqual(held.attempts)
+    expect(chain.sent[3]).toBe(held.attempts[0]!.raw)
+    expect(counter.signatures).toBe(0)
   })
 
   it('fails a refused transaction and queues a filler at the same nonce', async () => {
@@ -211,6 +290,18 @@ describe('processTx', () => {
     expect((await store.getTx(filler.txId))?.status).toBe('failed')
     expect(queue.sent).toEqual([])
     expect(logs).toContain('filler refused; the nonce stays open')
+  })
+
+  it('leaves a filler whose nonce is already used to the sweeper, without taking another nonce', async () => {
+    const filler = await create({ kind: 'filler', nonce: 2 })
+    chain.sendOutcomes = [{ kind: 'nonce-too-low', message: 'nonce too low' }]
+    expect(await processTx(deps, filler.txId)).toBe('submitted')
+    const stored = (await store.getTx(filler.txId))!
+    expect(stored).toMatchObject({ status: 'submitted', nonce: 2 })
+    expect(stored.attempts).toHaveLength(1)
+    expect(chain.sent).toEqual([stored.attempts[0]!.raw])
+    expect(await store.getNextNonce('billing', CHAIN_ID)).toBeUndefined()
+    expect(queue.sent).toEqual([])
   })
 
   it('skips a transaction that is missing or no longer queued', async () => {
