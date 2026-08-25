@@ -47,6 +47,9 @@ export interface RelayerChain {
   getBalance(address: Address): Promise<bigint>
   getBlockNumber(): Promise<number>
   getReceipt(hash: Hex): Promise<Receipt | undefined>
+  // asks every RPC URL: undefined only when all of them answered that there is no receipt, and throws when none had
+  // it but one could not answer
+  findReceipt(hash: Hex): Promise<Receipt | undefined>
   // whether the node knows the transaction at all, pending or mined
   isKnown(hash: Hex): Promise<boolean>
   send(raw: Hex): Promise<SendOutcome>
@@ -155,6 +158,19 @@ export function createRelayerChain(chainId: number, rpcUrls: string[], timeoutMs
     })
   // reads keep viem's default and try the next URL, which helps when one node lags behind
   const client = clientWith()
+  // a lagging node's null receipt is an answer, so the fallback never moves on from it; findReceipt asks each URL itself
+  const perUrl = rpcUrls.map((url) =>
+    createPublicClient({ transport: http(url, { timeout: timeoutMs, retryCount: 1 }), cacheTime: 0 }),
+  )
+  const receiptFrom = async (reader: PublicClient, hash: Hex): Promise<Receipt | undefined> => {
+    try {
+      const receipt = await reader.getTransactionReceipt({ hash })
+      return { hash, blockNumber: Number(receipt.blockNumber), blockHash: receipt.blockHash, status: receipt.status }
+    } catch (err) {
+      if (err instanceof TransactionReceiptNotFoundError) return undefined
+      throw err
+    }
+  }
   // A node's answer only stops the fallback when it settles the question: a refusal classifySendError recognises,
   // or, for an estimate, a real revert. A transport failure, a rate limit, or a -32603/-32601/-32002-style answer
   // means this node could not serve the call, not that it refused the tx or the call, so those still try the next
@@ -186,18 +202,14 @@ export function createRelayerChain(chainId: number, rpcUrls: string[], timeoutMs
       return Number(await client.getBlockNumber())
     },
     async getReceipt(hash) {
-      try {
-        const receipt = await client.getTransactionReceipt({ hash })
-        return {
-          hash,
-          blockNumber: Number(receipt.blockNumber),
-          blockHash: receipt.blockHash,
-          status: receipt.status,
-        }
-      } catch (err) {
-        if (err instanceof TransactionReceiptNotFoundError) return undefined
-        throw err
-      }
+      return receiptFrom(client, hash)
+    },
+    async findReceipt(hash) {
+      const answers = await Promise.allSettled(perUrl.map((reader) => receiptFrom(reader, hash)))
+      for (const answer of answers) if (answer.status === 'fulfilled' && answer.value) return answer.value
+      const failure = answers.find((answer) => answer.status === 'rejected')
+      if (failure) throw failure.reason
+      return undefined
     },
     async isKnown(hash) {
       try {

@@ -47,8 +47,9 @@ export type TxRecord = {
   // the policy fee cap is below the node's replacement minimum, so the sweeper can only rebroadcast
   feeCapReached?: boolean
   mined?: MinedRecord
-  // the head when the sweeper first saw this nonce used without a receipt for any of our hashes
+  // the head, and the time, when the sweeper first saw this nonce used without a receipt for any of our hashes
   nonceUsedAtBlock?: number
+  nonceUsedAt?: string
   error?: string
   fillerTxId?: string
   fillsTxId?: string
