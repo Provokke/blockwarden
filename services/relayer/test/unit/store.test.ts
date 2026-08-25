@@ -2,7 +2,7 @@ import { TransactionCanceledException, TransactionConflictException } from '@aws
 import { GetCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'
 import { describe, expect, it } from 'vitest'
 import { MAX_DATA_BYTES } from '../../src/policy.js'
-import { RelayerStore, TxConflictError } from '../../src/store.js'
+import { RelayerStore, StoreBusyError, TxConflictError } from '../../src/store.js'
 import { queuedTx } from '../helpers/fixtures.js'
 
 const FROM = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
@@ -42,10 +42,11 @@ describe('RelayerStore against DynamoDB transaction conflicts', () => {
     expect(writes()).toBe(3)
   })
 
-  it('gives up on a creation that keeps conflicting, with an error that says so', async () => {
+  it('gives up on a creation that keeps conflicting, with a recognisable busy error', async () => {
     const { store, writes } = fakeStore([cancelled('TransactionConflict', 'None', 'None')])
     await expect(store.createTx(queuedTx(FROM), SPEND, NOW)).rejects.toThrow(/conflict/)
-    expect(writes()).toBe(4)
+    await expect(store.createTx(queuedTx(FROM), SPEND, NOW)).rejects.toBeInstanceOf(StoreBusyError)
+    expect(writes()).toBe(8)
   })
 
   it('does not retry a creation whose condition failed alongside a conflict', async () => {
@@ -60,10 +61,11 @@ describe('RelayerStore against DynamoDB transaction conflicts', () => {
     expect(writes()).toBe(2)
   })
 
-  it('gives up on a nonce assignment that keeps conflicting', async () => {
+  it('gives up on a nonce assignment that keeps conflicting, with a recognisable busy error', async () => {
     const { store, writes } = fakeStore([cancelled('TransactionConflict', 'None')])
     await expect(store.assignNonce(queuedTx(FROM), 'x')).rejects.toThrow(/conflict/)
-    expect(writes()).toBe(4)
+    await expect(store.assignNonce(queuedTx(FROM), 'x')).rejects.toBeInstanceOf(StoreBusyError)
+    expect(writes()).toBe(8)
   })
 
   it('stops chasing a nonce counter that never stops moving', async () => {
