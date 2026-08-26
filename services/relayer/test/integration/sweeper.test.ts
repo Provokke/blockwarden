@@ -1,7 +1,7 @@
 import { isAcceptedReplacement } from '@blockwarden/core'
 import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import { keccak256, parseTransaction, type Hex, type LocalAccount } from 'viem'
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Attempt, TxRecord } from '../../src/records.js'
 import { signAttempt } from '../../src/sign.js'
 import { RelayerStore } from '../../src/store.js'
@@ -375,6 +375,104 @@ describe('sweepChain', () => {
       expect(await sweepChain(deps, FAR)).toMatchObject({ requeued: 2, resumed: 1 })
       expect(queue.sent.map((s) => s.txId)).toEqual([withNonce.txId, later.txId])
       expect(await store.getPause('billing', CHAIN_ID)).toBeUndefined()
+    })
+  })
+
+  describe('a sweep that meets trouble', () => {
+    const spend = { day: '2026-09-17', costGwei: 1, capGwei: 10 ** 9 }
+
+    it('counts a transaction that throws as an error, logs it, and carries on with the next', async () => {
+      const entries: { message: string; data?: Record<string, unknown> }[] = []
+      deps.log = (message, data) => entries.push({ message, data })
+      const broken = await submitted({ createdAt: '2026-09-17T00:00:01.000Z' })
+      const fine = await submitted({ nonce: 4, createdAt: '2026-09-17T00:00:02.000Z' })
+      chain.head = 120
+      chain.mine(broken.attempts[0]!.hash, 100)
+      chain.mine(fine.attempts[0]!.hash, 100)
+      const realGetReceipt = chain.getReceipt.bind(chain)
+      chain.getReceipt = async (hash) => {
+        if (hash === broken.attempts[0]!.hash) throw new Error('upstream went away')
+        return realGetReceipt(hash)
+      }
+      expect(await sweepChain(deps, FAR)).toMatchObject({ checked: 2, errors: 1, confirmed: 1 })
+      expect((await reload(broken)).status).toBe('submitted')
+      expect((await reload(fine)).status).toBe('confirmed')
+      expect(entries).toContainEqual({
+        message: expect.any(String),
+        data: { txId: broken.txId, error: 'upstream went away' },
+      })
+    })
+
+    it('counts a transaction whose signer has a malformed policy as an error, and carries on', async () => {
+      await store.putSigner(signerRecord({ signerId: 'broken', policy: { maxGasLimit: 'lots' } as never }))
+      await submitted({ signerId: 'broken', createdAt: '2026-09-17T00:00:01.000Z' })
+      const fine = await submitted({ nonce: 4, createdAt: '2026-09-17T00:00:02.000Z' })
+      chain.head = 120
+      chain.mine(fine.attempts[0]!.hash, 100)
+      expect(await sweepChain(deps, FAR)).toMatchObject({ errors: 1, confirmed: 1 })
+      expect((await reload(fine)).status).toBe('confirmed')
+    })
+
+    it('pages through every pending transaction in one sweep', async () => {
+      deps.pageSize = 2
+      const txs: TxRecord[] = []
+      for (let i = 0; i < 5; i++) {
+        const tx = queuedTx(account.address, { createdAt: `2026-09-17T00:00:0${i}.000Z` })
+        await store.createTx(tx, spend, START)
+        txs.push(tx)
+      }
+      nowMs = START + 3_600_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ checked: 5, requeued: 5, oldestPendingSeconds: 13 * 3600 })
+      expect(queue.sent.map((q) => q.txId).sort()).toEqual(txs.map((tx) => tx.txId).sort())
+    })
+
+    it("requeues a resumed signer's queued transactions that sit on a later page", async () => {
+      deps.pageSize = 1
+      // enqueued just now, so only the resume, not staleness, can send them back
+      const first = queuedTx(account.address, { createdAt: '2026-09-17T00:00:01.000Z', enqueuedAt: START })
+      const second = queuedTx(account.address, { createdAt: '2026-09-17T00:00:02.000Z', enqueuedAt: START })
+      for (const tx of [first, second]) await store.createTx(tx, spend, START)
+      await store.pause({
+        signerId: 'billing',
+        chainId: CHAIN_ID,
+        address: account.address,
+        requiredWei: '1',
+        since: 'x',
+      })
+      chain.balances.set(account.address.toLowerCase(), 1n)
+      expect(await sweepChain(deps, FAR)).toMatchObject({ resumed: 1, requeued: 2 })
+      expect(queue.sent.map((q) => q.txId)).toEqual([first.txId, second.txId])
+    })
+
+    it("stops requeuing a resumed signer's queue at the deadline", async () => {
+      const txs = [
+        queuedTx(account.address, { createdAt: '2026-09-17T00:00:01.000Z', enqueuedAt: START }),
+        queuedTx(account.address, { createdAt: '2026-09-17T00:00:02.000Z', enqueuedAt: START }),
+      ]
+      for (const tx of txs) await store.createTx(tx, spend, START)
+      await store.pause({
+        signerId: 'billing',
+        chainId: CHAIN_ID,
+        address: account.address,
+        requiredWei: '1',
+        since: 'x',
+      })
+      chain.balances.set(account.address.toLowerCase(), 1n)
+      // the deadline passes while the first requeue is being sent
+      const realNow = Date.now.bind(Date)
+      let late = 0
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + late)
+      const deadline = realNow() + 60_000
+      const send = queue.send.bind(queue)
+      queue.send = async (tx) => {
+        await send(tx)
+        late = 120_000
+      }
+      try {
+        expect(await sweepChain(deps, deadline)).toMatchObject({ resumed: 1, requeued: 1 })
+      } finally {
+        clock.mockRestore()
+      }
     })
   })
 
