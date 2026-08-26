@@ -20,6 +20,10 @@ export type PauseRecord = { signerId: string; chainId: number; address: Address;
 
 export type CreateResult = { created: true } | { created: false; reason: 'duplicate' | 'spend-cap' }
 
+export type PendingCursor = Record<string, unknown>
+
+export type PendingPage = { txs: TxRecord[]; cursor?: PendingCursor }
+
 export type SpendReservation = { day: string; costGwei: number; capGwei: number }
 
 export class TxConflictError extends Error {
@@ -342,16 +346,22 @@ export class RelayerStore {
   }
 
   async listPending(chainId: number, limit: number): Promise<TxRecord[]> {
-    const { Items } = await this.doc.send(
+    return (await this.listPendingPage(chainId, limit)).txs
+  }
+
+  // one page of the chain's unsettled transactions, oldest first; pass the cursor back to read the next page
+  async listPendingPage(chainId: number, limit: number, cursor?: PendingCursor): Promise<PendingPage> {
+    const { Items, LastEvaluatedKey } = await this.doc.send(
       new QueryCommand({
         TableName: this.tableName,
         IndexName: GSI2,
         KeyConditionExpression: 'GSI2PK = :pk',
         ExpressionAttributeValues: { ':pk': keys.pendingTxs(chainId) },
         Limit: limit,
+        ...(cursor ? { ExclusiveStartKey: cursor } : {}),
       }),
     )
-    return (Items ?? []).map(fromItem)
+    return { txs: (Items ?? []).map(fromItem), ...(LastEvaluatedKey ? { cursor: LastEvaluatedKey } : {}) }
   }
 
   async getPause(signerId: string, chainId: number): Promise<PauseRecord | undefined> {
