@@ -4,8 +4,9 @@ import { keccak256, parseTransaction, type Hex, type LocalAccount } from 'viem'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Attempt, TxRecord } from '../../src/records.js'
 import { signAttempt } from '../../src/sign.js'
+import { processTx, type SignerDeps } from '../../src/signer.js'
 import { RelayerStore } from '../../src/store.js'
-import { MAX_ATTEMPTS, sweepChain, type SweeperDeps } from '../../src/sweeper.js'
+import { MAX_ATTEMPTS, MAX_SIGNED_ATTEMPTS, sweepChain, type SweeperDeps } from '../../src/sweeper.js'
 import { FakeChain, receiptAt } from '../helpers/fake-chain.js'
 import { CHAIN_ID, localAccount, queuedTx, RecordingQueue, signerRecord } from '../helpers/fixtures.js'
 
@@ -221,6 +222,78 @@ describe('sweepChain', () => {
       expect(second.needsBump).toBeUndefined()
       expect(BigInt(second.attempts[2]!.maxFeePerGas)).toBeGreaterThan(BigInt(second.attempts[1]!.maxFeePerGas))
       expect(second.attempts[2]!.rejected).toBe('exceeds block gas limit')
+    })
+
+    it('saves a replacement before sending it', async () => {
+      const tx = await submitted()
+      chain.nonces.latest = 3
+      nowMs = START + 90_000
+      let storedAtSend: TxRecord | undefined
+      chain.onSend = async () => {
+        storedAtSend = await reload(tx)
+      }
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1 })
+      expect(storedAtSend!.attempts).toHaveLength(2)
+      expect(storedAtSend!.attempts[1]!.raw).toBe(chain.sent[0])
+    })
+
+    it('does not count refused attempts towards the attempt limit', async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const attempts: Attempt[] = []
+      for (let i = 0; i < MAX_ATTEMPTS + 4; i++) {
+        const signed = await attempt(base, BigInt(i + 1) * GWEI, 1n + BigInt(i))
+        attempts.push(i < MAX_ATTEMPTS - 1 ? signed : { ...signed, rejected: 'replacement transaction underpriced' })
+      }
+      const tx = await submitted({ attempts })
+      chain.nonces.latest = 3
+      nowMs = START + 90_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1, feeCapReached: 0 })
+      const replaced = await reload(tx)
+      expect(replaced.attempts).toHaveLength(MAX_ATTEMPTS + 5)
+      expect(chain.sent).toEqual([replaced.attempts.at(-1)!.raw])
+
+      // that one was accepted, so the next replacement meets the limit
+      nowMs += 90_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 0, feeCapReached: 1 })
+    })
+
+    it(`keeps the bytes of at most ${MAX_SIGNED_ATTEMPTS} attempts, taking them from the oldest refused ones`, async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const attempts: Attempt[] = []
+      // live at 0 and 2..9, refused at 1 and from 10 on
+      for (let i = 0; i < MAX_SIGNED_ATTEMPTS; i++) {
+        const signed = await attempt(base, BigInt(i + 1) * GWEI, 1n + BigInt(i))
+        attempts.push(i === 1 || i >= MAX_ATTEMPTS ? { ...signed, rejected: 'exceeds block gas limit' } : signed)
+      }
+      const tx = await submitted({ attempts })
+      chain.nonces.latest = 3
+      nowMs = START + 90_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1 })
+      const replaced = await reload(tx)
+      expect(replaced.attempts).toHaveLength(MAX_SIGNED_ATTEMPTS + 1)
+      expect(replaced.attempts.filter((a) => a.raw !== '0x')).toHaveLength(MAX_SIGNED_ATTEMPTS)
+      expect(replaced.attempts[1]).toEqual({ ...attempts[1], raw: '0x' })
+      expect(replaced.attempts.slice(0, -1).filter((_, i) => i !== 1)).toEqual(attempts.filter((_, i) => i !== 1))
+    })
+
+    it('pauses the signer when a replacement is refused for insufficient funds', async () => {
+      const tx = await submitted()
+      chain.nonces.latest = 3
+      nowMs = START + 90_000
+      chain.sendOutcomes = [{ kind: 'insufficient-funds', message: 'insufficient funds for gas * price + value' }]
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1, failed: 0 })
+      const stored = await reload(tx)
+      const refused = stored.attempts[1]!
+      expect(stored.status).toBe('submitted')
+      expect(refused.rejected).toBe('insufficient funds for gas * price + value')
+      expect(await store.getPause('billing', CHAIN_ID)).toEqual({
+        signerId: 'billing',
+        chainId: CHAIN_ID,
+        address: account.address,
+        requiredWei: (BigInt(tx.gasLimit) * BigInt(refused.maxFeePerGas)).toString(),
+        since: new Date(nowMs).toISOString(),
+      })
+      expect(logs).toContain('signer paused: insufficient funds')
     })
 
     it('rebroadcasts the newest attempt the node did not refuse', async () => {
@@ -474,6 +547,46 @@ describe('sweepChain', () => {
         clock.mockRestore()
       }
     })
+  })
+
+  it('settles a transaction the signer left behind on nonce too low once its receipt appears', async () => {
+    const tx = queuedTx(account.address)
+    await store.createTx(tx, { day: '2026-09-17', costGwei: 1, capGwei: 10 ** 9 }, START)
+    const signerDeps: SignerDeps = {
+      store,
+      chainFor: () => chain,
+      accountFor: async () => account,
+      queue,
+      now: () => new Date(nowMs),
+      newTxId: () => 'filler',
+      reconciled: new Set(),
+      log: (message) => logs.push(message),
+    }
+    // the first run's send reached the node, then the run died before recording it
+    chain.send = async (raw) => {
+      chain.sent.push(raw)
+      throw new Error('Lambda timed out')
+    }
+    await expect(processTx(signerDeps, tx.txId)).rejects.toThrow('Lambda timed out')
+    delete (chain as { send?: unknown }).send
+    chain.sendOutcomes = [{ kind: 'nonce-too-low', message: 'nonce too low' }]
+    expect(await processTx(signerDeps, tx.txId)).toBe('submitted')
+    const handedOff = await reload(tx)
+    expect(handedOff).toMatchObject({ status: 'submitted', nonce: 0 })
+
+    // mined, but the node the sweeper reads lags: the nonce reads as used with no receipt yet
+    chain.nonces.latest = 1
+    chain.head = 100
+    await sweepChain(deps, FAR)
+    expect(await reload(tx)).toMatchObject({ status: 'submitted', nonceUsedAtBlock: 100 })
+
+    chain.head = 101
+    chain.mine(handedOff.attempts[0]!.hash, 99)
+    expect(await sweepChain(deps, FAR)).toMatchObject({ mined: 1, failed: 0 })
+    expect((await reload(tx)).status).toBe('mined')
+    chain.head = 103
+    expect(await sweepChain(deps, FAR)).toMatchObject({ confirmed: 1 })
+    expect(await reload(tx)).toMatchObject({ status: 'confirmed', mined: { hash: handedOff.attempts[0]!.hash } })
   })
 
   it('counts a conflicting write and carries on with the rest', async () => {
