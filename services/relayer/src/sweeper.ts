@@ -50,8 +50,14 @@ export type SweepSummary = {
   oldestPendingSeconds: number
 }
 
-// replacements stop here: every attempt keeps its raw bytes on the item, and DynamoDB caps an item at 400 KB
+// replacements stop once this many signatures were not refused; a refused one never reached a mempool, so it does
+// not count, or a run of underpriced answers would use the limit up
 export const MAX_ATTEMPTS = 10
+
+// DynamoDB caps an item at 400 KB, and with the 8 KB calldata limit a raw is about 17 KB. The tx's own data and
+// the signer's abandoned attempts take room too, so past this many the oldest refused attempts give up their bytes
+// and keep only their hash, which is what a receipt lookup needs. Refused bytes are never rebroadcast anyway.
+export const MAX_SIGNED_ATTEMPTS = 16
 
 const LIST_LIMIT = 100
 
@@ -195,7 +201,7 @@ async function checkMined(deps: SweeperDeps, tx: TxRecord, head: number, summary
     await deps.store.saveTx(withStatus(rest, 'submitted', at), at)
     summary.reorged++
     const raw = tx.attempts.find((a) => a.hash === mined.hash)?.raw
-    if (raw) await deps.chain.send(raw)
+    if (raw && raw !== '0x') await deps.chain.send(raw)
     return
   }
   if (head - mined.blockNumber + 1 >= deps.settings.confirmations) {
@@ -291,13 +297,14 @@ async function replace(deps: SweeperDeps, signer: SignerRecord, tx: TxRecord, su
   // every replacement clears the one before it, so the latest attempt, refused or not, carries the highest fees
   const previous = attemptFees(latestAttempt(tx)!)
   const bump = bumpFees(previous, await deps.chain.estimateFees(), feeCap(signer.policy))
-  if (!bump.ok || tx.attempts.length >= MAX_ATTEMPTS) {
+  const unrefused = tx.attempts.filter((a) => a.rejected === undefined).length
+  if (!bump.ok || unrefused >= MAX_ATTEMPTS) {
     if (!tx.feeCapReached) {
       await deps.store.saveTx({ ...tx, feeCapReached: true }, at)
       deps.log('cannot replace: the fee cap or the attempt limit is reached', {
         txId: tx.txId,
         required: bump.ok ? undefined : { ...bump.required },
-        attempts: tx.attempts.length,
+        attempts: unrefused,
       })
     }
     summary.feeCapReached++
@@ -306,13 +313,27 @@ async function replace(deps: SweeperDeps, signer: SignerRecord, tx: TxRecord, su
   const account = await deps.accountFor(signer)
   const attempt = await signAttempt(account, tx, bump.fees, deps.now().getTime())
   const { needsBump: _b, ...rest } = tx
-  const saved = await deps.store.saveTx({ ...rest, attempts: [...tx.attempts, attempt] }, at)
+  const saved = await deps.store.saveTx({ ...rest, attempts: [...makeRoom(tx.attempts), attempt] }, at)
   const outcome = await deps.chain.send(attempt.raw)
   summary.replaced++
   if (outcome.kind === 'underpriced' || outcome.kind === 'rejected' || outcome.kind === 'insufficient-funds') {
+    if (outcome.kind === 'insufficient-funds') {
+      await deps.store.pauseForFunds(tx, account.address, attempt.maxFeePerGas, at)
+      deps.log('signer paused: insufficient funds', { signerId: signer.signerId, chainId: tx.chainId, txId: tx.txId })
+    }
     // the earlier attempts may still be in the mempool, so a refused replacement does not fail the transaction
     const attempts = saved.attempts.map((a) => (a.hash === attempt.hash ? { ...a, rejected: outcome.message } : a))
     await deps.store.saveTx({ ...saved, attempts, ...(outcome.kind === 'underpriced' ? { needsBump: true } : {}) }, at)
   }
   return true
+}
+
+// leaves room for one more signed attempt by dropping the bytes of the oldest refused ones
+function makeRoom(attempts: TxRecord['attempts']): TxRecord['attempts'] {
+  let over = attempts.filter((a) => a.raw !== '0x').length + 1 - MAX_SIGNED_ATTEMPTS
+  return attempts.map((a) => {
+    if (over <= 0 || a.rejected === undefined || a.raw === '0x') return a
+    over--
+    return { ...a, raw: '0x' }
+  })
 }
