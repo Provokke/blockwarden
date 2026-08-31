@@ -62,8 +62,9 @@ function rpcAnswer(err: unknown): RpcRequestError | undefined {
 }
 
 // The node's own words when it answered, else viem's short messages. Never a BaseError's full message: that repeats
-// the request body, which for a send is the whole raw transaction.
-function describeError(err: unknown): string {
+// the request body, which for a send is the whole raw transaction, and can carry the RPC URL, which may hold an
+// API key.
+export function describeError(err: unknown): string {
   const answer = rpcAnswer(err)
   // a node can answer with no "message" field, or with "error" as a bare string; details is then undefined and the
   // chain below still has viem's own shortMessage to fall back on
