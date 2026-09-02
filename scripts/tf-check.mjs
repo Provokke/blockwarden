@@ -20,8 +20,11 @@ function run(label, args) {
 }
 
 run('terraform fmt', [...asCaller, '-w', '/tf', terraform, 'fmt', '-check', '-recursive'])
-run('terraform init', [...asCaller, '-w', '/tf/envs/demo', terraform, 'init', '-backend=false', '-input=false'])
-run('terraform validate', [...asCaller, '-w', '/tf/envs/demo', terraform, 'validate'])
+// the demo stack uses both modules; the example deploys the relayer module alone, with its defaults
+for (const root of ['envs/demo', 'examples/relayer-only']) {
+  run(`terraform init ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'init', '-backend=false', '-input=false'])
+  run(`terraform validate ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'validate'])
+}
 run('tflint', [
   '-w',
   '/tf',
