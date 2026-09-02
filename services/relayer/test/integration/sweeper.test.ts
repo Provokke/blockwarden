@@ -455,8 +455,8 @@ describe('sweepChain', () => {
     const spend = { day: '2026-09-17', costGwei: 1, capGwei: 10 ** 9 }
 
     it('counts a transaction that throws as an error, logs it, and carries on with the next', async () => {
-      const entries: { message: string; data?: Record<string, unknown> }[] = []
-      deps.log = (message, data) => entries.push({ message, data })
+      const entries: { message: string; data?: Record<string, unknown>; level?: string }[] = []
+      deps.log = (message, data, level) => entries.push({ message, data, level })
       const broken = await submitted({ createdAt: '2026-09-17T00:00:01.000Z' })
       const fine = await submitted({ nonce: 4, createdAt: '2026-09-17T00:00:02.000Z' })
       chain.head = 120
@@ -473,6 +473,7 @@ describe('sweepChain', () => {
       expect(entries).toContainEqual({
         message: expect.any(String),
         data: { txId: broken.txId, error: 'upstream went away' },
+        level: 'error',
       })
     })
 
