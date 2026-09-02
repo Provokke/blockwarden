@@ -18,8 +18,10 @@ export type RelayRequest = {
   idempotencyKey: string
   // free text of up to 128 characters, stored and returned with the transaction
   reference?: string
-  // an earlier txId: this one is not estimated or signed until that one is confirmed and succeeded, and it fails
-  // if that one does not succeed; gasLimit is required, because there is no estimate to derive it from
+  // an earlier txId on the same chain, for a signer this API key may use: this one is not estimated or signed
+  // until that one is confirmed and succeeded, and it fails (error set, dependency_not_found/dependency_failed on
+  // submit) if that one is missing, fails, is cancelled or reverts; gasLimit is required, because there is no
+  // estimate to derive it from until the dependency lands
   dependsOn?: string
 }
 
