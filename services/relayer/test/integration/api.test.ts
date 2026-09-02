@@ -388,7 +388,10 @@ describe('relayer API handler', () => {
       await store.putApiKey({ hash: hashApiKey('bw_other'), signerIds: ['other'], label: 'x', createdAt: 'x' })
       const theirs = await call(event(ROUTES.submit, { body: request({ signerId: 'other' }), apiKey: 'bw_other' }))
       expect(theirs.status).toBe(202)
-      expect(await depend({ dependsOn: theirs.body.txId })).toMatchObject({ status: 422 })
+      expect(await depend({ dependsOn: theirs.body.txId })).toMatchObject({
+        status: 422,
+        body: { error: { code: 'dependency_not_found' } },
+      })
       const first = await call(event(ROUTES.submit, { body: request() }))
       const tx = (await store.getTx(first.body.txId))!
       await store.saveTx({ ...tx, chainId: 421614 }, 'x')
@@ -416,6 +419,28 @@ describe('relayer API handler', () => {
       expect(await depend({ dependsOn: tx.txId })).toMatchObject({
         status: 422,
         body: { error: { code: 'dependency_failed' } },
+      })
+    })
+
+    it('refuses a dependency that was cancelled', async () => {
+      const first = await call(event(ROUTES.submit, { body: request() }))
+      const tx = (await store.getTx(first.body.txId))!
+      await store.saveTx({ ...tx, status: 'cancelled' }, 'x')
+      expect(await depend({ dependsOn: tx.txId })).toMatchObject({
+        status: 422,
+        body: { error: { code: 'dependency_failed' } },
+      })
+    })
+
+    it('is part of the idempotency request hash', async () => {
+      const a = await call(event(ROUTES.submit, { body: request({ idempotencyKey: 'dep-a' }) }))
+      const b = await call(event(ROUTES.submit, { body: request({ idempotencyKey: 'dep-b' }) }))
+      const key = 'depends-on-key'
+      const first = await depend({ idempotencyKey: key, dependsOn: a.body.txId })
+      expect(first.status).toBe(202)
+      expect(await depend({ idempotencyKey: key, dependsOn: b.body.txId })).toMatchObject({
+        status: 409,
+        body: { error: { code: 'idempotency_conflict' } },
       })
     })
   })

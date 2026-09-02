@@ -381,6 +381,41 @@ describe('processTx', () => {
       expect(await store.getNextNonce('billing', CHAIN_ID)).toBeUndefined()
     })
 
+    it('fails without taking a nonce when its dependency was cancelled', async () => {
+      const dependency = await create()
+      await store.saveTx({ ...dependency, status: 'cancelled' }, 'x')
+      const tx = await create({ dependsOn: dependency.txId })
+      expect(await processTx(deps, tx.txId)).toBe('failed')
+      expect(await store.getTx(tx.txId)).toMatchObject({
+        status: 'failed',
+        error: expect.stringContaining('did not succeed'),
+      })
+      expect(await store.getNextNonce('billing', CHAIN_ID)).toBeUndefined()
+      expect(queue.sent).toEqual([])
+    })
+
+    it('fails without taking a nonce when its dependency record no longer exists', async () => {
+      const tx = await create({ dependsOn: 'no-such-tx' })
+      expect(await processTx(deps, tx.txId)).toBe('failed')
+      expect(await store.getTx(tx.txId)).toMatchObject({
+        status: 'failed',
+        error: expect.stringContaining('did not succeed'),
+      })
+      expect(await store.getNextNonce('billing', CHAIN_ID)).toBeUndefined()
+      expect(queue.sent).toEqual([])
+    })
+
+    it('fails without taking a nonce when the node refuses the call outright, not with a revert', async () => {
+      const dependency = await create()
+      await settle(dependency, 'confirmed')
+      const tx = await create({ dependsOn: dependency.txId })
+      chain.estimateFailure = new EstimateError('failed', 'gas required exceeds allowance')
+      expect(await processTx(deps, tx.txId)).toBe('failed')
+      expect((await store.getTx(tx.txId))?.error).toContain('gas required exceeds allowance')
+      expect(await store.getNextNonce('billing', CHAIN_ID)).toBeUndefined()
+      expect(queue.sent).toEqual([])
+    })
+
     it('lets an RPC failure during that estimate propagate for a retry', async () => {
       const dependency = await create()
       await settle(dependency, 'confirmed')
@@ -388,6 +423,17 @@ describe('processTx', () => {
       chain.estimateFailure = new EstimateError('unavailable', 'down')
       await expect(processTx(deps, tx.txId)).rejects.toThrow('down')
       expect((await store.getTx(tx.txId))?.status).toBe('queued')
+    })
+
+    it('warns but still sends when the caller-set gasLimit is below the post-dependency estimate', async () => {
+      const dependency = await create()
+      await settle(dependency, 'confirmed')
+      chain.gas = 90_000n
+      const tx = await create({ dependsOn: dependency.txId, gasLimit: '60000' })
+      expect(await processTx(deps, tx.txId)).toBe('submitted')
+      expect((await store.getTx(tx.txId))?.nonce).toBe(0)
+      expect(logs).toContain('dependent transaction gas limit is below the estimate')
+      expect(levels['dependent transaction gas limit is below the estimate']).toBe('warn')
     })
   })
 
