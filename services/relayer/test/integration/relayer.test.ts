@@ -264,6 +264,49 @@ describe('relayer end to end', () => {
     expect(await record(tx.txId)).toMatchObject({ status: 'mined', nonce: 0 })
   })
 
+  it('holds a transaction that depends on another until that one is confirmed', async () => {
+    const call = (functionName: 'arm' | 'fire') => encodeFunctionData({ abi: TARGET_ABI, functionName })
+    // without the dependency the API refuses fire, because its estimate reverts until arm is mined
+    await expect(
+      relay(client, { signerId, chainId: anvil.chainId, to: target, data: call('fire'), idempotencyKey: 'fire-alone' }),
+    ).rejects.toMatchObject({ status: 422, code: 'estimate_reverted' })
+
+    const arm = await relay(client, {
+      signerId,
+      chainId: anvil.chainId,
+      to: target,
+      data: call('arm'),
+      idempotencyKey: 'arm',
+    })
+    const fire = await relay(client, {
+      signerId,
+      chainId: anvil.chainId,
+      to: target,
+      data: call('fire'),
+      gasLimit: 100_000n,
+      dependsOn: arm.txId,
+      idempotencyKey: 'fire',
+    })
+    await drain()
+    expect(await record(arm.txId)).toMatchObject({ status: 'submitted', nonce: 0 })
+    expect((await record(fire.txId)).nonce).toBeUndefined()
+
+    await sweep()
+    await anvil.mine(4)
+    // confirms arm; a second sweep covers the index listing fire before arm
+    await sweep()
+    await sweep()
+    expect((await record(arm.txId)).status).toBe('confirmed')
+    await drain()
+    await sweep()
+    expect(await getTx(client, fire.txId)).toMatchObject({
+      status: 'mined',
+      nonce: 1,
+      receiptStatus: 'success',
+      dependsOn: arm.txId,
+    })
+  })
+
   it('reconciles the nonce on a cold start after the key was used elsewhere', async () => {
     await anvil.sendExternal(privateKey)
     const tx = await relayPing(9n)
