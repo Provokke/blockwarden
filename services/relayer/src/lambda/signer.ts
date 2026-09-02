@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { SQSBatchResponse, SQSEvent } from 'aws-lambda'
+import type { Context, SQSBatchResponse, SQSEvent } from 'aws-lambda'
 import { processRecords } from '../batch.js'
 import { processTx, type SignerDeps } from '../signer.js'
 import { createLogger, createRuntime, once } from './runtime.js'
@@ -21,7 +21,12 @@ const deps = once<SignerDeps>(async () => {
   }
 })
 
-export async function handler(event: SQSEvent): Promise<SQSBatchResponse> {
+export async function handler(event: SQSEvent, context: Context): Promise<SQSBatchResponse> {
   const signerDeps = await deps()
-  return processRecords(event.Records, (txId) => processTx(signerDeps, txId), signerDeps.log)
+  return processRecords(
+    event.Records,
+    (txId) => processTx(signerDeps, txId),
+    signerDeps.log,
+    () => context.getRemainingTimeInMillis(),
+  )
 }
