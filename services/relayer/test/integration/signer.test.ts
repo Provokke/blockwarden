@@ -1,6 +1,7 @@
 import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import { keccak256, parseTransaction, type LocalAccount } from 'viem'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { EstimateError } from '../../src/chain.js'
 import { processTx, type SignerDeps } from '../../src/signer.js'
 import { RelayerStore } from '../../src/store.js'
 import { FakeChain } from '../helpers/fake-chain.js'
@@ -309,6 +310,79 @@ describe('processTx', () => {
     const tx = await create({ status: 'submitted' })
     expect(await processTx(deps, tx.txId)).toBe('skipped')
     expect(chain.sent).toEqual([])
+  })
+
+  describe('a dependent transaction', () => {
+    const settle = async (
+      tx: Awaited<ReturnType<typeof create>>,
+      status: 'confirmed' | 'failed',
+      receipt: 'success' | 'reverted' = 'success',
+    ) =>
+      store.saveTx(
+        {
+          ...tx,
+          status,
+          ...(status === 'confirmed'
+            ? {
+                mined: {
+                  hash: `0x${'1'.repeat(64)}`,
+                  blockNumber: 1,
+                  blockHash: `0x${'2'.repeat(64)}`,
+                  status: receipt,
+                },
+              }
+            : {}),
+        },
+        'x',
+      )
+
+    it('waits without a nonce while its dependency is unsettled, then estimates and sends', async () => {
+      const dependency = await create({ status: 'mined' })
+      const tx = await create({ dependsOn: dependency.txId })
+      expect(await processTx(deps, tx.txId)).toBe('waiting')
+      expect((await store.getTx(tx.txId))?.nonce).toBeUndefined()
+      expect(chain.sent).toEqual([])
+
+      await settle(dependency, 'confirmed')
+      expect(await processTx(deps, tx.txId)).toBe('submitted')
+      expect(chain.calls).toContain('estimateGas')
+      expect((await store.getTx(tx.txId))?.nonce).toBe(0)
+    })
+
+    it.each([
+      ['failed', 'success'],
+      ['confirmed', 'reverted'],
+    ] as const)('fails without taking a nonce when its dependency is %s with receipt %s', async (status, receipt) => {
+      const dependency = await create()
+      await settle(dependency, status, receipt)
+      const tx = await create({ dependsOn: dependency.txId })
+      expect(await processTx(deps, tx.txId)).toBe('failed')
+      expect(await store.getTx(tx.txId)).toMatchObject({
+        status: 'failed',
+        error: expect.stringContaining('did not succeed'),
+      })
+      expect(await store.getNextNonce('billing', CHAIN_ID)).toBeUndefined()
+      expect(queue.sent).toEqual([])
+    })
+
+    it('fails without taking a nonce when the call still reverts after the dependency', async () => {
+      const dependency = await create()
+      await settle(dependency, 'confirmed')
+      const tx = await create({ dependsOn: dependency.txId })
+      chain.estimateFailure = new EstimateError('reverted', 'eth_estimateGas reverted', '0xdeadbeef')
+      expect(await processTx(deps, tx.txId)).toBe('failed')
+      expect((await store.getTx(tx.txId))?.error).toContain('0xdeadbeef')
+      expect(await store.getNextNonce('billing', CHAIN_ID)).toBeUndefined()
+    })
+
+    it('lets an RPC failure during that estimate propagate for a retry', async () => {
+      const dependency = await create()
+      await settle(dependency, 'confirmed')
+      const tx = await create({ dependsOn: dependency.txId })
+      chain.estimateFailure = new EstimateError('unavailable', 'down')
+      await expect(processTx(deps, tx.txId)).rejects.toThrow('down')
+      expect((await store.getTx(tx.txId))?.status).toBe('queued')
+    })
   })
 
   it('lets a signing failure propagate with the nonce kept on the transaction', async () => {

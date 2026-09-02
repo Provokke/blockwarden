@@ -18,7 +18,10 @@ import { foundry } from 'viem/chains'
 export const TARGET_ABI = parseAbi([
   'function ping(uint256 value)',
   'function fail(uint256 code)',
+  'function arm()',
+  'function fire()',
   'error NotAllowed(uint256 code)',
+  'error NotArmed()',
   'event Pinged(address indexed sender, uint256 value)',
 ])
 
