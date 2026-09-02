@@ -3,6 +3,11 @@ output "table_name" {
   value       = aws_dynamodb_table.main.name
 }
 
+output "table_arn" {
+  description = "DynamoDB table ARN, for modules that share the table such as the relayer."
+  value       = aws_dynamodb_table.main.arn
+}
+
 output "table_stream_arn" {
   description = "Stream consumed by the actions dispatcher in a later milestone."
   value       = aws_dynamodb_table.main.stream_arn
