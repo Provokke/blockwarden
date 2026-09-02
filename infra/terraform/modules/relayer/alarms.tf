@@ -67,6 +67,25 @@ resource "aws_cloudwatch_metric_alarm" "errors" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [local.alarm_topic_arn]
+  ok_actions          = [local.alarm_topic_arn]
+}
+
+# nothing else reports the sweeper running at all: an unhandled crash before its own instrumentation, or a
+# scheduler misconfiguration, would otherwise go unnoticed
+resource "aws_cloudwatch_metric_alarm" "sweeper_not_running" {
+  alarm_name          = "${var.name}-relayer-sweeper-not-running"
+  alarm_description   = "The relayer sweeper has not been invoked in the last 10 minutes."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Invocations"
+  dimensions          = { FunctionName = aws_lambda_function.relayer["sweeper"].function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 2
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [local.alarm_topic_arn]
+  ok_actions          = [local.alarm_topic_arn]
 }
 
 # the API handler turns its own failures into 500 responses, so they never count as Lambda errors
@@ -98,4 +117,5 @@ resource "aws_cloudwatch_metric_alarm" "dead_letters" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [local.alarm_topic_arn]
+  ok_actions          = [local.alarm_topic_arn]
 }

@@ -20,6 +20,8 @@ data "aws_caller_identity" "current" {}
 
 data "aws_region" "current" {}
 
+data "aws_partition" "current" {}
+
 data "aws_kms_alias" "ssm" {
   name = "alias/aws/ssm"
 }
@@ -41,7 +43,7 @@ locals {
     stuckAfterSeconds = c.stuck_after_seconds
   }])
 
-  rpc_parameter_arns = [for c in var.chains : "arn:aws:ssm:${local.region}:${local.account_id}:parameter${c.rpc_urls_parameter}"]
+  rpc_parameter_arns = [for c in var.chains : "arn:${data.aws_partition.current.partition}:ssm:${local.region}:${local.account_id}:parameter${c.rpc_urls_parameter}"]
 }
 
 data "aws_iam_policy_document" "lambda_assume" {
