@@ -1,4 +1,6 @@
 # How a downstream project deploys the relayer alone: its own table, its own alarm topic, and an API key in SSM.
+# A module-created API key such as this one is stored in Terraform state as well as SSM; `pnpm --filter
+# @blockwarden/relayer run apikey:create` keeps a key out of state.
 terraform {
   required_version = ">= 1.16.0"
   required_providers {
