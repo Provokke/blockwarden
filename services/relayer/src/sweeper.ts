@@ -27,7 +27,7 @@ export type SweeperDeps = {
   now(): Date
   // a queued transaction older than this is sent to the queue again
   requeueAfterMs: number
-  log(message: string, data?: Record<string, unknown>): void
+  log(message: string, data?: Record<string, unknown>, level?: 'warn' | 'error'): void
   // pending transactions read per page; tests set it low to cross page boundaries
   pageSize?: number
 }
@@ -137,7 +137,7 @@ function countFailure(deps: SweeperDeps, tx: TxRecord, err: unknown, summary: Sw
     return
   }
   summary.errors++
-  deps.log('sweeping a transaction failed', { txId: tx.txId, error: describeError(err) })
+  deps.log('sweeping a transaction failed', { txId: tx.txId, error: describeError(err) }, 'error')
 }
 
 type PauseState = 'active' | 'paused' | 'resumed'
@@ -241,10 +241,11 @@ async function checkSubmitted(
         receipt = await deps.chain.findReceipt(attempt.hash)
       } catch (err) {
         // a URL that could not answer might be the one with the receipt
-        deps.log('receipt check failed on an RPC URL; not failing the transaction this sweep', {
-          txId: tx.txId,
-          error: describeError(err),
-        })
+        deps.log(
+          'receipt check failed on an RPC URL; not failing the transaction this sweep',
+          { txId: tx.txId, error: describeError(err) },
+          'warn',
+        )
         return
       }
       if (receipt) return markMined(deps, tx, receipt, head, summary)

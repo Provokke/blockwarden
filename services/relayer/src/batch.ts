@@ -7,7 +7,7 @@ import type { TxMessage } from './queue.js'
 export async function processRecords(
   records: SQSRecord[],
   processTx: (txId: string) => Promise<unknown>,
-  log: (message: string, data?: Record<string, unknown>) => void,
+  log: (message: string, data?: Record<string, unknown>, level?: 'warn' | 'error') => void,
 ): Promise<SQSBatchResponse> {
   const failedGroups = new Set<string>()
   const batchItemFailures: SQSBatchResponse['batchItemFailures'] = []
@@ -23,7 +23,11 @@ export async function processRecords(
       if (typeof txId !== 'string' || txId === '') throw new Error('message body has no txId')
       await processTx(txId)
     } catch (err) {
-      log('message failed; SQS will deliver it again', { messageId: record.messageId, error: describeError(err) })
+      log(
+        'message failed; SQS will deliver it again',
+        { messageId: record.messageId, error: describeError(err) },
+        'error',
+      )
       failedGroups.add(group)
       batchItemFailures.push({ itemIdentifier: record.messageId })
     }

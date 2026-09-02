@@ -83,7 +83,7 @@ describe('relayer API handler', () => {
       queue,
       now: () => new Date('2026-09-17T12:00:00.000Z'),
       newTxId: () => `tx-${++ids}`,
-      log: (message) => logs.push(message),
+      log: (message, _data, level) => logs.push(level ? `${level}: ${message}` : message),
     })
   })
 
@@ -108,12 +108,12 @@ describe('relayer API handler', () => {
         queue,
         now: () => new Date(),
         newTxId: () => 'x',
-        log: (message) => logs.push(message),
+        log: (message, _data, level) => logs.push(level ? `${level}: ${message}` : message),
       })
       const result = await broken(event(ROUTES.getTx, { txId: 'x' }))
       expect(result.statusCode).toBe(500)
       expect(result.body).not.toContain('dynamo down')
-      expect(logs).toEqual(['request failed'])
+      expect(logs).toEqual(['error: request failed'])
     })
 
     it('answers 500 without detail when something that is not an Error is thrown, and logs it', async () => {
@@ -128,11 +128,11 @@ describe('relayer API handler', () => {
         queue,
         now: () => new Date(),
         newTxId: () => 'x',
-        log: (message) => logs.push(message),
+        log: (message, _data, level) => logs.push(level ? `${level}: ${message}` : message),
       })
       const result = await broken(event(ROUTES.getTx, { txId: 'x' }))
       expect(result.statusCode).toBe(500)
-      expect(logs).toEqual(['request failed'])
+      expect(logs).toEqual(['error: request failed'])
     })
 
     it('accepts the Bearer scheme case-insensitively', async () => {
@@ -155,7 +155,7 @@ describe('relayer API handler', () => {
         queue,
         now: () => new Date('2026-09-17T12:00:00.000Z'),
         newTxId: () => 'tx-busy',
-        log: (message) => logs.push(message),
+        log: (message, _data, level) => logs.push(level ? `${level}: ${message}` : message),
       })
       const raw = await busy(event(ROUTES.submit, { body: request() }))
       const result = { status: raw.statusCode, body: JSON.parse(raw.body as string) }
@@ -288,7 +288,7 @@ describe('relayer API handler', () => {
       const failed = await call(event(ROUTES.submit, { body: request({ idempotencyKey: 'msg-failed' }) }))
       expect(failed.body.error.message).not.toContain(secret)
 
-      expect(logs.filter((l) => l === 'estimate failed')).toHaveLength(3)
+      expect(logs.filter((l) => l === 'warn: estimate failed')).toHaveLength(3)
     })
 
     it('treats leading zeros in a decimal string as unchanged for idempotency', async () => {
@@ -358,7 +358,7 @@ describe('relayer API handler', () => {
       const response = await call(event(ROUTES.submit, { body: request() }))
       expect(response.status).toBe(202)
       expect((await store.getTx(response.body.txId))?.status).toBe('queued')
-      expect(logs).toEqual(['enqueue failed; the sweeper will requeue it'])
+      expect(logs).toEqual(['warn: enqueue failed; the sweeper will requeue it'])
     })
   })
 
