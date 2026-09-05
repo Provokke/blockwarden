@@ -6,7 +6,12 @@ OpenZeppelin shut down Defender on 1 July 2026. Blockwarden covers the same grou
 
 ## Status
 
-Milestone 1 of 5 is done: the monitor. It polls Ethereum, Base and Arbitrum once a minute and matches events against rules stored in DynamoDB. Durable records come from finalized blocks, and fast provisional alerts come from the chain head. The relayer, actions, dashboard and contracts come next. The design lives in [docs/design](docs/design/2026-09-15-blockwarden-design.md).
+Milestones 1 and 2 of 5 are done.
+
+- **Monitor.** It polls Ethereum, Base and Arbitrum once a minute and matches events against rules stored in DynamoDB. Durable records come from finalized blocks, and fast provisional alerts come from the chain head.
+- **Relayer.** It signs and sends transactions on Base Sepolia and Arbitrum Sepolia with keys that never leave AWS KMS, behind an API-key HTTP API. Two packages come with it: [`@blockwarden/kms-signer`](packages/kms-signer) and [`@blockwarden/relayer-client`](packages/relayer-client).
+
+Actions, the dashboard and the contracts come next. The design lives in [docs/design](docs/design/2026-09-15-blockwarden-design.md).
 
 ## How the monitor handles reorgs
 
@@ -19,6 +24,15 @@ A record is keyed by chain, transaction hash, the log's position among that tran
 
 Final records trail the head by the chain's finality: about 19 minutes on Base and Arbitrum, and about 13 minutes on Ethereum. If your RPC's `finalized` block goes more than an hour stale, an alarm fires.
 
+## How the relayer keeps transactions moving
+
+- **One signer, one queue group.** Requests go to an SQS FIFO queue grouped by signer, so a signer's transactions get nonces in the order they arrived. The nonce is taken and written onto the transaction in one DynamoDB transaction, so a crash can never lose one.
+- **Policy before a nonce.** Each signer has an allowlist of contracts, optional function selectors per contract, optional fixed recipients for ERC-20 transfers, a gas limit, a fee cap and a daily spend cap. A request the policy refuses, or whose gas estimate reverts, is answered with 422 and never reaches the queue.
+- **KMS signatures.** KMS signs the transaction digest and returns DER. The signer normalises `s` to the low half of the curve (EIP-2) and finds `v` by recovering the signer's address.
+- **A sweeper every minute.** It marks transactions mined and then confirmed, replaces a stuck one at the same nonce with fees geth accepts as a replacement, rebroadcasts what a node forgot or a reorg removed, resumes a signer paused for lack of funds, and requeues anything that waited too long. A transaction the node refuses outright is failed and a 0-value transfer takes its nonce, so later transactions are not blocked.
+
+KMS emulators do not sign digests correctly (moto hashes them again), so tests sign with an in-memory key behind the same interface. One test signs with a real KMS key when `BLOCKWARDEN_KMS_TEST_KEY_ID` is set.
+
 ## Local development
 
 Requires Node.js 24, pnpm 12 and Docker.
@@ -26,9 +40,13 @@ Requires Node.js 24, pnpm 12 and Docker.
 ```bash
 pnpm install
 pnpm run test               # unit and property tests
-pnpm run test:integration   # Anvil and DynamoDB Local in Docker
+pnpm run test:integration   # Anvil, DynamoDB Local and moto in Docker
 pnpm run typecheck
+node scripts/pack-check.mjs # builds and packs the two published packages and imports them from the tarballs
 node scripts/tf-check.mjs   # terraform fmt, validate, tflint, checkov
+
+# the real-KMS test, with AWS credentials and an ECC_SECG_P256K1 SIGN_VERIFY key
+BLOCKWARDEN_KMS_TEST_KEY_ID=<key id> AWS_REGION=<region> pnpm --filter @blockwarden/kms-signer run test
 ```
 
 `tf-check.mjs` installs tflint plugins from GitHub. Set `GITHUB_TOKEN` (for example `GITHUB_TOKEN="$(gh auth token)"`) so the download is not rate limited.
@@ -74,6 +92,46 @@ Requires Terraform, the AWS CLI v2, and AWS credentials for the target account. 
    ```
 
 Free RPC tiers often cap `eth_getLogs` at a small block range. The poller halves a refused range until it fits, but setting `max_range` for that chain in `infra/terraform/envs/demo/main.tf` avoids the wasted calls.
+
+## Deploying the relayer
+
+The demo stack in `infra/terraform/envs/demo` deploys the relayer next to the monitor and shares its table. To deploy the relayer on its own, use `infra/terraform/modules/relayer` as `infra/terraform/examples/relayer-only` does.
+
+1. Put each testnet's RPC URLs in SSM, as for the monitor:
+
+   ```bash
+   aws ssm put-parameter --name /blockwarden-demo/rpc/base-sepolia --type SecureString --value "https://first,https://second"
+   aws ssm put-parameter --name /blockwarden-demo/rpc/arbitrum-sepolia --type SecureString --value "https://first"
+   ```
+
+2. Set the signer's policy in the `signers` map: the contracts it may call, the fee cap and the daily spend cap. The demo signer allows only a burn address until the demo contracts exist.
+3. Build the bundles: `pnpm --filter @blockwarden/relayer run build`
+4. Apply, in `infra/terraform/envs/demo`: `terraform apply -var alarm_email=you@example.com`. Each signer gets a new KMS key, which costs $1 a month.
+5. Create an API key for the signer. It is printed once, and only its SHA-256 is stored.
+
+   ```bash
+   pnpm --filter @blockwarden/relayer run apikey:create --table blockwarden-demo --signer demo --label ops
+   ```
+
+   A module can create keys instead, through its `api_keys` input. Those keys land in SSM and in Terraform state.
+
+6. Find the signer's address and fund it with testnet ETH on each chain. Terraform cannot derive an address from a KMS public key, so the API reports it:
+
+   ```bash
+   curl -H "Authorization: Bearer <api key>" "$(terraform output -raw relayer_api_url | sed 's,/$,,')/v1/relayer/signers"
+   ```
+
+7. Relay from code with the client:
+
+   ```ts
+   import { getTx, relay } from '@blockwarden/relayer-client'
+
+   const options = { baseUrl: process.env.RELAYER_URL!, apiKey: process.env.RELAYER_API_KEY! }
+   const tx = await relay(options, { signerId: 'demo', chainId: 84532, to, data, idempotencyKey: 'charge-42' })
+   console.log((await getTx(options, tx.txId)).status)
+   ```
+
+A fee cap too low to replace a stuck transaction, or a signer paused for lack of funds, keeps a transaction pending; the `pending-age` alarm fires after 30 minutes.
 
 ## License
 
