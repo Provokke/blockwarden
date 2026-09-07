@@ -4,6 +4,7 @@ import { describeError, EstimateError, type RelayerChain } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
 import { dependencyState, latestAttempt, withStatus, type SignerRecord, type TxRecord } from './records.js'
+import { failRefused } from './refusal.js'
 import { signAttempt } from './sign.js'
 import type { RelayerStore } from './store.js'
 
@@ -95,7 +96,7 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
 
       case 'insufficient-funds': {
         await store.pauseForFunds(tx, account.address, attempt.maxFeePerGas, stamp())
-        deps.log('signer paused: insufficient funds', { signerId: signer.signerId, chainId: tx.chainId, txId })
+        deps.log('signer paused: insufficient funds', { signerId: signer.signerId, chainId: tx.chainId, txId }, 'warn')
         return 'paused'
       }
 
@@ -111,7 +112,7 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
         // once the nonce has been used long enough with none, fails it.
         if (tx.nonce !== takenNonce) {
           await store.saveTx(withStatus(tx, 'submitted', stamp()), stamp())
-          deps.log('nonce too low on a nonce sent before; left to the sweeper', { txId, nonce: tx.nonce })
+          deps.log('nonce too low on a nonce sent before; left to the sweeper', { txId, nonce: tx.nonce }, 'warn')
           return 'submitted'
         }
         if (resets >= MAX_NONCE_RESETS) throw new Error(`transaction ${txId} kept hitting nonce too low`)
@@ -127,7 +128,8 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
       }
 
       case 'rejected':
-        return fail(deps, tx, account, outcome.message, chain)
+        await failRefused(deps, chain, tx, attempt.hash, account.address, outcome.message)
+        return 'failed'
     }
   }
 }
@@ -160,57 +162,4 @@ async function revertsNow(
     if (err.kind === 'failed') return describeError(err)
     throw err
   }
-}
-
-// A transaction the node refuses outright never uses its nonce, and every later nonce waits behind the gap.
-// A 0-value transfer to itself takes the nonce instead. A filler that is itself refused gets no filler of its own.
-async function fail(
-  deps: SignerDeps,
-  tx: TxRecord,
-  account: LocalAccount,
-  reason: string,
-  chain: RelayerChain,
-): Promise<ProcessOutcome> {
-  const at = deps.now().toISOString()
-  const attempts = tx.attempts.map((a, i) => (i === tx.attempts.length - 1 ? { ...a, rejected: reason } : a))
-  const failed: TxRecord = { ...withStatus(tx, 'failed', at), attempts, error: reason }
-  if (tx.kind === 'filler') {
-    await deps.store.saveTx(failed, at)
-    deps.log('filler refused; the nonce stays open', { txId: tx.txId, nonce: tx.nonce, reason }, 'warn')
-    return 'failed'
-  }
-  // an L2 transfer can need more than 21000 gas, so the filler is estimated like any other transaction
-  const gas = await chain.estimateGas({ from: account.address, to: account.address, data: '0x', value: 0n })
-  const filler: TxRecord = {
-    txId: deps.newTxId(),
-    kind: 'filler',
-    signerId: tx.signerId,
-    chainId: tx.chainId,
-    from: account.address,
-    to: account.address,
-    data: '0x',
-    value: '0',
-    gasLimit: ((gas * 120n) / 100n).toString(),
-    status: 'queued',
-    nonce: tx.nonce!,
-    attempts: [],
-    fillsTxId: tx.txId,
-    enqueuedAt: deps.now().getTime(),
-    enqueues: 1,
-    history: [{ status: 'queued', at }],
-    createdAt: at,
-    updatedAt: at,
-    version: 1,
-  }
-  await deps.store.failWithFiller({ ...failed, fillerTxId: filler.txId }, filler, at)
-  try {
-    await deps.queue.send(filler)
-  } catch (err) {
-    deps.log(
-      'enqueue of filler failed; the sweeper will requeue it',
-      { txId: filler.txId, error: (err as Error).message },
-      'warn',
-    )
-  }
-  return 'failed'
 }

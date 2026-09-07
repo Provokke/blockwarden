@@ -1,9 +1,18 @@
-import { bumpFees } from '@blockwarden/core'
+import { bumpFees, clampFees, type Fees } from '@blockwarden/core'
 import type { LocalAccount } from 'viem'
-import { describeError, type RelayerChain } from './chain.js'
+import { describeError, type RelayerChain, type SendOutcome } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
-import { dependencyState, latestAttempt, liveAttempt, withStatus, type SignerRecord, type TxRecord } from './records.js'
+import {
+  dependencyState,
+  latestAttempt,
+  liveAttempt,
+  withStatus,
+  type Attempt,
+  type SignerRecord,
+  type TxRecord,
+} from './records.js'
+import { failRefused } from './refusal.js'
 import { attemptFees, signAttempt } from './sign.js'
 import { TxConflictError, type RelayerStore } from './store.js'
 
@@ -27,6 +36,8 @@ export type SweeperDeps = {
   now(): Date
   // a queued transaction older than this is sent to the queue again
   requeueAfterMs: number
+  // for the filler that takes the nonce of a transaction whose rebroadcast is refused
+  newTxId(): string
   log(message: string, data?: Record<string, unknown>, level?: 'warn' | 'error'): void
   // pending transactions read per page; tests set it low to cross page boundaries
   pageSize?: number
@@ -118,7 +129,7 @@ export async function sweepChain(deps: SweeperDeps, deadlineMs: number): Promise
           if (tx.dependsOn !== undefined && tx.nonce === undefined) await requeueIfDependencySettled(deps, tx, summary)
           else await requeueIfStale(deps, tx, summary)
         } else if (tx.status === 'mined') {
-          await checkMined(deps, tx, head, summary)
+          await checkMined(deps, signer, tx, head, summary)
         } else if (tx.status === 'submitted') {
           await checkSubmitted(deps, signer, tx, head, summary)
         }
@@ -202,17 +213,23 @@ async function requeue(deps: SweeperDeps, tx: TxRecord, summary: SweepSummary): 
   summary.requeued++
 }
 
-async function checkMined(deps: SweeperDeps, tx: TxRecord, head: number, summary: SweepSummary): Promise<void> {
+async function checkMined(
+  deps: SweeperDeps,
+  signer: SignerRecord,
+  tx: TxRecord,
+  head: number,
+  summary: SweepSummary,
+): Promise<void> {
   const mined = tx.mined!
   const receipt = await deps.chain.getReceipt(mined.hash)
   const at = deps.now().toISOString()
   if (!receipt || receipt.blockHash !== mined.blockHash) {
     // reorged out, or back in a different block: submitted again, and the mined bytes go back to the mempool
     const { mined: _mined, ...rest } = tx
-    await deps.store.saveTx(withStatus(rest, 'submitted', at), at)
+    const saved = await deps.store.saveTx(withStatus(rest, 'submitted', at), at)
     summary.reorged++
-    const raw = tx.attempts.find((a) => a.hash === mined.hash)?.raw
-    if (raw && raw !== '0x') await deps.chain.send(raw)
+    const attempt = tx.attempts.find((a) => a.hash === mined.hash)
+    if (attempt && attempt.raw !== '0x') await rebroadcast(deps, signer, saved, attempt, summary)
     return
   }
   if (head - mined.blockNumber + 1 >= deps.settings.confirmations) {
@@ -277,14 +294,46 @@ async function checkSubmitted(
   const stuck = deps.now().getTime() - latestAttempt(tx)!.signedAt >= deps.settings.stuckAfterMs
   // a replacement only helps the next nonce to be mined; a later one waits for the gap below it either way
   if (minedNonce === tx.nonce && (tx.needsBump || stuck)) {
-    if (await replace(deps, signer, tx, summary)) return
+    const unchanged = await replace(deps, signer, tx, summary)
+    if (!unchanged) return
+    tx = unchanged
   }
   // a node forgets a transaction it evicted, and a crash can come between saving an attempt and sending it
   const live = liveAttempt(tx)
-  if (live && !(await deps.chain.isKnown(live.hash))) {
-    await deps.chain.send(live.raw)
-    summary.rebroadcast++
+  if (live && !(await deps.chain.isKnown(live.hash))) await rebroadcast(deps, signer, tx, live, summary)
+}
+
+async function rebroadcast(
+  deps: SweeperDeps,
+  signer: SignerRecord,
+  tx: TxRecord,
+  attempt: Attempt,
+  summary: SweepSummary,
+): Promise<void> {
+  const outcome = await deps.chain.send(attempt.raw)
+  summary.rebroadcast++
+  const at = deps.now().toISOString()
+  switch (outcome.kind) {
+    case 'rejected':
+      await failRefused(deps, deps.chain, tx, attempt.hash, tx.from, outcome.message)
+      summary.failed++
+      return
+    case 'insufficient-funds':
+      await pauseSigner(deps, signer, tx, attempt, at)
+      return
+    case 'underpriced':
+      if (!tx.needsBump) await deps.store.saveTx({ ...tx, needsBump: true }, at)
+      return
   }
+}
+
+async function pauseSigner(deps: SweeperDeps, signer: SignerRecord, tx: TxRecord, attempt: Attempt, at: string) {
+  await deps.store.pauseForFunds(tx, tx.from, attempt.maxFeePerGas, at)
+  deps.log(
+    'signer paused: insufficient funds',
+    { signerId: signer.signerId, chainId: tx.chainId, txId: tx.txId },
+    'warn',
+  )
 }
 
 async function markMined(
@@ -304,40 +353,97 @@ async function markMined(
   }
 }
 
-async function replace(deps: SweeperDeps, signer: SignerRecord, tx: TxRecord, summary: SweepSummary): Promise<boolean> {
+// Returns the transaction as it now stands when nothing was sent, so the caller can still rebroadcast it.
+async function replace(
+  deps: SweeperDeps,
+  signer: SignerRecord,
+  tx: TxRecord,
+  summary: SweepSummary,
+): Promise<TxRecord | undefined> {
   const at = deps.now().toISOString()
-  // every replacement clears the one before it, so the latest attempt, refused or not, carries the highest fees
-  const previous = attemptFees(latestAttempt(tx)!)
-  const bump = bumpFees(previous, await deps.chain.estimateFees(), feeCap(signer.policy))
-  const unrefused = tx.attempts.filter((a) => a.rejected === undefined).length
-  if (!bump.ok || unrefused >= MAX_ATTEMPTS) {
-    if (!tx.feeCapReached) {
-      await deps.store.saveTx({ ...tx, feeCapReached: true }, at)
-      deps.log(
-        'cannot replace: the fee cap or the attempt limit is reached',
-        { txId: tx.txId, required: bump.ok ? undefined : { ...bump.required }, attempts: unrefused },
-        'warn',
-      )
+  const cap = feeCap(signer.policy)
+  const estimate = await deps.chain.estimateFees()
+  const live = liveAttempt(tx)
+  let fees: Fees
+  if (live) {
+    // a refused signature never reached a mempool, so only the live one sets the replacement minimum
+    let bump = bumpFees(attemptFees(live), estimate, cap)
+    const latest = latestAttempt(tx)!
+    // unless the node already refused fees at least this high; then keep climbing from those
+    if (bump.ok && latest !== live && !raises(bump.fees, attemptFees(latest))) {
+      bump = bumpFees(attemptFees(latest), estimate, cap)
     }
-    summary.feeCapReached++
-    return false
+    const unrefused = tx.attempts.filter((a) => a.rejected === undefined).length
+    if (!bump.ok || unrefused >= MAX_ATTEMPTS) {
+      return flagFeeCap(deps, tx, summary, {
+        required: bump.ok ? undefined : { ...bump.required },
+        attempts: unrefused,
+      })
+    }
+    fees = bump.fees
+  } else {
+    // nothing is in a mempool to outbid, but a signature under a base fee above the cap would only be refused again
+    if (estimate.maxFeePerGas > cap.maxFeePerGas) {
+      return flagFeeCap(deps, tx, summary, { estimate: { ...estimate } })
+    }
+    fees = clampFees(estimate, cap)
   }
+
   const account = await deps.accountFor(signer)
-  const attempt = await signAttempt(account, tx, bump.fees, deps.now().getTime())
+  const attempt = await signAttempt(account, tx, fees, deps.now().getTime())
   const { needsBump: _b, ...rest } = tx
   const saved = await deps.store.saveTx({ ...rest, attempts: [...makeRoom(tx.attempts), attempt] }, at)
   const outcome = await deps.chain.send(attempt.raw)
   summary.replaced++
-  if (outcome.kind === 'underpriced' || outcome.kind === 'rejected' || outcome.kind === 'insufficient-funds') {
-    if (outcome.kind === 'insufficient-funds') {
-      await deps.store.pauseForFunds(tx, account.address, attempt.maxFeePerGas, at)
-      deps.log('signer paused: insufficient funds', { signerId: signer.signerId, chainId: tx.chainId, txId: tx.txId })
+  await afterReplacement(deps, signer, saved, attempt, outcome, live === undefined, summary)
+  return undefined
+}
+
+async function afterReplacement(
+  deps: SweeperDeps,
+  signer: SignerRecord,
+  tx: TxRecord,
+  attempt: Attempt,
+  outcome: SendOutcome,
+  nothingLive: boolean,
+  summary: SweepSummary,
+): Promise<void> {
+  const at = deps.now().toISOString()
+  if (outcome.kind === 'accepted' || outcome.kind === 'already-known' || outcome.kind === 'unknown') {
+    if (tx.feeCapReached) {
+      const { feeCapReached: _f, ...rest } = tx
+      await deps.store.saveTx(rest, at)
     }
-    // the earlier attempts may still be in the mempool, so a refused replacement does not fail the transaction
-    const attempts = saved.attempts.map((a) => (a.hash === attempt.hash ? { ...a, rejected: outcome.message } : a))
-    await deps.store.saveTx({ ...saved, attempts, ...(outcome.kind === 'underpriced' ? { needsBump: true } : {}) }, at)
+    return
   }
-  return true
+  if (outcome.kind === 'nonce-too-low') return
+  // with no earlier signature in a mempool, an outright refusal is as final as it is for the signer
+  if (outcome.kind === 'rejected' && nothingLive) {
+    await failRefused(deps, deps.chain, tx, attempt.hash, tx.from, outcome.message)
+    summary.failed++
+    return
+  }
+  if (outcome.kind === 'insufficient-funds') await pauseSigner(deps, signer, tx, attempt, at)
+  // the earlier attempts may still be in the mempool, so a refused replacement does not fail the transaction
+  const attempts = tx.attempts.map((a) => (a.hash === attempt.hash ? { ...a, rejected: outcome.message } : a))
+  await deps.store.saveTx({ ...tx, attempts, ...(outcome.kind === 'underpriced' ? { needsBump: true } : {}) }, at)
+}
+
+async function flagFeeCap(
+  deps: SweeperDeps,
+  tx: TxRecord,
+  summary: SweepSummary,
+  data: Record<string, unknown>,
+): Promise<TxRecord> {
+  summary.feeCapReached++
+  if (tx.feeCapReached) return tx
+  const saved = await deps.store.saveTx({ ...tx, feeCapReached: true }, deps.now().toISOString())
+  deps.log('cannot replace: the fee cap or the attempt limit is reached', { txId: tx.txId, ...data }, 'warn')
+  return saved
+}
+
+function raises(next: Fees, previous: Fees): boolean {
+  return next.maxFeePerGas > previous.maxFeePerGas || next.maxPriorityFeePerGas > previous.maxPriorityFeePerGas
 }
 
 // leaves room for one more signed attempt by dropping the bytes of the oldest refused ones
