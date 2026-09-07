@@ -9,6 +9,7 @@ import type {
   Signer,
   SignersBody,
 } from './types.js'
+import { isSignersBody, isTxBody } from './validate.js'
 
 export type RelayerClientOptions = {
   // the API root, for example https://abc123.execute-api.us-east-1.amazonaws.com, without /v1
@@ -24,8 +25,8 @@ export class RelayerApiError extends Error {
   readonly issues: ApiIssue[]
   readonly revertData: Hex | null
 
-  constructor(status: number, body: ApiErrorBody['error']) {
-    super(body.message)
+  constructor(status: number, body: ApiErrorBody['error'], options?: { cause?: unknown }) {
+    super(body.message, options)
     this.name = 'RelayerApiError'
     this.status = status
     this.code = body.code
@@ -48,54 +49,69 @@ export async function relay(options: RelayerClientOptions, request: RelayRequest
     ...(request.reference === undefined ? {} : { reference: request.reference }),
     ...(request.dependsOn === undefined ? {} : { dependsOn: request.dependsOn }),
   }
-  return toTx(await call<RelayerTxBody>(options, 'POST', '/v1/relayer/txs', body))
+  return toTx(await call(options, 'POST', '/v1/relayer/txs', isTxBody, body))
 }
 
 export async function getTx(options: RelayerClientOptions, txId: string): Promise<RelayerTx> {
-  return toTx(await call<RelayerTxBody>(options, 'GET', `/v1/relayer/txs/${encodeURIComponent(txId)}`))
+  return toTx(await call(options, 'GET', `/v1/relayer/txs/${encodeURIComponent(txId)}`, isTxBody))
 }
 
 // the signers this API key may use, with the address each one signs as
 export async function listSigners(options: RelayerClientOptions): Promise<Signer[]> {
-  return (await call<SignersBody>(options, 'GET', '/v1/relayer/signers')).signers
+  return (await call(options, 'GET', '/v1/relayer/signers', isSignersBody)).signers
 }
 
 async function call<T>(
   options: RelayerClientOptions,
   method: 'GET' | 'POST',
   path: string,
+  isExpected: (body: unknown) => body is T,
   body?: unknown,
 ): Promise<T> {
   const fetchFn = options.fetch ?? globalThis.fetch
-  const response = await fetchFn(`${options.baseUrl.replace(/\/+$/, '')}${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${options.apiKey}`,
-      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(options.timeoutMs ?? 10_000),
-  })
-  const text = await response.text()
+  let status = 0
+  let text: string
+  try {
+    const response = await fetchFn(`${options.baseUrl.replace(/\/+$/, '')}${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${options.apiKey}`,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(options.timeoutMs ?? 10_000),
+    })
+    status = response.status
+    text = await response.text()
+  } catch (err) {
+    const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+    const message = timedOut ? 'the request to the relayer timed out' : 'the relayer could not be reached'
+    // a body cut off part way is as unknown an outcome as no answer at all
+    throw new RelayerApiError(0, { code: 'network_error', message }, { cause: err })
+  }
   let parsed: unknown
   try {
     parsed = text ? JSON.parse(text) : undefined
   } catch {
     parsed = undefined
   }
-  if (!response.ok) {
+  if (status < 200 || status > 299) {
     const error = (parsed as Partial<ApiErrorBody> | undefined)?.error
-    throw new RelayerApiError(
-      response.status,
-      error?.code && error.message
-        ? error
-        : { code: 'http_error', message: `the relayer answered HTTP ${response.status}` },
-    )
+    if (typeof error?.code === 'string' && typeof error.message === 'string') throw new RelayerApiError(status, error)
+    // API Gateway answers its own refusals, such as throttling, with only a message
+    const gateway = (parsed as { message?: unknown } | undefined)?.message
+    throw new RelayerApiError(status, {
+      code: status === 429 ? 'throttled' : 'http_error',
+      message: typeof gateway === 'string' && gateway ? gateway : `the relayer answered HTTP ${status}`,
+    })
   }
-  if (parsed === undefined) {
-    throw new RelayerApiError(response.status, { code: 'bad_response', message: 'the relayer answered without JSON' })
+  if (!isExpected(parsed)) {
+    throw new RelayerApiError(status, {
+      code: 'invalid_response',
+      message: 'the relayer answered with an unexpected body',
+    })
   }
-  return parsed as T
+  return parsed
 }
 
 function toTx(body: RelayerTxBody): RelayerTx {

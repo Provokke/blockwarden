@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto'
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
+import type { RelayerTxBody } from '../src/types.js'
 import { isTxEvent, parseTx, signWebhook, verifyWebhook, WebhookVerificationError } from '../src/webhook.js'
 
 const NOW = 1_800_000_000_000
@@ -160,9 +161,34 @@ describe('verifyWebhook', () => {
   })
 })
 
+const TX: RelayerTxBody = {
+  txId: 'tx-1',
+  kind: 'relay',
+  signerId: 'billing',
+  chainId: 84532,
+  from: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+  to: '0x000000000000000000000000000000000000dEaD',
+  data: '0x',
+  value: '1000000000000000000000',
+  gasLimit: '21000',
+  status: 'confirmed',
+  nonce: 4,
+  hash: `0x${'ab'.repeat(32)}`,
+  blockNumber: 100,
+  blockHash: `0x${'cd'.repeat(32)}`,
+  receiptStatus: 'success',
+  error: null,
+  fillerTxId: null,
+  idempotencyKey: 'charge-1',
+  reference: null,
+  dependsOn: null,
+  createdAt: '2026-09-17T00:00:00.000Z',
+  updatedAt: '2026-09-17T00:00:00.000Z',
+}
+
 describe('isTxEvent and parseTx', () => {
   it('narrows tx events and turns their amounts back into bigints', async () => {
-    const payload = event('tx.confirmed', { value: '1000000000000000000000', gasLimit: '21000' })
+    const payload = event('tx.confirmed', TX)
     const verified = await verifyWebhook({
       payload,
       signature: await signWebhook({ payload, secret: 's', nowMs: NOW }),
@@ -172,5 +198,43 @@ describe('isTxEvent and parseTx', () => {
     expect(isTxEvent(verified)).toBe(true)
     expect(isTxEvent({ ...verified, type: 'match.final' })).toBe(false)
     if (isTxEvent(verified)) expect(parseTx(verified.data).value).toBe(10n ** 21n)
+  })
+
+  it('refuses an event whose type is not a known status or whose data is not a transaction', () => {
+    const base = { id: 'del_1', createdAt: '2026-09-17T00:00:00Z' }
+    expect(isTxEvent({ ...base, type: 'tx.mined', data: TX })).toBe(true)
+    expect(isTxEvent({ ...base, type: 'tx.lost', data: TX })).toBe(false)
+    expect(isTxEvent({ ...base, type: 'tx.', data: TX })).toBe(false)
+    for (const data of [
+      undefined,
+      null,
+      'tx',
+      { ...TX, value: undefined },
+      { ...TX, value: '' },
+      { ...TX, gasLimit: '0x10' },
+      { ...TX, txId: undefined },
+      { ...TX, chainId: '84532' },
+      { ...TX, status: 'lost' },
+      { ...TX, hash: 7 },
+    ]) {
+      const e = { ...base, type: 'tx.mined', data }
+      expect(isTxEvent(e)).toBe(false)
+    }
+  })
+})
+
+describe('secrets that are not strings', () => {
+  it('refuses to sign with an empty secret', async () => {
+    await expect(signWebhook({ payload: '{}', secret: '', nowMs: NOW })).rejects.toThrow(/must not be empty/)
+  })
+
+  it('throws WebhookVerificationError, not TypeError, for a secret or list entry that is not a string', async () => {
+    const payload = event('tx.mined')
+    const signature = await signWebhook({ payload, secret: 's', nowMs: NOW })
+    for (const secret of [42, undefined, ['s', 7], [null]]) {
+      await expect(verifyWebhook({ payload, signature, secret: secret as never, nowMs: NOW })).rejects.toThrow(
+        WebhookVerificationError,
+      )
+    }
   })
 })

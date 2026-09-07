@@ -14,7 +14,14 @@ export async function toRecoverableSignature(
   const low = { r: numberToHex(r, { size: 32 }), s: numberToHex(toLowS(s), { size: 32 }) }
   for (const yParity of [0, 1] as const) {
     const signature = { ...low, v: yParity === 1 ? 28n : 27n, yParity }
-    if (isAddressEqual(await recoverAddress({ hash, signature }), address)) return signature
+    let recovered: Address
+    try {
+      recovered = await recoverAddress({ hash, signature })
+    } catch {
+      // an r that is not on the curve recovers nothing
+      throw new InvalidSignatureError('the signature does not recover to any address')
+    }
+    if (isAddressEqual(recovered, address)) return signature
   }
   throw new InvalidSignatureError(`the signature does not recover to ${address}`)
 }
