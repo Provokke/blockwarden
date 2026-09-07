@@ -1,7 +1,10 @@
 import { GetPublicKeyCommand, KMSClient, SignCommand } from '@aws-sdk/client-kms'
 import { toDigestSignerAccount, type DigestSigner, type KmsAccount } from './account.js'
 
-export type KmsClientLike = Pick<KMSClient, 'send'>
+// only the call this package makes, so a KMSClient from any v3 release, or a stub, fits without a cast
+export type KmsClientLike = {
+  send(command: GetPublicKeyCommand | SignCommand): Promise<{ PublicKey?: Uint8Array; Signature?: Uint8Array }>
+}
 
 export type KmsAccountOptions = {
   keyId: string
