@@ -7,7 +7,7 @@ import { createLogger, createRuntime, once } from './runtime.js'
 const logger = createLogger('blockwarden-relayer-signer')
 
 const deps = once<SignerDeps>(async () => {
-  const runtime = await createRuntime(logger)
+  const runtime = await createRuntime(logger, 'signer')
   return {
     store: runtime.store,
     chainFor: (chainId) => runtime.chains.get(chainId),

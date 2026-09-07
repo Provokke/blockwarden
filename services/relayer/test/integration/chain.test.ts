@@ -97,7 +97,7 @@ describe('createRelayerChain against Anvil', () => {
     expect(reverted).toMatchObject({ kind: 'reverted' })
     expect((reverted as EstimateError).revertData).toMatch(/^0x[0-9a-f]{8}0{62}09$/)
 
-    const dead = createRelayerChain(anvil.chainId, ['http://127.0.0.1:9'], 1_000)
+    const dead = createRelayerChain(anvil.chainId, ['http://127.0.0.1:9'], { timeoutMs: 1_000 })
     const unavailable = await dead.estimateGas({ from: account.address, to: target, data, value: 0n }).catch((e) => e)
     expect(unavailable).toMatchObject({ kind: 'unavailable' })
     expect((await dead.send(await sign(0))).kind).toBe('unknown')

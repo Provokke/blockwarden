@@ -6,7 +6,7 @@ import { createLogger, createRuntime, once } from './runtime.js'
 const logger = createLogger('blockwarden-relayer-api')
 
 const api = once<ApiHandler>(async () => {
-  const runtime = await createRuntime(logger)
+  const runtime = await createRuntime(logger, 'api')
   return createApiHandler({
     store: runtime.store,
     chainFor: (chainId) => runtime.chains.get(chainId),
