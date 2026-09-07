@@ -17,8 +17,6 @@ locals {
       QUEUE_URL             = aws_sqs_queue.txs.url
       SIGNER_IDS            = join(",", [for id, s in var.signers : id if s.balance_alarm_gwei != null])
       REQUEUE_AFTER_SECONDS = tostring(var.requeue_after_seconds)
-      # TIME_BUDGET_SECONDS is not set: the real Lambda runtime always passes a context, so
-      # src/lambda/sweeper.ts's config.timeBudgetMs fallback (config.ts's own default of 50s) never runs here
     }
   }
 

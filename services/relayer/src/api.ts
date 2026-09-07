@@ -1,5 +1,6 @@
 import type { SignersBody } from '@blockwarden/relayer-client'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
+import { describeError } from './chain.js'
 import { toTxBody, type ApiKeyRecord } from './records.js'
 import { StoreBusyError } from './store.js'
 import { error, hashApiKey, submitTx, type ApiResult, type SubmitDeps } from './submit.js'
@@ -19,15 +20,8 @@ export function createApiHandler(deps: SubmitDeps): ApiHandler {
     try {
       result = await route(deps, event)
     } catch (err) {
-      deps.log(
-        'request failed',
-        {
-          routeKey: event.routeKey,
-          error: err instanceof Error ? err.message : String(err),
-          cause: err,
-        },
-        'error',
-      )
+      // a viem error's message and cause can carry the RPC URL, and with it the provider's API key
+      deps.log('request failed', { routeKey: event.routeKey, error: describeError(err) }, 'error')
       result =
         err instanceof StoreBusyError
           ? error(503, 'busy', 'the relayer is busy; retry the request with the same idempotency key')

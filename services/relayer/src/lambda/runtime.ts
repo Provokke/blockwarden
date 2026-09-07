@@ -26,9 +26,8 @@ export type FunctionKind = 'api' | 'signer' | 'sweeper'
 // the Lambda timeouts set in modules/relayer/functions.tf
 const FUNCTION_TIMEOUT_MS = { api: 15_000, signer: 30_000 }
 
-// A hung URL holds a call for its whole timeout before the fallback tries the next one. For the API and the signer,
-// every URL hanging in turn must still fit in the function timeout with 3 seconds spare, so one try each and at most
-// 4 seconds. The sweeper keeps the longer settings, because its hard stop bounds it anyway.
+// A hung URL holds a call for its whole timeout, so for the API and signer every URL hanging in turn must fit in the
+// function timeout with 3 seconds spare. The sweeper's hard stop bounds it, so it keeps the longer settings.
 export function chainOptionsFor(kind: FunctionKind, urlCount: number): RelayerChainOptions {
   if (kind === 'sweeper') return { timeoutMs: 10_000, retryCount: 1 }
   const perUrl = Math.floor((FUNCTION_TIMEOUT_MS[kind] - 3_000) / urlCount)

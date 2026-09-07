@@ -61,9 +61,8 @@ function rpcAnswer(err: unknown): RpcRequestError | undefined {
   return found instanceof RpcRequestError ? found : undefined
 }
 
-// The node's own words when it answered, else viem's short messages. Never a BaseError's full message: that repeats
-// the request body, which for a send is the whole raw transaction, and can carry the RPC URL, which may hold an
-// API key.
+// The node's own words, else viem's short messages. Never the full message: it repeats the raw transaction and can
+// carry the RPC URL with its API key.
 export function describeError(err: unknown): string {
   const answer = rpcAnswer(err)
   // a node can answer with no "message" field, or with "error" as a bare string; details is then undefined and the
@@ -92,9 +91,8 @@ function isTransportError(err: unknown): boolean {
     : false
 }
 
-// viem also files geth's "gas required exceeds allowance" under ExecutionRevertedError, so when a node answered,
-// only its revert code or its own "execution reverted" counts. Shared by classifyEstimateError and the estimate
-// fallback below, so a revert is decisive in both places the same way.
+// viem files geth's "gas required exceeds allowance" as a revert too, so a node's answer counts only with its revert
+// code or its own "execution reverted"
 function isRevertAnswer(err: unknown): boolean {
   const answer = rpcAnswer(err)
   if (answer) return answer.code === 3 || /execution reverted/i.test(answer.details ?? '')
@@ -183,11 +181,7 @@ export function createRelayerChain(
       throw err
     }
   }
-  // A node's answer only stops the fallback when it settles the question: a refusal classifySendError recognises,
-  // or, for an estimate, a real revert. A transport failure, a rate limit, or a -32603/-32601/-32002-style answer
-  // means this node could not serve the call, not that it refused the tx or the call, so those still try the next
-  // URL — the raw tx or call is identical everywhere. A refusal from a lagging node, such as "insufficient funds"
-  // seconds after funding, is final for that call and the client may retry.
+  // only a refusal or a revert stops the fallback; a node that could not serve the call just passes it to the next URL
   const decisiveSend = clientWith((err) => classifySendError(err).kind !== 'unknown')
   const decisiveEstimate = clientWith((err) => isRevertAnswer(err) || classifySendError(err).kind !== 'unknown')
 
