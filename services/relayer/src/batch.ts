@@ -2,10 +2,7 @@ import type { SQSBatchResponse, SQSRecord } from 'aws-lambda'
 import { describeError } from './chain.js'
 import type { TxMessage } from './queue.js'
 
-// processTx makes several RPC round trips (nonce, fee estimate, send, and sometimes a receipt or estimate on top);
-// each one can take up to chain.ts's 10s http timeout before it errors or fails over. 12s leaves room for one more
-// record's worst single RPC leg plus its DynamoDB and KMS calls, while still landing well inside the signer's 30s
-// Lambda timeout.
+// enough for one more message's slowest RPC call plus its DynamoDB and KMS calls inside the 30s timeout
 const DEADLINE_MARGIN_MS = 12_000
 
 // FIFO order holds only if nothing after a failed message in its group runs ahead of it, so once one message

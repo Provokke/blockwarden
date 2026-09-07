@@ -103,8 +103,7 @@ variable "signers" {
   }
 
   validation {
-    # can() first: tonumber() on a non-decimal string errors outright, and the "Wei amounts are decimal strings"
-    # validation above already reports that case on its own
+    # can(), because tonumber() errors on a non-decimal string, which the validation above already reports
     condition = alltrue([for s in var.signers :
       !can(tonumber(s.max_priority_fee_per_gas_wei)) || !can(tonumber(s.max_fee_per_gas_wei)) ||
       tonumber(s.max_priority_fee_per_gas_wei) <= tonumber(s.max_fee_per_gas_wei)
@@ -113,8 +112,7 @@ variable "signers" {
   }
 
   validation {
-    # mirrors policySchema's .refine in services/relayer/src/policy.ts: the daily counter is kept in gwei so it
-    # stays a DynamoDB number JavaScript reads back exactly, which needs it under Number.MAX_SAFE_INTEGER
+    # matches policy.ts: the daily counter is a gwei number, so it must stay under Number.MAX_SAFE_INTEGER
     condition = alltrue([for s in var.signers :
       !can(tonumber(s.daily_spend_cap_wei)) || floor(tonumber(s.daily_spend_cap_wei) / 1000000000) <= 9007199254740991
     ])

@@ -52,9 +52,8 @@ function failedIndexes(err: unknown): number[] | undefined {
   return cancellationCodes(err)?.flatMap((code, i) => (code === 'ConditionalCheckFailed' ? [i] : []))
 }
 
-// Real DynamoDB refuses a write that overlaps another transaction on the same item: a transaction is cancelled
-// with the reason TransactionConflict, a plain write throws TransactionConflictException. Nothing was written and
-// the SDK does not retry either. DynamoDB Local never produces them.
+// Real DynamoDB refuses a write that overlaps a transaction on the same item, writes nothing and does not retry.
+// DynamoDB Local never does this.
 function isTransactionConflict(err: unknown): boolean {
   if ((err as Error | undefined)?.name === 'TransactionConflictException') return true
   const codes = cancellationCodes(err)
