@@ -29,7 +29,8 @@ export function assignOrdinals(matches: LogMatch[]): KeyedMatch[] {
     })
   for (const i of order) {
     const { log, rule } = matches[i]!
-    const group = `${log.transactionHash.toLowerCase()}#${rule.ruleId}`
+    // the block too: logs read in several requests can hold one transaction in an orphaned and a canonical block
+    const group = `${log.blockHash.toLowerCase()}#${log.transactionHash.toLowerCase()}#${rule.ruleId}`
     const ordinal = counts.get(group) ?? 0
     counts.set(group, ordinal + 1)
     ordinals[i] = ordinal
