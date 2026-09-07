@@ -146,12 +146,23 @@ export function classifyEstimateError(err: unknown): EstimateError {
   return new EstimateError('failed', err instanceof Error ? err.message : String(err))
 }
 
-export function createRelayerChain(chainId: number, rpcUrls: string[], timeoutMs = 10_000): RelayerChain {
+export type RelayerChainOptions = {
+  // per request to one URL
+  timeoutMs?: number
+  // tries of one URL after the first before moving to the next; viem retries a timeout too
+  retryCount?: number
+}
+
+export function createRelayerChain(
+  chainId: number,
+  rpcUrls: string[],
+  { timeoutMs = 10_000, retryCount = 1 }: RelayerChainOptions = {},
+): RelayerChain {
   if (rpcUrls.length === 0) throw new Error(`no RPC URLs for chain ${chainId}`)
   const clientWith = (shouldThrow?: (err: Error) => boolean): PublicClient =>
     createPublicClient({
       transport: fallback(
-        rpcUrls.map((url) => http(url, { timeout: timeoutMs, retryCount: 1 })),
+        rpcUrls.map((url) => http(url, { timeout: timeoutMs, retryCount })),
         { retryCount: 0, shouldThrow },
       ),
       // viem otherwise caches the block number, and the sweeper compares heads between calls
@@ -161,7 +172,7 @@ export function createRelayerChain(chainId: number, rpcUrls: string[], timeoutMs
   const client = clientWith()
   // a lagging node's null receipt is an answer, so the fallback never moves on from it; findReceipt asks each URL itself
   const perUrl = rpcUrls.map((url) =>
-    createPublicClient({ transport: http(url, { timeout: timeoutMs, retryCount: 1 }), cacheTime: 0 }),
+    createPublicClient({ transport: http(url, { timeout: timeoutMs, retryCount }), cacheTime: 0 }),
   )
   const receiptFrom = async (reader: PublicClient, hash: Hex): Promise<Receipt | undefined> => {
     try {
