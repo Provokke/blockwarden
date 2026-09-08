@@ -6,7 +6,13 @@ import type { Attempt, TxRecord } from '../../src/records.js'
 import { signAttempt } from '../../src/sign.js'
 import { processTx, type SignerDeps } from '../../src/signer.js'
 import { RelayerStore } from '../../src/store.js'
-import { MAX_ATTEMPTS, MAX_SIGNED_ATTEMPTS, sweepChain, type SweeperDeps } from '../../src/sweeper.js'
+import {
+  MAX_ATTEMPTS,
+  MAX_SIGNED_ATTEMPTS,
+  MAX_STORED_ATTEMPTS,
+  sweepChain,
+  type SweeperDeps,
+} from '../../src/sweeper.js'
 import { FakeChain, receiptAt } from '../helpers/fake-chain.js'
 import { CHAIN_ID, localAccount, queuedTx, RecordingQueue, signerRecord } from '../helpers/fixtures.js'
 
@@ -351,7 +357,7 @@ describe('sweepChain', () => {
 
     it('recovers when a refused signature and its refused replacement at the cap leave nothing live', async () => {
       const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
-      const refused = { ...(await attempt(base, 50n * GWEI, 1n * GWEI)), rejected: 'transaction underpriced' }
+      const refused = { ...(await attempt(base, 100n * GWEI, 1n * GWEI)), rejected: 'transaction underpriced' }
       const tx = await submitted({ attempts: [refused], needsBump: true })
       chain.nonces.latest = 3
       chain.fees = { maxFeePerGas: 100n * GWEI, maxPriorityFeePerGas: 2n * GWEI }
@@ -359,7 +365,7 @@ describe('sweepChain', () => {
       nowMs = START + 60_000
       expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1 })
       const both = await reload(tx)
-      expect(both.attempts.map((a) => a.maxFeePerGas)).toEqual([String(50n * GWEI), String(100n * GWEI)])
+      expect(both.attempts.map((a) => a.maxFeePerGas)).toEqual([String(100n * GWEI), String(100n * GWEI)])
       expect(both.attempts.every((a) => a.rejected !== undefined)).toBe(true)
 
       chain.fees = { maxFeePerGas: 2n * GWEI, maxPriorityFeePerGas: 1n * GWEI }
@@ -377,13 +383,107 @@ describe('sweepChain', () => {
     it('fails the transaction when a fresh signature with nothing live is refused outright', async () => {
       chain.gas = 21_000n
       const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
-      const refused = { ...(await attempt(base, 50n * GWEI, 1n * GWEI)), rejected: 'transaction underpriced' }
+      const refused = { ...(await attempt(base, 100n * GWEI, 1n * GWEI)), rejected: 'transaction underpriced' }
       const tx = await submitted({ attempts: [refused], needsBump: true })
       chain.nonces.latest = 3
       chain.sendOutcomes = [{ kind: 'rejected', message: 'exceeds block gas limit' }]
       expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1, failed: 1 })
       expect(await reload(tx)).toMatchObject({ status: 'failed', fillerTxId: 'filler-1' })
       expect(queue.sent).toEqual([{ txId: 'filler-1', enqueues: 1 }])
+    })
+
+    it('signs a fresh attempt refused as underpriced only once while the fees do not rise', async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const refused = { ...(await attempt(base, 100n * GWEI, 1n * GWEI)), rejected: 'transaction underpriced' }
+      const tx = await submitted({ attempts: [refused], needsBump: true })
+      chain.nonces.latest = 3
+      chain.sendOutcomes = Array.from({ length: 20 }, () => ({
+        kind: 'underpriced',
+        message: 'transaction underpriced',
+      }))
+      for (let i = 0; i < 10; i++) {
+        nowMs += 60_000
+        await sweepChain(deps, FAR)
+      }
+      const stored = await reload(tx)
+      expect(stored.attempts).toHaveLength(2)
+      expect(stored.attempts[1]).toMatchObject({ maxFeePerGas: String(2n * GWEI), rejected: 'transaction underpriced' })
+      expect(chain.sent).toEqual([stored.attempts[1]!.raw])
+
+      // lower is no better
+      chain.fees = { maxFeePerGas: 1n * GWEI, maxPriorityFeePerGas: 1n * GWEI }
+      nowMs += 60_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 0 })
+      expect(await reload(tx)).toMatchObject({ version: stored.version })
+      expect(chain.sent).toHaveLength(1)
+    })
+
+    it('signs a fresh attempt clamped to the cap only once while the node refuses it', async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const refused = { ...(await attempt(base, 100n * GWEI, 1n * GWEI)), rejected: 'transaction underpriced' }
+      const tx = await submitted({ attempts: [refused], needsBump: true })
+      chain.nonces.latest = 3
+      // the tip is over the 10 gwei cap, so every signature is clamped to it
+      chain.fees = { maxFeePerGas: 50n * GWEI, maxPriorityFeePerGas: 20n * GWEI }
+      chain.sendOutcomes = Array.from({ length: 20 }, () => ({
+        kind: 'underpriced',
+        message: 'transaction underpriced',
+      }))
+      for (let i = 0; i < 5; i++) {
+        nowMs += 60_000
+        await sweepChain(deps, FAR)
+      }
+      expect((await reload(tx)).attempts).toHaveLength(2)
+      expect(chain.sent).toHaveLength(1)
+    })
+
+    it('signs one more fresh attempt when the fees rise under the cap', async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const attempts = [
+        { ...(await attempt(base, 100n * GWEI, 1n * GWEI)), rejected: 'transaction underpriced' },
+        { ...(await attempt(base, 2n * GWEI, 1n * GWEI)), rejected: 'transaction underpriced' },
+      ]
+      const tx = await submitted({ attempts, needsBump: true })
+      chain.nonces.latest = 3
+      chain.fees = { maxFeePerGas: 3n * GWEI, maxPriorityFeePerGas: 2n * GWEI }
+      chain.sendOutcomes = Array.from({ length: 20 }, () => ({
+        kind: 'underpriced',
+        message: 'transaction underpriced',
+      }))
+      for (let i = 0; i < 5; i++) {
+        nowMs += 60_000
+        await sweepChain(deps, FAR)
+      }
+      const stored = await reload(tx)
+      expect(stored.attempts).toHaveLength(3)
+      expect(stored.attempts[2]).toMatchObject({
+        maxFeePerGas: String(3n * GWEI),
+        maxPriorityFeePerGas: String(2n * GWEI),
+      })
+      expect(chain.sent).toEqual([stored.attempts[2]!.raw])
+    })
+
+    it(`stops appending at ${MAX_STORED_ATTEMPTS} stored attempts, and warns once`, async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const attempts: Attempt[] = []
+      for (let i = 0; i < MAX_STORED_ATTEMPTS; i++) {
+        const signed = await attempt(base, BigInt(i + 1) * 1_000_000n, 1_000_000n)
+        attempts.push({
+          ...signed,
+          raw: i < MAX_STORED_ATTEMPTS - MAX_SIGNED_ATTEMPTS ? '0x' : signed.raw,
+          rejected: 'transaction underpriced',
+        })
+      }
+      const tx = await submitted({ attempts, needsBump: true })
+      chain.nonces.latest = 3
+      for (let i = 0; i < 3; i++) {
+        nowMs += 60_000
+        expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 0, feeCapReached: 1 })
+      }
+      expect((await reload(tx)).attempts).toHaveLength(MAX_STORED_ATTEMPTS)
+      expect(chain.sent).toEqual([])
+      expect(logs).toEqual(['cannot replace: the fee cap or the attempt limit is reached'])
+      expect(levels['cannot replace: the fee cap or the attempt limit is reached']).toBe('warn')
     })
 
     it('clears the fee cap flag once a replacement is accepted', async () => {
