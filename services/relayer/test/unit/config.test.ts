@@ -94,6 +94,31 @@ describe('loadConfig', () => {
     expect(`${err?.message}${err?.stack}`).not.toContain('SECRETKEY')
   })
 
+  it('refuses more than 3 RPC URLs on a chain, inline or from SSM, naming the chain and the limit', async () => {
+    const { ssm } = fakeSsm({
+      '/three': 'https://a.example,https://b.example,https://c.example',
+      '/four': 'https://a.example,https://b.example,https://c.example,https://d.example',
+    })
+    const four = ['http://a', 'http://b', 'http://c', 'http://d']
+    await expect(
+      loadConfig({ TABLE_NAME: 't', CHAINS: JSON.stringify([{ chainId: 7, rpcUrls: four }]) }, ssm),
+    ).rejects.toThrow('chain 7 has 4 RPC URLs; the relayer takes at most 3')
+    await expect(
+      loadConfig({ TABLE_NAME: 't', CHAINS: JSON.stringify([{ chainId: 8, rpcUrlsParameter: '/four' }]) }, ssm),
+    ).rejects.toThrow('chain 8 has 4 RPC URLs; the relayer takes at most 3')
+    const config = await loadConfig(
+      {
+        TABLE_NAME: 't',
+        CHAINS: JSON.stringify([
+          { chainId: 7, rpcUrls: four.slice(0, 3) },
+          { chainId: 8, rpcUrlsParameter: '/three' },
+        ]),
+      },
+      ssm,
+    )
+    expect(config.chains.map((c) => c.rpcUrls.length)).toEqual([3, 3])
+  })
+
   it('refuses the same chainId twice', async () => {
     const { ssm } = fakeSsm({})
     const chains = JSON.stringify([
