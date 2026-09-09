@@ -408,14 +408,15 @@ describe('sweepChain', () => {
       const stored = await reload(tx)
       expect(stored.attempts).toHaveLength(2)
       expect(stored.attempts[1]).toMatchObject({ maxFeePerGas: String(2n * GWEI), rejected: 'transaction underpriced' })
-      expect(chain.sent).toEqual([stored.attempts[1]!.raw])
+      // signed once; every later sweep sends the same bytes again
+      expect(chain.sent).toEqual(Array.from({ length: 10 }, () => stored.attempts[1]!.raw))
 
       // lower is no better
       chain.fees = { maxFeePerGas: 1n * GWEI, maxPriorityFeePerGas: 1n * GWEI }
       nowMs += 60_000
-      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 0 })
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 0, rebroadcast: 1 })
       expect(await reload(tx)).toMatchObject({ version: stored.version })
-      expect(chain.sent).toHaveLength(1)
+      expect(chain.sent.at(-1)).toBe(stored.attempts[1]!.raw)
     })
 
     it('signs a fresh attempt clamped to the cap only once while the node refuses it', async () => {
@@ -433,8 +434,9 @@ describe('sweepChain', () => {
         nowMs += 60_000
         await sweepChain(deps, FAR)
       }
-      expect((await reload(tx)).attempts).toHaveLength(2)
-      expect(chain.sent).toHaveLength(1)
+      const stored = await reload(tx)
+      expect(stored.attempts).toHaveLength(2)
+      expect(chain.sent).toEqual(Array.from({ length: 5 }, () => stored.attempts[1]!.raw))
     })
 
     it('signs one more fresh attempt when the fees rise under the cap', async () => {
@@ -460,7 +462,62 @@ describe('sweepChain', () => {
         maxFeePerGas: String(3n * GWEI),
         maxPriorityFeePerGas: String(2n * GWEI),
       })
-      expect(chain.sent).toEqual([stored.attempts[2]!.raw])
+      expect(chain.sent).toEqual(Array.from({ length: 5 }, () => stored.attempts[2]!.raw))
+    })
+
+    // a fresh attempt refused at 50 gwei under a 100 gwei cap, as a base fee above 50 gwei would leave it
+    const refusedAtFifty = async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const refused = { ...(await attempt(base, 100n * GWEI, 1n * GWEI)), rejected: 'transaction underpriced' }
+      const tx = await submitted({ attempts: [refused], needsBump: true })
+      chain.nonces.latest = 3
+      chain.fees = { maxFeePerGas: 50n * GWEI, maxPriorityFeePerGas: 1n * GWEI }
+      chain.sendOutcomes = [{ kind: 'underpriced', message: 'max fee per gas less than block base fee' }]
+      nowMs += 60_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1 })
+      const stored = await reload(tx)
+      expect(stored.attempts[1]).toMatchObject({ maxFeePerGas: String(50n * GWEI), rejected: expect.any(String) })
+      chain.fees = { maxFeePerGas: 20n * GWEI, maxPriorityFeePerGas: 1n * GWEI }
+      return stored
+    }
+
+    it('rebroadcasts the bytes of a refused fresh attempt once fees fall below it', async () => {
+      const tx = await refusedAtFifty()
+      nowMs += 60_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 0, rebroadcast: 1 })
+      const revived = await reload(tx)
+      expect(revived.attempts).toHaveLength(2)
+      expect(revived.attempts[1]!.rejected).toBeUndefined()
+      expect(revived.needsBump).toBeUndefined()
+      expect(chain.sent).toEqual([tx.attempts[1]!.raw, tx.attempts[1]!.raw])
+
+      chain.mine(tx.attempts[1]!.hash, 96)
+      nowMs += 60_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ confirmed: 1 })
+      expect(await reload(tx)).toMatchObject({ status: 'confirmed', attempts: revived.attempts })
+    })
+
+    it('signs one fresh attempt at the refused fees when the refused bytes were dropped', async () => {
+      const refused = await refusedAtFifty()
+      const attempts = refused.attempts.map((a, i) => (i === 1 ? { ...a, raw: '0x' as Hex } : a))
+      const tx = await store.saveTx({ ...refused, attempts }, new Date(nowMs).toISOString())
+      chain.sendOutcomes = Array.from({ length: 10 }, () => ({
+        kind: 'underpriced',
+        message: 'max fee per gas less than block base fee',
+      }))
+      for (let i = 0; i < 5; i++) {
+        nowMs += 60_000
+        await sweepChain(deps, FAR)
+      }
+      const stored = await reload(tx)
+      expect(stored.attempts).toHaveLength(3)
+      expect(stored.attempts[2]).toMatchObject({
+        maxFeePerGas: String(50n * GWEI),
+        maxPriorityFeePerGas: String(1n * GWEI),
+      })
+      expect(stored.attempts[2]!.raw).not.toBe('0x')
+      // signed once, then the same bytes go out again rather than another signature
+      expect(chain.sent.slice(1)).toEqual(Array.from({ length: 5 }, () => stored.attempts[2]!.raw))
     })
 
     it(`stops appending at ${MAX_STORED_ATTEMPTS} stored attempts, and warns once`, async () => {
