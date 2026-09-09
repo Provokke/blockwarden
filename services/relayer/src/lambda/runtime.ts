@@ -23,15 +23,20 @@ export type Runtime = {
 
 export type FunctionKind = 'api' | 'signer' | 'sweeper'
 
-// the Lambda timeouts set in modules/relayer/functions.tf
-const FUNCTION_TIMEOUT_MS = { api: 15_000, signer: 30_000 }
+// the API's Lambda timeout set in modules/relayer/functions.tf
+const API_TIMEOUT_MS = 15_000
 
-// A hung URL holds a call for its whole timeout, so for the API and signer every URL hanging in turn must fit in the
-// function timeout with 3 seconds spare. The sweeper's hard stop bounds it, so it keeps the longer settings.
+// A hung URL holds a call for its whole timeout before the fallback moves on, and viem applies any positive timeout,
+// so the 1 second floor is about real RPC latency, not the library.
+// API: every URL hanging in turn fits in its timeout with 3 seconds spare.
+// Signer: a cold first send makes four calls (nonce, block, tip, send), which must fit in 9 seconds so a message
+// started with the batch's 12 second margin ends with time left for DynamoDB and KMS.
+// Sweeper: 20 seconds a call at worst still leaves room for failover on several calls before its hard stop.
 export function chainOptionsFor(kind: FunctionKind, urlCount: number): RelayerChainOptions {
-  if (kind === 'sweeper') return { timeoutMs: 10_000, retryCount: 1 }
-  const perUrl = Math.floor((FUNCTION_TIMEOUT_MS[kind] - 3_000) / urlCount)
-  return { timeoutMs: Math.max(1_000, Math.min(4_000, perUrl)), retryCount: 0 }
+  const clamp = (ms: number, max: number) => Math.max(1_000, Math.min(max, Math.floor(ms)))
+  if (kind === 'api') return { timeoutMs: clamp((API_TIMEOUT_MS - 3_000) / urlCount, 4_000), retryCount: 0 }
+  if (kind === 'signer') return { timeoutMs: clamp(9_000 / (4 * urlCount), 2_500), retryCount: 0 }
+  return { timeoutMs: clamp(20_000 / urlCount, 4_000), retryCount: 0 }
 }
 
 export function createLogger(serviceName: string): Logger {
