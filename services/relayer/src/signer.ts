@@ -25,6 +25,10 @@ export type ProcessOutcome = 'missing' | 'skipped' | 'paused' | 'waiting' | 'sub
 // a nonce taken by another sender forces a fresh one; twice in a row means something else keeps sending
 const MAX_NONCE_RESETS = 2
 
+// redelivery and the sweeper's requeue repeat resets across runs, so only the newest are kept; they are evidence and
+// never sent again, so their bytes are dropped
+export const MAX_ABANDONED_ATTEMPTS = 4
+
 export async function processTx(deps: SignerDeps, txId: string): Promise<ProcessOutcome> {
   const { store } = deps
   const stamp = () => deps.now().toISOString()
@@ -116,12 +120,12 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
         if (resets >= MAX_NONCE_RESETS) throw new Error(`transaction ${txId} kept hitting nonce too low`)
         // another sender used this nonce: give it up and take the next one after reconciling
         deps.reconciled.delete(pair)
-        const { nonce: _nonce, ...rest } = tx
-        const abandoned = tx.attempts.map((a) => ({ ...a, rejected: outcome.message }))
-        tx = await store.saveTx(
-          { ...rest, attempts: [], abandonedAttempts: [...(tx.abandonedAttempts ?? []), ...abandoned] },
-          stamp(),
-        )
+        const { nonce, ...rest } = tx
+        const abandoned = tx.attempts.map((a) => ({ ...a, nonce: nonce!, rejected: outcome.message }))
+        const kept = [...(tx.abandonedAttempts ?? []), ...abandoned]
+          .slice(-MAX_ABANDONED_ATTEMPTS)
+          .map((a) => ({ ...a, raw: '0x' as const }))
+        tx = await store.saveTx({ ...rest, attempts: [], abandonedAttempts: kept }, stamp())
         continue
       }
 
