@@ -224,7 +224,8 @@ describe('sweeper Lambda entry', () => {
       stubEnv(
         tableName,
         [
-          { chainId: 5555, rpcUrls: [`http://127.0.0.1:${port}/v2/${URL_KEY}`] },
+          // every URL hangs, so one call takes 3 x 4 seconds to fail
+          { chainId: 5555, rpcUrls: [1, 2, 3].map((n) => `http://127.0.0.1:${port}/v${n}/${URL_KEY}`) },
           { chainId: anvil.chainId, rpcUrls: [anvil.rpcUrl] },
         ],
         'billing',
@@ -233,7 +234,7 @@ describe('sweeper Lambda entry', () => {
 
       const handler = sweeper('test-sweeper-hung', { accountFor: async () => account })
       // 9 seconds left: the sweeps stop starting transactions after 1, and what is still running is abandoned
-      // after 6, well inside the 10 second RPC timeout
+      // after 6, well before that call fails
       const started = Date.now()
       const err = await rejection(handler(undefined, { getRemainingTimeInMillis: () => 9_000 }))
       const elapsed = Date.now() - started

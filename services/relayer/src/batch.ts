@@ -3,7 +3,7 @@ import { describeError } from './chain.js'
 import type { TxMessage } from './queue.js'
 
 // enough for one more message's slowest RPC call plus its DynamoDB and KMS calls inside the 30s timeout
-const DEADLINE_MARGIN_MS = 12_000
+export const DEADLINE_MARGIN_MS = 12_000
 
 // FIFO order holds only if nothing after a failed message in its group runs ahead of it, so once one message
 // fails, every later message in that group is handed back too

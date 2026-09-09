@@ -258,6 +258,39 @@ describe('createRelayerChain against scripted nodes', () => {
       expect(hanging.calls).toEqual(['eth_estimateGas'])
     }, 30_000)
 
+    // what a cold first send asks for: the pending nonce, the fee estimate (a block and the tip) and the send
+    const coldSend = (method: string): MockReply => {
+      switch (method) {
+        case 'eth_getTransactionCount':
+          return { result: '0x7' }
+        case 'eth_getBlockByNumber':
+          return { result: { number: '0x64', hash: `0x${'0f'.repeat(32)}`, baseFeePerGas: '0x3b9aca00' } }
+        case 'eth_maxPriorityFeePerGas':
+          return { result: '0x3b9aca00' }
+        default:
+          return accept(method)
+      }
+    }
+
+    it("fits a signer's cold first send inside the batch margin with the first URLs hanging", async () => {
+      const run = async (hung: number) => {
+        const hanging = await Promise.all(Array.from({ length: hung }, () => node(() => 'hang')))
+        const answering = await node(coldSend)
+        const urls = [...hanging.map((h) => h.url), answering.url]
+        const chain = createRelayerChain(1, urls, chainOptionsFor('signer', urls.length))
+        const started = Date.now()
+        expect(await chain.getNonce(FROM, 'pending')).toBe(7)
+        expect(await chain.estimateFees()).toMatchObject({ maxPriorityFeePerGas: 1_000_000_000n })
+        expect(await chain.send(RAW)).toEqual({ kind: 'accepted' })
+        // every call waited out each hanging URL once
+        for (const h of hanging) expect(h.calls).toHaveLength(4)
+        return Date.now() - started
+      }
+      const [one, two] = await Promise.all([run(1), run(2)])
+      expect(one).toBeLessThan(12_000)
+      expect(two).toBeLessThan(12_000)
+    }, 60_000)
+
     it('moves on when a node cannot serve the call, not just when it is unreachable', async () => {
       // an HTTP 500 with a JSON-RPC error body still answers through viem's normal error path, same as a 200 would
       const brokenNode =

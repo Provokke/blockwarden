@@ -1,5 +1,6 @@
 import { clampFees } from '@blockwarden/core'
 import type { LocalAccount } from 'viem'
+import { DEADLINE_MARGIN_MS } from './batch.js'
 import { describeError, EstimateError, type RelayerChain } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
@@ -29,7 +30,8 @@ const MAX_NONCE_RESETS = 2
 // never sent again, so their bytes are dropped
 export const MAX_ABANDONED_ATTEMPTS = 4
 
-export async function processTx(deps: SignerDeps, txId: string): Promise<ProcessOutcome> {
+// remainingMs is the Lambda's time left, when there is one
+export async function processTx(deps: SignerDeps, txId: string, remainingMs?: () => number): Promise<ProcessOutcome> {
   const { store } = deps
   const stamp = () => deps.now().toISOString()
   // the nonce this run took from the counter: no earlier run can have broadcast anything at it
@@ -63,6 +65,10 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
   }
 
   for (let resets = 0; ; resets++) {
+    // the batch margin covers one pass; a fresh nonce is another pass, and the reset above is already saved
+    if (resets > 0 && remainingMs && remainingMs() < DEADLINE_MARGIN_MS) {
+      throw new Error(`too little time left to send transaction ${txId} at a fresh nonce; SQS will deliver it again`)
+    }
     if (tx.nonce === undefined) {
       // on a cold start the counter may be behind the chain, for example after a key was used elsewhere
       if (!deps.reconciled.has(pair)) {

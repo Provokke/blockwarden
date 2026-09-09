@@ -23,10 +23,6 @@ const deps = once<SignerDeps>(async () => {
 
 export async function handler(event: SQSEvent, context: Context): Promise<SQSBatchResponse> {
   const signerDeps = await deps()
-  return processRecords(
-    event.Records,
-    (txId) => processTx(signerDeps, txId),
-    signerDeps.log,
-    () => context.getRemainingTimeInMillis(),
-  )
+  const remainingMs = () => context.getRemainingTimeInMillis()
+  return processRecords(event.Records, (txId) => processTx(signerDeps, txId, remainingMs), signerDeps.log, remainingMs)
 }
