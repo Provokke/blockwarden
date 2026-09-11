@@ -7,12 +7,13 @@ import {
   dependencyState,
   latestAttempt,
   liveAttempt,
+  markAccepted,
   withStatus,
   type Attempt,
   type SignerRecord,
   type TxRecord,
 } from './records.js'
-import { failRefused } from './refusal.js'
+import { refuseAttempt } from './refusal.js'
 import { attemptFees, signAttempt } from './sign.js'
 import { TxConflictError, type RelayerStore } from './store.js'
 
@@ -141,7 +142,7 @@ export async function sweepChain(deps: SweeperDeps, deadlineMs: number): Promise
         } else if (tx.status === 'mined') {
           await checkMined(deps, signer, tx, head, summary)
         } else if (tx.status === 'submitted') {
-          await checkSubmitted(deps, signer, tx, head, summary)
+          await checkSubmitted(deps, signer, tx, head, summary, deadlineMs)
         }
       } catch (err) {
         countFailure(deps, tx, err, summary)
@@ -255,10 +256,13 @@ async function checkSubmitted(
   tx: TxRecord,
   head: number,
   summary: SweepSummary,
+  deadlineMs: number,
 ): Promise<void> {
   const at = deps.now().toISOString()
-  // newest first: a replacement is the likeliest to have been mined
+  // A lookup loop can run to hundreds of hashes. Past the deadline it stops without deciding anything, and the next
+  // sweep looks again. Newest first: a replacement is the likeliest to have been mined.
   for (const attempt of [...tx.attempts].reverse()) {
+    if (Date.now() >= deadlineMs) return
     const receipt = await deps.chain.getReceipt(attempt.hash)
     if (receipt) return markMined(deps, tx, receipt, head, summary)
   }
@@ -267,6 +271,7 @@ async function checkSubmitted(
   if (minedNonce > tx.nonce!) {
     // a retired hash can only be mined once the nonce is used, so its up to 512 lookups wait for that
     for (const hash of [...(tx.retiredHashes ?? [])].reverse()) {
+      if (Date.now() >= deadlineMs) return
       const receipt = await deps.chain.getReceipt(hash)
       if (receipt) return markMined(deps, tx, receipt, head, summary)
     }
@@ -280,6 +285,7 @@ async function checkSubmitted(
     if (head - tx.nonceUsedAtBlock < deps.settings.confirmations) return
     if (deps.now().getTime() - Date.parse(tx.nonceUsedAt) < minAge) return
     for (const hash of receiptHashes(tx)) {
+      if (Date.now() >= deadlineMs) return
       let receipt
       try {
         receipt = await deps.chain.findReceipt(hash)
@@ -332,18 +338,19 @@ async function rebroadcast(
   switch (outcome.kind) {
     case 'accepted':
     case 'already-known':
-    case 'unknown':
+    case 'unknown': {
+      if (attempt.rejected === undefined && attempt.acceptedAt !== undefined) return
+      const now = deps.now().getTime()
       // a refused attempt the node now takes is live again
-      if (attempt.rejected !== undefined) {
-        const attempts = tx.attempts.map((a) => {
-          if (a.hash !== attempt.hash || a.raw !== attempt.raw) return a
-          const { rejected: _r, ...live } = a
-          return { ...live, broadcastAt: deps.now().getTime() }
-        })
-        const { needsBump: _b, feeCapReached: _f, ...rest } = tx
-        await deps.store.saveTx({ ...rest, attempts }, at)
-      }
+      const attempts = markAccepted(tx.attempts, attempt.hash, now).map((a) => {
+        if (attempt.rejected === undefined || a.hash !== attempt.hash || a.raw !== attempt.raw) return a
+        const { rejected: _r, ...live } = a
+        return { ...live, broadcastAt: now }
+      })
+      const { needsBump: _b, feeCapReached: _f, ...rest } = tx
+      await deps.store.saveTx({ ...(attempt.rejected === undefined ? tx : rest), attempts }, at)
       return
+    }
     case 'rejected':
       await refuse(deps, tx, attempt, outcome.message, summary)
       return
@@ -374,7 +381,10 @@ async function markMined(
 ): Promise<void> {
   const at = deps.now().toISOString()
   const { nonceUsedAtBlock: _n, nonceUsedAt: _t, needsBump: _b, ...rest } = tx
-  const mined = await deps.store.saveTx({ ...withStatus(rest, 'mined', at), mined: receipt }, at)
+  // a receipt proves a node took the signature, which counts if a reorg sends it back and a node refuses it
+  const attempts = markAccepted(tx.attempts, receipt.hash, deps.now().getTime())
+  const retired = tx.attempts.some((a) => a.hash === receipt.hash) ? {} : { retiredAccepted: true }
+  const mined = await deps.store.saveTx({ ...withStatus(rest, 'mined', at), mined: receipt, attempts, ...retired }, at)
   summary.mined++
   if (head - receipt.blockNumber + 1 >= deps.settings.confirmations) {
     await deps.store.saveTx(withStatus(mined, 'confirmed', at), at)
@@ -432,11 +442,13 @@ async function replace(
   // checked only now, so stored bytes above still go out at the limit
   let kept = tx.attempts
   let retired = tx.retiredHashes
+  let retiredAccepted = tx.retiredAccepted
   if (kept.length >= MAX_STORED_ATTEMPTS) {
     const drop = dropIndex(kept)
     if (drop === -1) return flagFeeCap(deps, tx, summary, { attempts: kept.length })
     if ((retired?.length ?? 0) >= MAX_RETIRED_HASHES) return flagRetiredHashesFull(deps, tx, summary)
-    const { hash } = kept[drop]!
+    const { hash, acceptedAt } = kept[drop]!
+    if (acceptedAt !== undefined) retiredAccepted = true
     kept = kept.toSpliced(drop, 1)
     // a twin signed at the same fees shares the hash, and one copy is enough
     if (!kept.some((a) => a.hash === hash) && !retired?.includes(hash)) retired = [...(retired ?? []), hash]
@@ -445,7 +457,12 @@ async function replace(
   const attempt = await signAttempt(account, tx, fees, deps.now().getTime())
   const { needsBump: _b, ...rest } = tx
   const saved = await deps.store.saveTx(
-    { ...rest, attempts: [...makeRoom(kept), attempt], ...(retired ? { retiredHashes: retired } : {}) },
+    {
+      ...rest,
+      attempts: [...makeRoom(kept), attempt],
+      ...(retired ? { retiredHashes: retired } : {}),
+      ...(retiredAccepted ? { retiredAccepted } : {}),
+    },
     at,
   )
   const outcome = await deps.chain.send(attempt.raw)
@@ -464,10 +481,8 @@ async function afterReplacement(
 ): Promise<void> {
   const at = deps.now().toISOString()
   if (outcome.kind === 'accepted' || outcome.kind === 'already-known' || outcome.kind === 'unknown') {
-    if (tx.feeCapReached) {
-      const { feeCapReached: _f, ...rest } = tx
-      await deps.store.saveTx(rest, at)
-    }
+    const { feeCapReached: _f, ...rest } = tx
+    await deps.store.saveTx({ ...rest, attempts: markAccepted(tx.attempts, attempt.hash, deps.now().getTime()) }, at)
     return
   }
   if (outcome.kind === 'nonce-too-low') return
@@ -478,8 +493,7 @@ async function afterReplacement(
   await deps.store.saveTx({ ...tx, attempts, ...(outcome.kind === 'underpriced' ? { needsBump: true } : {}) }, at)
 }
 
-// An outright refusal is as final as it is for the signer only when no other signature at the nonce could still be
-// mined; otherwise the attempt is marked and the transaction waits on the others.
+// the signer's rule too: failed with a filler only when no node ever took a signature at the nonce
 async function refuse(
   deps: SweeperDeps,
   tx: TxRecord,
@@ -487,13 +501,7 @@ async function refuse(
   message: string,
   summary: SweepSummary,
 ): Promise<void> {
-  if (!tx.attempts.some((a) => a.rejected === undefined && a.hash !== attempt.hash)) {
-    await failRefused(deps, deps.chain, tx, attempt.hash, tx.from, message)
-    summary.failed++
-    return
-  }
-  const attempts = tx.attempts.map((a) => (a.hash === attempt.hash ? { ...a, rejected: message } : a))
-  await deps.store.saveTx({ ...tx, attempts }, deps.now().toISOString())
+  if ((await refuseAttempt(deps, deps.chain, tx, attempt.hash, tx.from, message)) === 'failed') summary.failed++
 }
 
 async function flagFeeCap(

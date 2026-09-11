@@ -4,8 +4,15 @@ import { DEADLINE_MARGIN_MS } from './batch.js'
 import { describeError, EstimateError, type RelayerChain } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
-import { dependencyState, latestAttempt, withStatus, type SignerRecord, type TxRecord } from './records.js'
-import { failRefused } from './refusal.js'
+import {
+  dependencyState,
+  latestAttempt,
+  markAccepted,
+  withStatus,
+  type SignerRecord,
+  type TxRecord,
+} from './records.js'
+import { refuseAttempt } from './refusal.js'
 import { signAttempt } from './sign.js'
 import type { RelayerStore } from './store.js'
 
@@ -93,9 +100,11 @@ export async function processTx(deps: SignerDeps, txId: string, remainingMs?: ()
       case 'accepted':
       case 'already-known':
       // an unclassified answer or a timeout may still have reached the mempool; the sweeper settles it by hash
-      case 'unknown':
-        await store.saveTx(withStatus(tx, 'submitted', stamp()), stamp())
+      case 'unknown': {
+        const attempts = markAccepted(tx.attempts, attempt.hash, deps.now().getTime())
+        await store.saveTx({ ...withStatus(tx, 'submitted', stamp()), attempts }, stamp())
         return 'submitted'
+      }
 
       case 'underpriced': {
         // below the base fee or the node's minimum: the sweeper replaces it on its next run
@@ -136,8 +145,8 @@ export async function processTx(deps: SignerDeps, txId: string, remainingMs?: ()
       }
 
       case 'rejected':
-        await failRefused(deps, chain, tx, attempt.hash, account.address, outcome.message)
-        return 'failed'
+        // a first send was never taken by a node, so this fails it with a filler
+        return refuseAttempt(deps, chain, tx, attempt.hash, account.address, outcome.message)
     }
   }
 }
