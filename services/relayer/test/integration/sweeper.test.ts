@@ -1,7 +1,7 @@
 import { isAcceptedReplacement } from '@blockwarden/core'
 import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import { keccak256, parseTransaction, toHex, type Hex, type LocalAccount } from 'viem'
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Attempt, TxRecord } from '../../src/records.js'
 import { signAttempt } from '../../src/sign.js'
 import { processTx, type SignerDeps } from '../../src/signer.js'
@@ -39,6 +39,10 @@ describe('sweepChain', () => {
 
   afterAll(async () => {
     await dynamo?.stop()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
   })
 
   beforeEach(async () => {
@@ -669,6 +673,75 @@ describe('sweepChain', () => {
         expect(chain.sent).toHaveLength(sent)
       })
 
+      it('keeps the transaction submitted when a dropped attempt was taken by a node and the rest are refused', async () => {
+        const seeded = await atRoomLimit()
+        // the oldest was taken by a node before it was refused
+        const attempts = seeded.attempts.map((a, i) => (i === 0 ? { ...a, acceptedAt: START } : a))
+        const tx = await store.saveTx({ ...seeded.tx, attempts }, new Date(START).toISOString())
+        await dropOldest(tx, attempts[0]!)
+        expect((await reload(tx)).retiredAccepted).toBe(true)
+
+        // fees fall under the newest bytes, which the node now refuses outright
+        chain.fees = { maxFeePerGas: 50_000_000n, maxPriorityFeePerGas: 1_000_000n }
+        chain.sendOutcomes = [{ kind: 'rejected', message: 'exceeds block gas limit' }]
+        nowMs += 60_000
+        expect(await sweepChain(deps, FAR)).toMatchObject({ rebroadcast: 1, failed: 0 })
+        const stored = await reload(tx)
+        expect(stored.status).toBe('submitted')
+        expect(stored.fillerTxId).toBeUndefined()
+        expect(stored.attempts.at(-1)!.rejected).toBe('exceeds block gas limit')
+        expect(queue.sent).toEqual([])
+
+        chain.nonces.latest = 4
+        chain.mine(attempts[0]!.hash, 99)
+        nowMs += 60_000
+        expect(await sweepChain(deps, FAR)).toMatchObject({ mined: 1, failed: 0 })
+        expect(await reload(tx)).toMatchObject({ status: 'mined', mined: { hash: attempts[0]!.hash } })
+      })
+
+      it('stops looking up receipts at the deadline without deciding, and carries on next sweep', async () => {
+        const retired = Array.from({ length: MAX_RETIRED_HASHES }, (_, i) => keccak256(toHex(i)))
+        const { tx } = await atRoomLimit({
+          retiredHashes: retired,
+          nonceUsedAtBlock: 100,
+          nonceUsedAt: new Date(START - 600_000).toISOString(),
+        })
+        chain.nonces.latest = 4
+        chain.head = 200
+        const deadline = Date.now() + 60_000
+        const passDeadlineAfter = (method: 'getReceipt' | 'findReceipt', calls: number) => {
+          const real = chain[method].bind(chain)
+          let count = 0
+          const spy = vi.spyOn(chain, method).mockImplementation(async (hash) => {
+            if (++count === calls) vi.spyOn(Date, 'now').mockReturnValue(deadline)
+            return real(hash)
+          })
+          return () => {
+            spy.mockRestore()
+            vi.mocked(Date.now).mockRestore()
+            return count
+          }
+        }
+
+        // in the per-sweep lookups
+        let restore = passDeadlineAfter('getReceipt', 100)
+        expect(await sweepChain(deps, deadline)).toMatchObject({ mined: 0, failed: 0 })
+        expect(restore()).toBe(100)
+        expect(await reload(tx)).toMatchObject({ status: 'submitted', nonceUsedAtBlock: 100 })
+
+        // in the lookups on every URL before failing
+        restore = passDeadlineAfter('findReceipt', 100)
+        expect(await sweepChain(deps, deadline)).toMatchObject({ mined: 0, failed: 0 })
+        expect(restore()).toBe(100)
+        expect((await reload(tx)).status).toBe('submitted')
+
+        // the next sweep has time, and finds the oldest dropped hash on another URL
+        const oldest = retired[0]!
+        chain.otherNodes = [{ receipts: new Map([[oldest, receiptAt(oldest, 150)]]) }]
+        expect(await sweepChain(deps, FAR)).toMatchObject({ mined: 1, confirmed: 1, failed: 0 })
+        expect(await reload(tx)).toMatchObject({ status: 'confirmed', mined: { hash: oldest } })
+      })
+
       it(`stops signing once ${MAX_RETIRED_HASHES} dropped hashes are kept, still rebroadcasting stored bytes`, async () => {
         const retired = Array.from({ length: MAX_RETIRED_HASHES }, (_, i) => keccak256(toHex(i)))
         const { tx, attempts } = await atRoomLimit({ retiredHashes: retired })
@@ -819,15 +892,19 @@ describe('sweepChain', () => {
       expect(stored.attempts[0]!.rejected).toBeUndefined()
     })
 
-    it('fails a reorged transaction whose mined bytes are refused outright on the way back', async () => {
+    it('keeps a reorged transaction submitted when its mined bytes are refused outright on the way back', async () => {
       const tx = await submitted()
       chain.mine(tx.attempts[0]!.hash, 99)
       await sweepChain(deps, FAR)
+      expect((await reload(tx)).attempts[0]!.acceptedAt).toBe(START)
       chain.receipts.clear()
       chain.sendOutcomes = [{ kind: 'rejected', message: 'invalid sender' }]
-      expect(await sweepChain(deps, FAR)).toMatchObject({ reorged: 1, failed: 1 })
-      expect(await reload(tx)).toMatchObject({ status: 'failed', error: 'invalid sender', fillerTxId: 'filler-1' })
-      expect(queue.sent).toEqual([{ txId: 'filler-1', enqueues: 1 }])
+      expect(await sweepChain(deps, FAR)).toMatchObject({ reorged: 1, failed: 0 })
+      const stored = await reload(tx)
+      expect(stored).toMatchObject({ status: 'submitted' })
+      expect(stored.fillerTxId).toBeUndefined()
+      expect(stored.attempts[0]!.rejected).toBe('invalid sender')
+      expect(queue.sent).toEqual([])
     })
 
     it('keeps the transaction submitted when a rebroadcast is refused outright but an earlier attempt can still be mined', async () => {
@@ -860,6 +937,103 @@ describe('sweepChain', () => {
       expect(await sweepChain(deps, FAR)).toMatchObject({ reorged: 1 })
       expect(await store.getPause('billing', CHAIN_ID)).toBeDefined()
       expect((await reload(tx)).status).toBe('submitted')
+    })
+  })
+
+  describe('a refusal after a node took an attempt', () => {
+    const rejected = (message = 'exceeds block gas limit') => {
+      chain.sendOutcomes = [{ kind: 'rejected', message }]
+    }
+
+    it('keeps the transaction submitted when an attempt a node took is refused later, and settles it on its receipt', async () => {
+      const tx = await submitted()
+      const a = tx.attempts[0]!
+      chain.nonces.latest = 3
+      nowMs = START + 1_000
+
+      // the node forgot A and takes it again
+      expect(await sweepChain(deps, FAR)).toMatchObject({ rebroadcast: 1 })
+      expect((await reload(tx)).attempts[0]!.acceptedAt).toBe(START + 1_000)
+
+      // then forgets it again and refuses it outright
+      nowMs = START + 2_000
+      rejected()
+      expect(await sweepChain(deps, FAR)).toMatchObject({ rebroadcast: 1, failed: 0 })
+      expect(await reload(tx)).toMatchObject({ status: 'submitted' })
+
+      // stuck with nothing live: a fresh attempt B at higher fees, refused outright too
+      nowMs = START + 91_000
+      chain.fees = { maxFeePerGas: 5n * GWEI, maxPriorityFeePerGas: 2n * GWEI }
+      rejected()
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1, failed: 0 })
+      const stored = await reload(tx)
+      expect(stored.status).toBe('submitted')
+      expect(stored.fillerTxId).toBeUndefined()
+      expect(stored.attempts.map((x) => [x.rejected, x.acceptedAt])).toEqual([
+        ['exceeds block gas limit', START + 1_000],
+        ['exceeds block gas limit', undefined],
+      ])
+      expect(queue.sent).toEqual([])
+
+      chain.nonces.latest = 4
+      chain.mine(a.hash, 94)
+      expect(await sweepChain(deps, FAR)).toMatchObject({ mined: 1, confirmed: 1 })
+      expect(await reload(tx)).toMatchObject({ status: 'confirmed', mined: { hash: a.hash } })
+    })
+
+    it('fails with a filler when no attempt, stored or dropped, was ever taken by a node', async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const refused = { ...(await attempt(base, 2n * GWEI, 1n * GWEI)), rejected: 'transaction underpriced' }
+      const newer = await attempt(base, 3n * GWEI, 2n * GWEI)
+      const tx = await submitted({ attempts: [refused, newer], retiredHashes: [keccak256(toHex(1))] })
+      chain.nonces.latest = 3
+      nowMs = START + 1_000
+      rejected()
+      expect(await sweepChain(deps, FAR)).toMatchObject({ rebroadcast: 1, failed: 1 })
+      expect(await reload(tx)).toMatchObject({ status: 'failed', fillerTxId: 'filler-1' })
+      expect(queue.sent).toEqual([{ txId: 'filler-1', enqueues: 1 }])
+    })
+
+    // nothing live, nonce unused: each sweep has a next step, and none of them fails the transaction
+    it('keeps moving a transaction with nothing live and its nonce unused', async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const taken = {
+        ...(await attempt(base, 2n * GWEI, 1n * GWEI)),
+        acceptedAt: START,
+        rejected: 'exceeds block gas limit',
+      }
+      const tx = await submitted({ attempts: [taken] })
+      chain.nonces.latest = 3
+
+      // not stuck yet: nothing to rebroadcast, nothing to sign
+      nowMs = START + 60_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 0, rebroadcast: 0, failed: 0 })
+      expect(chain.sent).toEqual([])
+
+      // stuck, estimate at or below the refused fees: its bytes go out again
+      nowMs = START + 90_000
+      rejected()
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 0, rebroadcast: 1, failed: 0 })
+      expect(chain.sent).toEqual([taken.raw])
+
+      // estimate over the cap: flagged, and a fresh attempt at the cap is signed and sent
+      chain.fees = { maxFeePerGas: 150n * GWEI, maxPriorityFeePerGas: 1n * GWEI }
+      nowMs += 60_000
+      rejected()
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1, feeCapReached: 1, failed: 0 })
+      expect((await reload(tx)).attempts).toHaveLength(2)
+
+      // stuck again, estimate under the cap and above the refusal under it: a new attempt, which the node takes
+      chain.fees = { maxFeePerGas: 5n * GWEI, maxPriorityFeePerGas: 1n * GWEI }
+      nowMs += 90_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1, failed: 0 })
+      const stored = await reload(tx)
+      expect(stored.status).toBe('submitted')
+      expect(stored.attempts).toHaveLength(3)
+      expect(stored.attempts[2]).toMatchObject({ maxFeePerGas: (5n * GWEI).toString(), acceptedAt: nowMs })
+      expect(stored.attempts[2]!.rejected).toBeUndefined()
+      expect(chain.sent.at(-1)).toBe(stored.attempts[2]!.raw)
+      expect(queue.sent).toEqual([])
     })
   })
 

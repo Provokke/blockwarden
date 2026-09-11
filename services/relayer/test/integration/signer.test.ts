@@ -251,7 +251,7 @@ describe('processTx', () => {
     chain.sendOutcomes = [{ kind: 'already-known' }]
     expect(await processTx(deps, tx.txId)).toBe('submitted')
     const stored = (await store.getTx(tx.txId))!
-    expect(stored.attempts).toEqual(first.attempts)
+    expect(stored.attempts).toEqual(first.attempts.map((a) => ({ ...a, acceptedAt: NOW.getTime() })))
     expect(chain.sent).toEqual([first.attempts[0]!.raw, first.attempts[0]!.raw])
     expect(counter.signatures).toBe(1)
   })
@@ -310,6 +310,7 @@ describe('processTx', () => {
     const failed = (await store.getTx(tx.txId))!
     expect(failed).toMatchObject({ status: 'failed', error: 'intrinsic gas too low', fillerTxId: 'filler-1', nonce: 4 })
     expect(failed.attempts[0]!.rejected).toBe('intrinsic gas too low')
+    expect(failed.attempts[0]!.acceptedAt).toBeUndefined()
     const filler = (await store.getTx('filler-1'))!
     expect(filler).toMatchObject({
       kind: 'filler',
@@ -332,6 +333,19 @@ describe('processTx', () => {
     })
     // viem leaves a zero value out of the parsed transaction
     expect(parseTransaction((await store.getTx('filler-1'))!.attempts[0]!.raw).value).toBeUndefined()
+  })
+
+  it('records when a node took the first send, or may have', async () => {
+    for (const outcome of [
+      { kind: 'accepted' },
+      { kind: 'already-known' },
+      { kind: 'unknown', message: 'timed out' },
+    ] as const) {
+      const tx = await create()
+      chain.sendOutcomes = [outcome]
+      expect(await processTx(deps, tx.txId)).toBe('submitted')
+      expect((await store.getTx(tx.txId))!.attempts[0]!.acceptedAt).toBe(NOW.getTime())
+    }
   })
 
   it('fails a refused filler without creating another', async () => {
