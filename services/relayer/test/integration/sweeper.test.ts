@@ -701,11 +701,7 @@ describe('sweepChain', () => {
 
       it('stops looking up receipts at the deadline without deciding, and carries on next sweep', async () => {
         const retired = Array.from({ length: MAX_RETIRED_HASHES }, (_, i) => keccak256(toHex(i)))
-        const { tx } = await atRoomLimit({
-          retiredHashes: retired,
-          nonceUsedAtBlock: 100,
-          nonceUsedAt: new Date(START - 600_000).toISOString(),
-        })
+        const { tx } = await atRoomLimit({ retiredHashes: retired })
         chain.nonces.latest = 4
         chain.head = 200
         const deadline = Date.now() + 60_000
@@ -727,13 +723,33 @@ describe('sweepChain', () => {
         let restore = passDeadlineAfter('getReceipt', 100)
         expect(await sweepChain(deps, deadline)).toMatchObject({ mined: 0, failed: 0 })
         expect(restore()).toBe(100)
-        expect(await reload(tx)).toMatchObject({ status: 'submitted', nonceUsedAtBlock: 100 })
+        expect(await reload(tx)).toMatchObject({
+          status: 'submitted',
+          lookupFrom: { walk: 'receipts', index: 100 },
+        })
 
-        // in the lookups on every URL before failing
+        // the next sweep carries on from there instead of starting over
+        restore = passDeadlineAfter('getReceipt', 50)
+        expect(await sweepChain(deps, deadline)).toMatchObject({ mined: 0, failed: 0 })
+        expect(restore()).toBe(50)
+        expect((await reload(tx)).lookupFrom).toEqual({ walk: 'receipts', index: 150 })
+
+        // with time to finish the walk, the used nonce is recorded and the next walk starts at the newest hash
+        expect(await sweepChain(deps, FAR)).toMatchObject({ mined: 0, failed: 0 })
+        const seen = await reload(tx)
+        expect(seen).toMatchObject({ status: 'submitted', nonceUsedAtBlock: 200 })
+        expect(seen.lookupFrom).toBeUndefined()
+
+        // in the lookups on every URL before failing, once the wait is over
+        nowMs += 600_000
+        chain.head = 205
         restore = passDeadlineAfter('findReceipt', 100)
         expect(await sweepChain(deps, deadline)).toMatchObject({ mined: 0, failed: 0 })
         expect(restore()).toBe(100)
-        expect((await reload(tx)).status).toBe('submitted')
+        expect(await reload(tx)).toMatchObject({
+          status: 'submitted',
+          lookupFrom: { walk: 'all-urls', index: 100 },
+        })
 
         // the next sweep has time, and finds the oldest dropped hash on another URL
         const oldest = retired[0]!
@@ -1034,6 +1050,60 @@ describe('sweepChain', () => {
       expect(stored.attempts[2]!.rejected).toBeUndefined()
       expect(chain.sent.at(-1)).toBe(stored.attempts[2]!.raw)
       expect(queue.sent).toEqual([])
+    })
+  })
+
+  describe('a transaction with hundreds of hashes', () => {
+    // the reviewer's probe: 100 ms a call, 10 second sweeps, and a second transaction waiting behind the big one
+    const CALL_MS = 100
+    const SWEEP_MS = 10_000
+
+    it('checks the transaction behind it on every sweep, and still reaches a decision', async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const attempts: Attempt[] = []
+      for (let i = 0; i < MAX_STORED_ATTEMPTS; i++) {
+        const signed = await attempt(base, BigInt(i + 1) * 1_000_000n, 1_000_000n)
+        attempts.push({ ...signed, raw: '0x', rejected: 'transaction underpriced' })
+      }
+      const big = await submitted({
+        attempts,
+        retiredHashes: Array.from({ length: MAX_RETIRED_HASHES }, (_, i) => keccak256(toHex(i))),
+        createdAt: '2026-09-17T00:00:00.000Z',
+      })
+      // a later nonce, so the sweeper only looks its hash up and leaves it alone
+      const behind = await submitted({ nonce: 5, createdAt: '2026-09-17T00:00:01.000Z' })
+      const behindHash = behind.attempts[0]!.hash
+      chain.known.add(behindHash)
+      chain.nonces.latest = 4
+      chain.head = 200
+
+      // 100 ms a call on the clock the deadline is measured against; deps.now stays on nowMs
+      let clock = START
+      vi.spyOn(Date, 'now').mockImplementation(() => clock)
+      const timed =
+        <A extends unknown[], R>(call: (...args: A) => Promise<R>) =>
+        async (...args: A): Promise<R> => {
+          clock += CALL_MS
+          return call(...args)
+        }
+      chain.getReceipt = timed(chain.getReceipt.bind(chain))
+      chain.findReceipt = timed(chain.findReceipt.bind(chain))
+      chain.getNonce = timed(chain.getNonce.bind(chain))
+
+      let stored = await reload(big)
+      let sweeps = 0
+      while (stored.status !== 'failed' && sweeps < 60) {
+        sweeps++
+        chain.calls = []
+        await sweepChain(deps, clock + SWEEP_MS)
+        // the big transaction never uses the whole sweep up
+        expect(chain.calls).toContain(`getReceipt:${behindHash}`)
+        stored = await reload(big)
+        nowMs += 60_000
+        chain.head += 5
+      }
+      expect(stored).toMatchObject({ status: 'failed', error: expect.stringContaining('nonce') })
+      expect((await reload(behind)).status).toBe('submitted')
     })
   })
 

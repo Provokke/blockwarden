@@ -56,6 +56,9 @@ export type TxRecord = {
   retiredAccepted?: boolean
   // retiredHashes is full, so the sweeper signs nothing more for this transaction and only rebroadcasts; never cleared
   retiredHashesFull?: boolean
+  // how far the last sweep got through this transaction's hashes, so the next one carries on instead of starting
+  // over; the two walks count separately, and a finished walk clears it
+  lookupFrom?: { walk: 'receipts' | 'all-urls'; index: number }
   // the node refused the last signature as underpriced, so the sweeper replaces it without waiting
   needsBump?: boolean
   // the policy fee cap is below the node's replacement minimum, so the sweeper can only rebroadcast
