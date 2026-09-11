@@ -61,13 +61,21 @@ function rpcAnswer(err: unknown): RpcRequestError | undefined {
   return found instanceof RpcRequestError ? found : undefined
 }
 
+// A node's answer is stored on the transaction item and logged, and some echo the whole raw transaction back, so
+// this is as much of one as either can afford. The 1 KB the reviewer measured put a full item at 392 KB.
+const MAX_ERROR_CHARS = 256
+
+function short(text: string): string {
+  return text.length <= MAX_ERROR_CHARS ? text : `${text.slice(0, MAX_ERROR_CHARS - 3)}...`
+}
+
 // The node's own words, else viem's short messages. Never the full message: it repeats the raw transaction and can
 // carry the RPC URL with its API key.
 export function describeError(err: unknown): string {
   const answer = rpcAnswer(err)
   // a node can answer with no "message" field, or with "error" as a bare string; details is then undefined and the
   // chain below still has viem's own shortMessage to fall back on
-  if (answer?.details) return answer.details
+  if (answer?.details) return short(answer.details)
   const parts: string[] = []
   let current: unknown = err
   for (let depth = 0; current && depth < 8; depth++) {
@@ -76,7 +84,7 @@ export function describeError(err: unknown): string {
     for (const part of own) if (typeof part === 'string' && part && !parts.includes(part)) parts.push(part)
     current = e.cause
   }
-  return parts.join(' | ')
+  return short(parts.join(' | '))
 }
 
 // -32005 is the JSON-RPC limit-exceeded code; some providers put 429 in the body as the code instead
@@ -102,6 +110,7 @@ function isRevertAnswer(err: unknown): boolean {
 // Node messages are the only stable signal: geth, op-geth, Nitro and Anvil share most of them, and viem's own
 // error classes lump "already known" together with "nonce too low".
 export function classifySendError(err: unknown): SendOutcome {
+  // the patterns below all sit at the front of a node's answer, so the shortened message still classifies
   const message = describeError(err)
   if (isTransportError(err)) return { kind: 'unknown', message }
   const text = message.toLowerCase()
