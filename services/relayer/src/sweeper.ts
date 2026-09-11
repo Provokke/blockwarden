@@ -118,7 +118,7 @@ export async function sweepChain(deps: SweeperDeps, deadlineMs: number): Promise
       const age = Math.floor((nowMs - Date.parse(tx.createdAt)) / 1000)
       summary.oldestPendingSeconds = Math.max(summary.oldestPendingSeconds, age)
     }
-    for (const tx of page.txs) {
+    for (const [position, tx] of page.txs.entries()) {
       if (Date.now() >= deadlineMs) return summary
       summary.checked++
       try {
@@ -142,7 +142,9 @@ export async function sweepChain(deps: SweeperDeps, deadlineMs: number): Promise
         } else if (tx.status === 'mined') {
           await checkMined(deps, signer, tx, head, summary)
         } else if (tx.status === 'submitted') {
-          await checkSubmitted(deps, signer, tx, head, summary, deadlineMs)
+          // an equal share of what is left, so one transaction's hundreds of hash lookups cannot use the sweep up
+          const share = Math.floor((deadlineMs - Date.now()) / (page.txs.length - position))
+          await checkSubmitted(deps, signer, tx, head, summary, Date.now() + share)
         }
       } catch (err) {
         countFailure(deps, tx, err, summary)
@@ -259,33 +261,46 @@ async function checkSubmitted(
   deadlineMs: number,
 ): Promise<void> {
   const at = deps.now().toISOString()
-  // A lookup loop can run to hundreds of hashes. Past the deadline it stops without deciding anything, and the next
-  // sweep looks again. Newest first: a replacement is the likeliest to have been mined.
-  for (const attempt of [...tx.attempts].reverse()) {
-    if (Date.now() >= deadlineMs) return
-    const receipt = await deps.chain.getReceipt(attempt.hash)
-    if (receipt) return markMined(deps, tx, receipt, head, summary)
+  // A transaction can hold hundreds of hashes, so a walk stops at its slice of the sweep and saves how far it got;
+  // the next sweep carries on from there. Newest first: a replacement is the likeliest to have been mined.
+  const walk: LookupWalk = readyToFail(deps, tx, head) ? 'all-urls' : 'receipts'
+  const from = tx.lookupFrom?.walk === walk ? tx.lookupFrom.index : 0
+  let index = 0
+
+  // the all-URL walk below asks for each of these hashes too, so it does not repeat them
+  if (walk === 'receipts') {
+    for (const attempt of [...tx.attempts].reverse()) {
+      if (index++ < from) continue
+      if (Date.now() >= deadlineMs) return stopLookup(deps, tx, walk, index - 1, at)
+      const receipt = await deps.chain.getReceipt(attempt.hash)
+      if (receipt) return markMined(deps, tx, receipt, head, summary)
+    }
   }
 
   const minedNonce = await deps.chain.getNonce(tx.from, 'latest')
   if (minedNonce > tx.nonce!) {
-    // a retired hash can only be mined once the nonce is used, so its up to 512 lookups wait for that
-    for (const hash of [...(tx.retiredHashes ?? [])].reverse()) {
-      if (Date.now() >= deadlineMs) return
-      const receipt = await deps.chain.getReceipt(hash)
-      if (receipt) return markMined(deps, tx, receipt, head, summary)
-    }
-    // The nonce is used, but by none of our hashes. A lagging node can show that for a while, so wait both the
-    // confirmation depth and a minimum age, then ask every URL, before deciding it was replaced from outside.
-    if (tx.nonceUsedAtBlock === undefined || tx.nonceUsedAt === undefined) {
-      await deps.store.saveTx({ ...tx, nonceUsedAtBlock: tx.nonceUsedAtBlock ?? head, nonceUsedAt: at }, at)
+    if (walk === 'receipts') {
+      // a retired hash can only be mined once the nonce is used, so its up to 512 lookups wait for that
+      for (const hash of [...(tx.retiredHashes ?? [])].reverse()) {
+        if (index++ < from) continue
+        if (Date.now() >= deadlineMs) return stopLookup(deps, tx, walk, index - 1, at)
+        const receipt = await deps.chain.getReceipt(hash)
+        if (receipt) return markMined(deps, tx, receipt, head, summary)
+      }
+      // The nonce is used, but by none of our hashes. A lagging node can show that for a while, so wait both the
+      // confirmation depth and a minimum age, then ask every URL, before deciding it was replaced from outside.
+      if (tx.nonceUsedAtBlock === undefined || tx.nonceUsedAt === undefined) {
+        const seen = { ...tx, nonceUsedAtBlock: tx.nonceUsedAtBlock ?? head, nonceUsedAt: at }
+        await deps.store.saveTx(withoutLookup(seen), at)
+        return
+      }
+      // this walk is over, so the next sweep starts at the newest hash again
+      if (tx.lookupFrom !== undefined) await deps.store.saveTx(withoutLookup(tx), at)
       return
     }
-    const minAge = deps.settings.nonceUsedMinAgeMs ?? DEFAULT_NONCE_USED_MIN_AGE_MS
-    if (head - tx.nonceUsedAtBlock < deps.settings.confirmations) return
-    if (deps.now().getTime() - Date.parse(tx.nonceUsedAt) < minAge) return
     for (const hash of receiptHashes(tx)) {
-      if (Date.now() >= deadlineMs) return
+      if (index++ < from) continue
+      if (Date.now() >= deadlineMs) return stopLookup(deps, tx, walk, index - 1, at)
       let receipt
       try {
         receipt = await deps.chain.findReceipt(hash)
@@ -301,15 +316,18 @@ async function checkSubmitted(
       if (receipt) return markMined(deps, tx, receipt, head, summary)
     }
     await deps.store.saveTx(
-      { ...withStatus(tx, 'failed', at), error: 'the nonce was used by a transaction this relayer did not send' },
+      {
+        ...withStatus(withoutLookup(tx), 'failed', at),
+        error: 'the nonce was used by a transaction this relayer did not send',
+      },
       at,
     )
     summary.failed++
     return
   }
-  if (tx.nonceUsedAtBlock !== undefined || tx.nonceUsedAt !== undefined) {
+  if (tx.nonceUsedAtBlock !== undefined || tx.nonceUsedAt !== undefined || tx.lookupFrom !== undefined) {
     // the node that read the nonce as used was ahead or wrong; a later sighting starts the wait again
-    const { nonceUsedAtBlock: _n, nonceUsedAt: _t, ...rest } = tx
+    const { nonceUsedAtBlock: _n, nonceUsedAt: _t, lookupFrom: _l, ...rest } = tx
     tx = await deps.store.saveTx(rest, at)
   }
 
@@ -380,7 +398,7 @@ async function markMined(
   summary: SweepSummary,
 ): Promise<void> {
   const at = deps.now().toISOString()
-  const { nonceUsedAtBlock: _n, nonceUsedAt: _t, needsBump: _b, ...rest } = tx
+  const { nonceUsedAtBlock: _n, nonceUsedAt: _t, needsBump: _b, lookupFrom: _l, ...rest } = tx
   // a receipt proves a node took the signature, which counts if a reorg sends it back and a node refuses it
   const attempts = markAccepted(tx.attempts, receipt.hash, deps.now().getTime())
   const retired = tx.attempts.some((a) => a.hash === receipt.hash) ? {} : { retiredAccepted: true }
@@ -529,6 +547,28 @@ async function flagRetiredHashesFull(deps: SweeperDeps, tx: TxRecord, summary: S
     'warn',
   )
   return saved
+}
+
+type LookupWalk = NonNullable<TxRecord['lookupFrom']>['walk']
+
+// the nonce has read as used long enough that the next step is asking every URL and then failing the transaction
+function readyToFail(deps: SweeperDeps, tx: TxRecord, head: number): boolean {
+  if (tx.nonceUsedAtBlock === undefined || tx.nonceUsedAt === undefined) return false
+  const minAge = deps.settings.nonceUsedMinAgeMs ?? DEFAULT_NONCE_USED_MIN_AGE_MS
+  return (
+    head - tx.nonceUsedAtBlock >= deps.settings.confirmations &&
+    deps.now().getTime() - Date.parse(tx.nonceUsedAt) >= minAge
+  )
+}
+
+// where this sweep ran out of its slice; a part of a walk decides nothing
+async function stopLookup(deps: SweeperDeps, tx: TxRecord, walk: LookupWalk, index: number, at: string): Promise<void> {
+  await deps.store.saveTx({ ...tx, lookupFrom: { walk, index } }, at)
+}
+
+function withoutLookup(tx: TxRecord): TxRecord {
+  const { lookupFrom: _l, ...rest } = tx
+  return rest
 }
 
 // every hash of ours that could be mined at this nonce, stored attempts first, newest first
