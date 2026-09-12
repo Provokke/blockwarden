@@ -1,7 +1,7 @@
 import { CreateTableCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { GenericContainer, Wait } from 'testcontainers'
-import { createDocumentClient } from '../../src/store.js'
-import { tableDefinition } from '../../src/table.js'
+import { createDocumentClient } from './document-client.js'
+import { tableDefinition } from './table.js'
 
 export type Dynamo = Awaited<ReturnType<typeof startDynamo>>
 
@@ -21,6 +21,7 @@ export async function startDynamo() {
 
   return {
     endpoint,
+    client,
     doc,
     async newTable(): Promise<string> {
       const name = `blockwarden-test-${++tables}`
