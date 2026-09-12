@@ -441,6 +441,17 @@ describe('processTx', () => {
       expect(await store.getNextNonce('billing', CHAIN_ID)).toBeUndefined()
     })
 
+    it('stores only the start of a revert payload a node makes huge', async () => {
+      const dependency = await create()
+      await settle(dependency, 'confirmed')
+      const tx = await create({ dependsOn: dependency.txId })
+      chain.estimateFailure = new EstimateError('reverted', 'eth_estimateGas reverted', `0x${'ab'.repeat(8_192)}`)
+      expect(await processTx(deps, tx.txId)).toBe('failed')
+      const error = (await store.getTx(tx.txId))?.error
+      expect(error).toMatch(/^eth_estimateGas reverted once the dependency was confirmed: 0x(ab)+a?\.\.\.$/)
+      expect(error!.length).toBeLessThan(400)
+    })
+
     it('fails without taking a nonce when its dependency was cancelled', async () => {
       const dependency = await create()
       await store.saveTx({ ...dependency, status: 'cancelled' }, 'x')

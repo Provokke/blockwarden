@@ -1,7 +1,7 @@
 import { clampFees } from '@blockwarden/core'
 import type { LocalAccount } from 'viem'
 import { DEADLINE_MARGIN_MS } from './batch.js'
-import { describeError, EstimateError, type RelayerChain } from './chain.js'
+import { describeError, EstimateError, short, type RelayerChain } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
 import {
@@ -172,7 +172,8 @@ async function revertsNow(
   } catch (err) {
     if (!(err instanceof EstimateError)) throw err
     if (err.kind === 'reverted') {
-      return `eth_estimateGas reverted once the dependency was confirmed: ${err.revertData ?? '0x'}`
+      // the node chooses how long this is, and it goes on the item; the API still answers with the whole of it
+      return `eth_estimateGas reverted once the dependency was confirmed: ${short(err.revertData ?? '0x')}`
     }
     // a definitive refusal that isn't a revert (insufficient balance, gas above the block limit, ...): retrying
     // the estimate will not clear it either, so this is the same dead end as a revert

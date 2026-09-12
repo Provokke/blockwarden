@@ -65,7 +65,7 @@ function rpcAnswer(err: unknown): RpcRequestError | undefined {
 // this is as much of one as either can afford. The 1 KB the reviewer measured put a full item at 392 KB.
 const MAX_ERROR_CHARS = 256
 
-function short(text: string): string {
+export function short(text: string): string {
   return text.length <= MAX_ERROR_CHARS ? text : `${text.slice(0, MAX_ERROR_CHARS - 3)}...`
 }
 
