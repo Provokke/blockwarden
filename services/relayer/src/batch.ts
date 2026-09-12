@@ -12,8 +12,10 @@ export const SIGNER_TIMEOUT_MS = 60_000
 // again before one.
 export const SIGNER_CALLS_PER_MESSAGE = 7
 
-// the DynamoDB reads and writes and the one KMS Sign around those calls
-const SIGNER_AWS_MS = 4_000
+// The AWS round trips around those calls: four DynamoDB reads, a nonce update, a transaction, one KMS Sign, two
+// puts, and on the refusal path a filler transaction and an SQS send. At 2 URLs the RPC calls fill the rest of the
+// budget exactly, so this is the only slack there is, and one throttled write with SDK retries can take a second.
+const SIGNER_AWS_MS = 6_000
 
 // What is left of the timeout splits in two: one message's RPC calls, and the margin, which has to hold a whole
 // message because a message may start with only the margin left. chainOptionsFor divides this by the calls and URLs.

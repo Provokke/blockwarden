@@ -48,8 +48,8 @@ describe('chainOptionsFor', () => {
       expect(options.timeoutMs).toBe(Math.max(1_000, Math.min(2_500, Math.floor(share))))
     }
     expect(chainOptionsFor('signer', 1).timeoutMs).toBe(2_500)
-    expect(chainOptionsFor('signer', 2).timeoutMs).toBe(2_000)
-    expect(chainOptionsFor('signer', 3).timeoutMs).toBe(1_333)
+    expect(chainOptionsFor('signer', 2).timeoutMs).toBe(1_928)
+    expect(chainOptionsFor('signer', 3).timeoutMs).toBe(1_285)
   })
 
   // a message may start with only the margin left, so the margin has to hold a whole worst-case message
@@ -58,6 +58,13 @@ describe('chainOptionsFor', () => {
       const worstMessageMs = SIGNER_CALLS_PER_MESSAGE * urls * chainOptionsFor('signer', urls).timeoutMs!
       expect(worstMessageMs).toBeLessThanOrEqual(SIGNER_TIMEOUT_MS - DEADLINE_MARGIN_MS)
     }
+  })
+
+  // at 2 URLs the RPC calls alone fill the budget, so the whole guarantee rests on this allowance: a throttled
+  // DynamoDB write with SDK retries can take over a second on its own
+  it('leaves at least 600 ms per AWS round trip a message makes', () => {
+    const awsMs = DEADLINE_MARGIN_MS - SIGNER_RPC_BUDGET_MS
+    expect(awsMs).toBeGreaterThanOrEqual(10 * 600)
   })
 
   it('gives the sweeper one try per URL, splitting 20 seconds over the URLs, between 1 and 4 seconds', () => {
