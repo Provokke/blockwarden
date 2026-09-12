@@ -8,6 +8,7 @@ import {
   TransactionRejectedRpcError,
 } from 'viem'
 import { afterEach, describe, expect, it } from 'vitest'
+import { DEADLINE_MARGIN_MS, SIGNER_CALLS_PER_MESSAGE } from '../../src/batch.js'
 import {
   classifyEstimateError,
   classifySendError,
@@ -302,9 +303,47 @@ describe('createRelayerChain against scripted nodes', () => {
         return Date.now() - started
       }
       const [one, two] = await Promise.all([run(1), run(2)])
-      expect(one).toBeLessThan(12_000)
-      expect(two).toBeLessThan(12_000)
+      expect(one).toBeLessThan(DEADLINE_MARGIN_MS)
+      expect(two).toBeLessThan(DEADLINE_MARGIN_MS)
     }, 60_000)
+
+    // The whole worst path of one message: the dependsOn estimate, the cold nonce read, the fee estimate (block, tip,
+    // and the gas price viem falls back to when a node has no eth_maxPriorityFeePerGas), the send, and the receipt
+    // check a "nonce too low" answer costs. Run against a short timeout so the test is quick, then scaled up to the
+    // timeout the signer really gets.
+    const worstPath = (method: string): MockReply => {
+      switch (method) {
+        case 'eth_maxPriorityFeePerGas':
+          return { error: { code: -32601, message: 'Method not found' } }
+        case 'eth_gasPrice':
+          return { result: '0x77359400' }
+        case 'eth_sendRawTransaction':
+          return { error: { code: -32000, message: 'nonce too low: next nonce 8, tx nonce 7' } }
+        case 'eth_getTransactionReceipt':
+          return { result: null }
+        default:
+          return coldSend(method)
+      }
+    }
+
+    it("fits the signer's worst message, dependsOn estimate and all, inside the batch margin with 3 URLs", async () => {
+      const hanging = await Promise.all([node(() => 'hang'), node(() => 'hang')])
+      const answering = await node(worstPath)
+      const urls = [...hanging.map((h) => h.url), answering.url]
+      const mockTimeoutMs = 250
+      const chain = createRelayerChain(1, urls, { timeoutMs: mockTimeoutMs, retryCount: 0 })
+      const started = Date.now()
+      expect(await chain.estimateGas({ from: FROM, to: TO, data: '0x', value: 0n })).toBe(21_000n)
+      expect(await chain.getNonce(FROM, 'pending')).toBe(7)
+      expect(await chain.estimateFees()).toMatchObject({ maxPriorityFeePerGas: 1_000_000_000n })
+      expect((await chain.send(RAW)).kind).toBe('nonce-too-low')
+      expect(await chain.getReceipt(`0x${'ab'.repeat(32)}`)).toBeUndefined()
+      const elapsed = Date.now() - started
+      // no call went to a hung URL twice, and none of them was skipped
+      for (const h of hanging) expect(h.calls).toHaveLength(SIGNER_CALLS_PER_MESSAGE)
+      const real = chainOptionsFor('signer', urls.length).timeoutMs!
+      expect((elapsed * real) / mockTimeoutMs).toBeLessThan(DEADLINE_MARGIN_MS)
+    }, 30_000)
 
     it('moves on when a node cannot serve the call, not just when it is unreachable', async () => {
       // an HTTP 500 with a JSON-RPC error body still answers through viem's normal error path, same as a 200 would
