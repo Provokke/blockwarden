@@ -1223,6 +1223,71 @@ describe('sweepChain', () => {
       expect(await reload(tx)).toMatchObject({ status: 'confirmed', mined: { hash: tx.attempts[0]!.hash } })
     })
 
+    it('re-asks its own hashes before failing a walk that resumed from a cursor', async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const attempts: Attempt[] = []
+      for (let i = 0; i < MAX_STORED_ATTEMPTS; i++) attempts.push(await attempt(base, BigInt(i + 1) * GWEI, GWEI))
+      // the walk was cut halfway last sweep, so it resumes below the newest hashes
+      const tx = await submitted({
+        attempts,
+        nonceUsedAtBlock: 200,
+        nonceUsedAt: new Date(START).toISOString(),
+        lookupFrom: { walk: 'all-urls', index: 49 },
+      })
+      chain.nonces.latest = 4
+      chain.head = 205
+      nowMs = START + MIN_AGE
+      // the node that lagged has caught up, and the hash it now has was skipped
+      const newest = attempts.at(-1)!.hash
+      chain.otherNodes = [{ receipts: new Map([[newest, receiptAt(newest, 180)]]) }]
+
+      expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 0, mined: 1, confirmed: 1 })
+      expect(await reload(tx)).toMatchObject({ status: 'confirmed', mined: { hash: newest } })
+    })
+
+    it('fails a walk that finished inside one sweep without asking for its hashes twice', async () => {
+      const tx = await submitted()
+      chain.nonces.latest = 4
+      chain.head = 200
+      await sweepChain(deps, FAR)
+      chain.head = 205
+      nowMs = START + MIN_AGE
+      chain.calls = []
+      expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 1 })
+      expect(chain.calls.filter((c) => c.startsWith('findReceipt'))).toHaveLength(1)
+    })
+
+    it('carries the cursor into a re-check cut short, and decides on the next sweep', async () => {
+      const base = queuedTx(account.address, { status: 'submitted', nonce: 3 })
+      const first = await attempt(base, GWEI, GWEI)
+      const second = await attempt(base, 2n * GWEI, GWEI)
+      const tx = await submitted({
+        attempts: [first, second],
+        nonceUsedAtBlock: 200,
+        nonceUsedAt: new Date(START).toISOString(),
+        lookupFrom: { walk: 'all-urls', index: 1 },
+      })
+      chain.nonces.latest = 4
+      chain.head = 205
+      nowMs = START + MIN_AGE
+      const deadline = Date.now() + 60_000
+      // the deadline falls after the resumed walk's one lookup, before the re-check can ask
+      let count = 0
+      const spy = vi.spyOn(chain, 'findReceipt').mockImplementation(async () => {
+        if (++count === 1) vi.spyOn(Date, 'now').mockReturnValue(deadline)
+        return undefined
+      })
+      expect(await sweepChain(deps, deadline)).toMatchObject({ failed: 0, mined: 0 })
+      expect(await reload(tx)).toMatchObject({ status: 'submitted', lookupFrom: { walk: 'all-urls', index: 2 } })
+
+      // the next sweep resumes in the re-check and finds the newest hash on the node that had lagged
+      spy.mockRestore()
+      vi.mocked(Date.now).mockRestore()
+      chain.otherNodes = [{ receipts: new Map([[second.hash, receiptAt(second.hash, 180)]]) }]
+      expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 0, mined: 1 })
+      expect(await reload(tx)).toMatchObject({ status: 'confirmed', mined: { hash: second.hash } })
+    })
+
     it('does not fail on a sweep where one RPC URL errors', async () => {
       const tx = await submitted()
       chain.nonces.latest = 4
