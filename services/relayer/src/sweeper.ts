@@ -315,13 +315,7 @@ async function checkSubmitted(
       }
       if (receipt) return markMined(deps, tx, receipt, head, summary)
     }
-    await deps.store.saveTx(
-      {
-        ...withStatus(withoutLookup(tx), 'failed', at),
-        error: 'the nonce was used by a transaction this relayer did not send',
-      },
-      at,
-    )
+    await deps.store.saveTx({ ...withStatus(withoutLookup(tx), 'failed', at), error: usedNonceError(tx) }, at)
     summary.failed++
     return
   }
@@ -359,9 +353,10 @@ async function rebroadcast(
     case 'unknown': {
       if (attempt.rejected === undefined && attempt.acceptedAt !== undefined) return
       const now = deps.now().getTime()
-      // a refused attempt the node now takes is live again
+      // the first send a node acknowledged, so the stuck clock runs from here; a refused attempt is also live again
       const attempts = markAccepted(tx.attempts, attempt.hash, now).map((a) => {
-        if (attempt.rejected === undefined || a.hash !== attempt.hash || a.raw !== attempt.raw) return a
+        if (a.hash !== attempt.hash || a.raw !== attempt.raw) return a
+        if (attempt.rejected === undefined) return { ...a, broadcastAt: now }
         const { rejected: _r, ...live } = a
         return { ...live, broadcastAt: now }
       })
@@ -571,6 +566,13 @@ function withoutLookup(tx: TxRecord): TxRecord {
   return rest
 }
 
+// a filler's nonce is taken by the transaction it fills at least as often as by an outsider
+function usedNonceError(tx: TxRecord): string {
+  return tx.kind === 'filler'
+    ? "the nonce was used, with no receipt for any of this filler's hashes"
+    : 'the nonce was used by a transaction this relayer did not send'
+}
+
 // every hash of ours that could be mined at this nonce, stored attempts first, newest first
 function receiptHashes(tx: TxRecord): Hex[] {
   return [...tx.attempts.map((a) => a.hash).reverse(), ...[...(tx.retiredHashes ?? [])].reverse()]
@@ -606,7 +608,8 @@ function lastSentAt(tx: TxRecord): number {
   return Math.max(...tx.attempts.map((a) => a.broadcastAt ?? a.signedAt))
 }
 
-// the oldest refused attempt, preferring one whose bytes are already gone; one the node took is never dropped
+// the oldest refused attempt, preferring one whose bytes are already gone; one a node took before refusing it can
+// go too, since its hash is kept and retiredAccepted remembers that a node had it
 function dropIndex(attempts: TxRecord['attempts']): number {
   const stripped = attempts.findIndex((a) => a.rejected !== undefined && a.raw === '0x')
   return stripped !== -1 ? stripped : attempts.findIndex((a) => a.rejected !== undefined)
