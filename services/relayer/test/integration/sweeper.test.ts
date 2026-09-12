@@ -824,6 +824,23 @@ describe('sweepChain', () => {
       expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1 })
     })
 
+    it('restarts the stuck clock when the node takes bytes it had never seen', async () => {
+      // a crash between saving an attempt and sending it: the node knows nothing of it until the rebroadcast
+      const tx = await submitted()
+      chain.nonces.latest = 3
+      nowMs += 60_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 0, rebroadcast: 1 })
+      const sent = await reload(tx)
+      expect(sent.attempts[0]).toMatchObject({ broadcastAt: nowMs, acceptedAt: nowMs })
+      chain.known.add(tx.attempts[0]!.hash)
+
+      // signed two minutes ago, but only now a minute in a node's mempool
+      nowMs += 60_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 0, rebroadcast: 0 })
+      nowMs += 30_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ replaced: 1 })
+    })
+
     it('clears the fee cap flag once a replacement is accepted', async () => {
       const tx = await submitted({ feeCapReached: true })
       chain.nonces.latest = 3
@@ -1128,6 +1145,17 @@ describe('sweepChain', () => {
       expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 1 })
       expect(await reload(tx)).toMatchObject({ status: 'failed', error: expect.stringContaining('did not send') })
       expect(queue.sent).toEqual([])
+    })
+
+    it("does not blame an outsider for a filler's nonce, which its own transaction took", async () => {
+      const tx = await submitted({ kind: 'filler', fillsTxId: 'tx-filled', nonce: 3 })
+      chain.nonces.latest = 4
+      chain.head = 200
+      await sweepChain(deps, FAR)
+      nowMs = START + MIN_AGE
+      chain.head = 205
+      expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 1 })
+      expect((await reload(tx)).error).toBe("the nonce was used, with no receipt for any of this filler's hashes")
     })
 
     it('does not fail before the minimum age, however many blocks pass', async () => {
