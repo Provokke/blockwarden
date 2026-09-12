@@ -1,6 +1,6 @@
 import { bumpFees, clampFees, type Fees } from '@blockwarden/core'
 import type { Hex, LocalAccount } from 'viem'
-import { describeError, type RelayerChain, type SendOutcome } from './chain.js'
+import { describeError, type Receipt, type RelayerChain, type SendOutcome } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
 import {
@@ -301,19 +301,21 @@ async function checkSubmitted(
     for (const hash of receiptHashes(tx)) {
       if (index++ < from) continue
       if (Date.now() >= deadlineMs) return stopLookup(deps, tx, walk, index - 1, at)
-      let receipt
-      try {
-        receipt = await deps.chain.findReceipt(hash)
-      } catch (err) {
-        // a URL that could not answer might be the one with the receipt
-        deps.log(
-          'receipt check failed on an RPC URL; not failing the transaction this sweep',
-          { txId: tx.txId, error: describeError(err) },
-          'warn',
-        )
-        return
-      }
+      const receipt = await askEveryUrl(deps, tx, hash)
+      if (receipt === 'unanswered') return
       if (receipt) return markMined(deps, tx, receipt, head, summary)
+    }
+    // A resumed walk asked for the hashes above its cursor on an earlier sweep, and a node that lagged then may have
+    // caught up since. Ask again for the stored attempts, newest first: at most 64 calls, and the only hashes whose
+    // bytes could still be in a mempool. The cursor runs on past the walk, so a re-check cut short carries on too.
+    if (from > 0) {
+      for (const attempt of [...tx.attempts].reverse()) {
+        if (index++ < from) continue
+        if (Date.now() >= deadlineMs) return stopLookup(deps, tx, walk, index - 1, at)
+        const receipt = await askEveryUrl(deps, tx, attempt.hash)
+        if (receipt === 'unanswered') return
+        if (receipt) return markMined(deps, tx, receipt, head, summary)
+      }
     }
     await deps.store.saveTx({ ...withStatus(withoutLookup(tx), 'failed', at), error: usedNonceError(tx) }, at)
     summary.failed++
@@ -554,6 +556,20 @@ function readyToFail(deps: SweeperDeps, tx: TxRecord, head: number): boolean {
     head - tx.nonceUsedAtBlock >= deps.settings.confirmations &&
     deps.now().getTime() - Date.parse(tx.nonceUsedAt) >= minAge
   )
+}
+
+// 'unanswered' when one URL could not answer: it might be the one with the receipt, so nothing is failed this sweep
+async function askEveryUrl(deps: SweeperDeps, tx: TxRecord, hash: Hex): Promise<Receipt | 'unanswered' | undefined> {
+  try {
+    return await deps.chain.findReceipt(hash)
+  } catch (err) {
+    deps.log(
+      'receipt check failed on an RPC URL; not failing the transaction this sweep',
+      { txId: tx.txId, error: describeError(err) },
+      'warn',
+    )
+    return 'unanswered'
+  }
 }
 
 // where this sweep ran out of its slice; a part of a walk decides nothing
