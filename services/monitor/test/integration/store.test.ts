@@ -1,5 +1,6 @@
 import { GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import { ruleInputSchema } from '@blockwarden/core'
+import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import type { Hex } from 'viem'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
@@ -9,7 +10,6 @@ import {
   type NewMatch,
   type StoredRule,
 } from '../../src/store.js'
-import { startDynamo, type Dynamo } from '../helpers/dynamo.js'
 
 const EMITTER = '0x5fbdb2315678afecb367f032d93f642f64180aa3'
 const NOW = '2026-09-15T00:00:00.000Z'

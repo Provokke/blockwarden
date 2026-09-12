@@ -1,11 +1,12 @@
 import { Logger } from '@aws-lambda-powertools/logger'
 import { Metrics, MetricUnit } from '@aws-lambda-powertools/metrics'
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { createDocumentClient } from '@blockwarden/dynamo'
 import { createChainReader, type ChainReader } from './chain.js'
 import { loadConfig, type MonitorConfig } from './config.js'
 import { runCycle, type CycleResult } from './cycle.js'
 import { redactData, redactError, redactUrls } from './redact.js'
-import { createDocumentClient, MonitorStore } from './store.js'
+import { MonitorStore } from './store.js'
 
 const logger = new Logger({ serviceName: 'blockwarden-monitor' })
 const metrics = new Metrics({ namespace: 'Blockwarden', serviceName: 'monitor' })
