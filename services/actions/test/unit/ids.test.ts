@@ -23,6 +23,36 @@ describe('canonicalJson', () => {
   it('keeps null, which is a value', () => {
     expect(canonicalJson({ a: null })).toBe('{"a":null}')
   })
+
+  it('serialises a Date to its ISO string, so two different dates give different output', () => {
+    const early = canonicalJson({ at: new Date('2020-01-01') })
+    const late = canonicalJson({ at: new Date('2030-01-01') })
+    expect(early).not.toBe(late)
+    expect(early).toBe('{"at":"2020-01-01T00:00:00.000Z"}')
+  })
+
+  it('delegates to toJSON the same way JSON.stringify does', () => {
+    const value = {
+      thing: {
+        toJSON() {
+          return { b: 1, a: 2 }
+        },
+      },
+    }
+    // JSON.stringify uses whatever key order toJSON returns; canonicalJson still sorts it
+    expect(JSON.parse(JSON.stringify(value))).toEqual({ thing: { b: 1, a: 2 } })
+    expect(canonicalJson(value)).toBe('{"thing":{"a":2,"b":1}}')
+  })
+
+  it('throws a clear error naming canonicalJson for a raw bigint', () => {
+    expect(() => canonicalJson({ a: 1n })).toThrow(/canonicalJson/)
+  })
+
+  it('throws a clear error naming canonicalJson for a cyclic object', () => {
+    const cyclic: Record<string, unknown> = { a: 1 }
+    cyclic.self = cyclic
+    expect(() => canonicalJson(cyclic)).toThrow(/canonicalJson/)
+  })
 })
 
 describe('actionId', () => {
