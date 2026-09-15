@@ -210,6 +210,8 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
       let from = Math.max(cursor.durableBlock, cursor.fastBlock - FAST_OVERLAP)
       if (head - from > FAST_MAX_RANGE) from = head - FAST_MAX_RANGE
       if (from < head) {
+        // saved before reading, so a run that stops before its first chunk still lowers the cursor to the head
+        if (head < cursor.fastBlock) cursor = await store.saveCursor(chainId, { ...cursor, fastBlock: head })
         const filter = buildLogFilter(fastRules)!
         let reached = from
         try {
@@ -227,9 +229,8 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
           log('the deadline passed inside the fast scan, stopping it this run', { chainId, fastBlock: reached })
           deadlineHit = true
         }
-        // the overlap starts behind the cursor, so a run stopped inside it must not pull the cursor back;
-        // a head below the cursor is the one case that moves it down
-        const fastBlock = head >= cursor.fastBlock ? Math.max(cursor.fastBlock, reached) : reached
+        // the overlap starts behind the cursor, so a run stopped inside it must not pull the cursor back
+        const fastBlock = Math.max(cursor.fastBlock, reached)
         // saved once, not per chunk, so a narrow maxRange does not multiply cursor writes
         if (reached > from && fastBlock !== cursor.fastBlock) {
           cursor = await store.saveCursor(chainId, { ...cursor, fastBlock })
