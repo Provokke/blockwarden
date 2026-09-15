@@ -428,6 +428,36 @@ describe('createChainReader against a stub RPC server', () => {
     30_000,
   )
 
+  it('downloads an oversized fast-scan log body once, without retrying it or walking on to the backup, so the scan halves at once', async () => {
+    const oversizedLogs = { bytes: 64 * MB, declareLength: true }
+    const primary = await stub('chain', { head: 100, oversizedLogs })
+    const backup = await stub('chain', { head: 100, oversizedLogs })
+    const urls = [primary.url, backup.url]
+
+    const outcome = await outcomeOf(createChainReader(urls, 10_000).getLogs(filter, 1, 2))
+
+    expect((outcome as { rejected: unknown }).rejected).toBeInstanceOf(ResponseBodyTooLargeError)
+    expect(primary.oversizedBytesSent()).toHaveLength(1)
+    expect(backup.httpRequestCount()).toBe(0)
+
+    // finalized is unavailable, so only the fast scan reads: 99..100, then 99..99, which it cannot halve further
+    const store = new InMemoryStore()
+    store.rules.push(pingRule('fast', { mode: 'fast' }))
+    await expect(
+      runCycle({
+        chainId: CHAIN_ID,
+        chain: createChainReader(urls, 10_000),
+        store,
+        maxRange: 2000,
+        timeBudgetMs: 50_000,
+        startBlock: 98,
+      }),
+    ).rejects.toBeInstanceOf(ResponseBodyTooLargeError)
+    expect(primary.oversizedBytesSent()).toHaveLength(3)
+    // the backup still answers the finalized block the primary refuses, but never a log request
+    expect(backup.oversizedBytesSent()).toHaveLength(0)
+  }, 30_000)
+
   it('rejects every request still in flight at the hard stop, well before its timeout, without walking on to the backup', async () => {
     const primary = await stub('chain', { head: 100, finalized: 90, delayMs: 8_000 })
     const backup = await stub('chain', { head: 100, finalized: 90 })
