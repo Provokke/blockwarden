@@ -46,32 +46,32 @@ Requires Terraform, the AWS CLI v2, and AWS credentials for the target account. 
    Leave out `--key-id`. The monitor can only decrypt parameters encrypted with the default `aws/ssm` key.
 
 2. Build the Lambda bundle: `pnpm --filter @blockwarden/monitor run build`
-3. Apply the stack with an address for alarm emails: `cd infra/terraform/envs/demo && terraform init && terraform apply -var alarm_email=you@example.com`
-4. Confirm the subscription from the email SNS sends you. Alarms are not delivered until you do.
-5. Check delivery once by forcing one alarm into the alarm state. It returns to its real state at the next evaluation.
+3. Initialise Terraform: `cd infra/terraform/envs/demo && terraform init`
+4. Decide whether to backfill. Skip this step to start at the current finalized block.
+
+   Rules are not retroactive. The durable scan gives a rule final records only for blocks after the chain's durable cursor at the time the rule is added. The fast scan also gives a `fast` rule provisional records for blocks after the fast cursor, less its 20-block overlap. The first run creates the cursors at `start_block` when one is set, or at the current finalized block and the head otherwise. If no rule exists yet, that run moves the durable cursor straight to the finalized block.
+
+   So to backfill, set `start_block` for that chain in the `chains` map in `infra/terraform/envs/demo/main.tf` (scanning starts after it), and add the rules before the first scheduled run. The schedules start polling as soon as `terraform apply` creates them, and the stack has no setting to hold them back. So create the table on its own first and add the rules, then continue with the full apply in step 5:
+
+   ```bash
+   # in infra/terraform/envs/demo
+   terraform apply -var alarm_email=you@example.com -target=module.blockwarden.aws_dynamodb_table.main
+   pnpm --filter @blockwarden/monitor run rule:put ../../examples/base-usdc-large-transfers.json --table blockwarden-demo
+   ```
+
+5. Apply the stack with an address for alarm emails, still in `infra/terraform/envs/demo`: `terraform apply -var alarm_email=you@example.com`
+6. Confirm the subscription from the email SNS sends you. Alarms are not delivered until you do.
+7. Check delivery once by forcing one alarm into the alarm state. It returns to its real state at the next evaluation.
 
    ```bash
    aws cloudwatch set-alarm-state --alarm-name blockwarden-demo-monitor-base-errors --state-value ALARM --state-reason test
    ```
 
-6. Add a rule:
+8. Add rules, if you did not add them in step 4. A rule path is relative to `services/monitor`, and `pnpm --filter` works from anywhere in the repository.
 
    ```bash
    pnpm --filter @blockwarden/monitor run rule:put ../../examples/base-usdc-large-transfers.json --table blockwarden-demo
    ```
-
-Rules are not retroactive. A rule only sees blocks after the chain's durable cursor at the time the rule is added. The first run creates the cursor at `start_block` when one is set, or at the current finalized block otherwise. If no rule exists yet, that run moves the cursor straight to the finalized block.
-
-So to backfill from `start_block`, add the rules before the first scheduled run. The schedules start polling as soon as `terraform apply` creates them, and the stack has no setting to hold them back. Create the table on its own first, add the rules, then apply the rest:
-
-```bash
-cd infra/terraform/envs/demo
-terraform apply -var alarm_email=you@example.com -target=module.blockwarden.aws_dynamodb_table.main
-cd ../../../..
-pnpm --filter @blockwarden/monitor run rule:put ../../examples/base-usdc-large-transfers.json --table blockwarden-demo
-cd infra/terraform/envs/demo
-terraform apply -var alarm_email=you@example.com
-```
 
 Free RPC tiers often cap `eth_getLogs` at a small block range. The poller halves a refused range until it fits, but setting `max_range` for that chain in `infra/terraform/envs/demo/main.tf` avoids the wasted calls.
 
