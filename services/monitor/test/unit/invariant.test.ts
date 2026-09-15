@@ -3,7 +3,7 @@ import fc from 'fast-check'
 import { hexToBigInt, HttpRequestError, type Hex } from 'viem'
 import { describe, expect, it } from 'vitest'
 import { DROP_AFTER_BLOCKS, LEASE_MS, runCycle } from '../../src/cycle.js'
-import type { StoredRule } from '../../src/store.js'
+import type { NewMatch, StoredRule } from '../../src/store.js'
 import {
   CHAIN_ID,
   FakeChain,
@@ -110,6 +110,8 @@ const setup = fc.record({
   maxRange: fc.integer({ min: 1, max: 8 }),
   mins: fc.tuple(value, value, value),
   seed: fc.integer({ min: 1, max: 0x7fffffff }),
+  // unset starts at the finalized block of the first run that creates the cursor; above the head it stays exclusive
+  startBlock: fc.oneof(fc.constant(undefined), fc.constant(0), fc.integer({ min: 1, max: 40 })),
 })
 
 function mulberry32(seed: number): () => number {
@@ -126,6 +128,9 @@ const minValue = (rule: StoredRule) => BigInt((rule.input.conditions as { value:
 
 describe('scanning invariant', () => {
   it('leaves exactly the canonical finalized matches final and no stale provisional match, after any faults', async () => {
+    // counted across every run, so the property fails if the generator stops producing the cases it exists for
+    const seen = { reorgsWithLogs: 0, droppedToFinal: 0, eventsInBothScans: 0 }
+
     await fc.assert(
       fc.asyncProperty(fc.array(round, { minLength: 1, maxLength: 12 }), setup, async (plan, s) => {
         const random = mulberry32(s.seed)
@@ -161,10 +166,41 @@ describe('scanning invariant', () => {
             maxRange: s.maxRange,
             timeBudgetMs: 50_000,
             deadlineMs: clock + 45_000,
-            startBlock: 0,
             now,
+            ...(s.startBlock === undefined ? {} : { startBlock: s.startBlock }),
             ...(s.useFinalityDepth ? { finalityDepth: s.finalizedLag } : {}),
           })
+
+        // the match keys each scan computed for an event, by block hash, log index and rule
+        const fastKeys = new Map<string, Set<Hex>>()
+        const durableKeys = new Map<string, Set<Hex>>()
+        const note = (keys: Map<string, Set<Hex>>, m: NewMatch) => {
+          const event = `${m.blockHash}|${m.logIndex}|${m.ruleId}`
+          keys.set(event, (keys.get(event) ?? new Set<Hex>()).add(m.matchKey))
+        }
+        const writeProvisional = store.writeProvisional.bind(store)
+        store.writeProvisional = async (m) => {
+          note(fastKeys, m)
+          return writeProvisional(m)
+        }
+        const writeFinal = store.writeFinal.bind(store)
+        store.writeFinal = async (m) => {
+          note(durableKeys, m)
+          const before = store.matches.get(m.matchKey)?.status
+          const result = await writeFinal(m)
+          if (before === 'dropped' && result === 'upgraded') seen.droppedToFinal++
+          return result
+        }
+        // the durable block the cursor was created at; the durable scan never reads it or anything below it
+        let origin: number | undefined
+        const saveCursor = store.saveCursor.bind(store)
+        store.saveCursor = async (chainId, next) => {
+          try {
+            return await saveCursor(chainId, next)
+          } finally {
+            origin ??= store.cursors.get(CHAIN_ID)?.durableBlock
+          }
+        }
 
         let fork: FakeBlock[] | undefined
         // orphaned transactions wait here and can be mined again at any later height
@@ -199,6 +235,7 @@ describe('scanning invariant', () => {
                 return [{ hash: orphan.hash, values: t.sameValues ? orphan.values : t.values }]
               }),
             )
+            if (replacement.some((txs) => txs.length > 0)) seen.reorgsWithLogs++
             for (const b of chain.reorg(depth, replacement)) for (const tx of b.txs) mempool.set(tx.hash, tx)
           }
           for (const b of chain.blocks) if (b.logs.length > 0) highestLogBlock = Math.max(highestLogBlock, b.number)
@@ -292,7 +329,7 @@ describe('scanning invariant', () => {
         deadlineFlake = 0
         deadlinePassed = false
         clock += LEASE_MS + 1
-        const target = Math.max(highestLogBlock, chain.head) + DROP_AFTER_BLOCKS
+        const target = Math.max(highestLogBlock, chain.head, s.startBlock ?? 0) + DROP_AFTER_BLOCKS
         chain.mine(Math.max(0, target + s.finalizedLag - chain.head))
         expect(chain.finalizedFloor).toBeGreaterThanOrEqual(highestLogBlock)
 
@@ -303,9 +340,11 @@ describe('scanning invariant', () => {
         } while (durableBlock() !== chain.finalizedFloor && ++runs < 5)
         expect(durableBlock()).toBe(chain.finalizedFloor)
         const durable = durableBlock()!
+        expect(origin).toBeDefined()
+        if (s.startBlock !== undefined) expect(origin).toBe(s.startBlock)
 
         const expected: string[] = []
-        for (const block of chain.blocks.slice(0, durable + 1)) {
+        for (const block of chain.blocks.slice(origin! + 1, durable + 1)) {
           const ordinals = new Map<string, number>()
           for (const log of block.logs) {
             const v = hexToBigInt(log.data)
@@ -329,8 +368,21 @@ describe('scanning invariant', () => {
 
         const stale = store.withStatus('provisional').filter((m) => m.blockNumber <= durable - DROP_AFTER_BLOCKS)
         expect(stale).toEqual([])
+
+        // an event in one block has one ordinal, so both scans must have keyed it the same way
+        for (const [event, keys] of fastKeys) {
+          const finalKeys = durableKeys.get(event)
+          if (!finalKeys) continue
+          seen.eventsInBothScans++
+          expect([...keys]).toEqual([...finalKeys])
+          expect(keys.size).toBe(1)
+        }
       }),
       { numRuns: 300 },
     )
-  }, 120_000)
+
+    expect(seen.reorgsWithLogs).toBeGreaterThan(0)
+    expect(seen.droppedToFinal).toBeGreaterThan(0)
+    expect(seen.eventsInBothScans).toBeGreaterThan(0)
+  }, 240_000)
 })
