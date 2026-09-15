@@ -1143,6 +1143,25 @@ describe('runCycle', () => {
         [41, 56],
       ])
     })
+
+    it('keeps the size that fitted after a refusal as a ceiling, so a fixed range limit is refused at most once more', async () => {
+      const chain = new FakeChain(124)
+      const store = new InMemoryStore()
+      store.rules.push(pingRule('final', { mode: 'finalized' }))
+      chain.rangeLimit = 5
+      const read = chain.getLogsWithHead.bind(chain)
+      const calls: { from: number; refused: boolean }[] = []
+      vi.spyOn(chain, 'getLogsWithHead').mockImplementation(async (filter, from, to, options) => {
+        calls.push({ from, refused: to - from + 1 > chain.rangeLimit })
+        return read(filter, from, to, options)
+      })
+
+      expect(await runCycle(deps(chain, store, { maxRange: 16 }))).toMatchObject({ status: 'ok', durableBlock: 60 })
+      // the first range, 1..16, is the one that finds the limit by halving
+      const later = calls.filter((c) => c.from > 16)
+      expect(later.filter((c) => !c.refused).length).toBeGreaterThanOrEqual(10)
+      expect(later.filter((c) => c.refused).length).toBeLessThanOrEqual(1)
+    })
   })
 
   it('skips and logs a stored rule that no longer compiles', async () => {

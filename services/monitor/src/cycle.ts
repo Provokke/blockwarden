@@ -149,6 +149,10 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
       const filter = buildLogFilter(rules)
       // a range the RPC refused is likely refused again, so the next range starts at the size that fitted
       let span = deps.maxRange
+      // once a range is refused after an earlier read fitted, that read's size caps growth for the rest of the run,
+      // so the size stops alternating between one that fits and a doubled one that is refused
+      let ceiling = deps.maxRange
+      let lastFitted: number | undefined
       try {
         while (cursor.durableBlock < finalized) {
           if (!inTime()) {
@@ -162,6 +166,7 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
           }
           const from = cursor.durableBlock + 1
           const to = Math.min(finalized, cursor.durableBlock + span)
+          let halved = false
           await fetchLogsAdaptive(
             from,
             to,
@@ -175,8 +180,16 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
                   if ((await store.writeFinal(toNewMatch(chainId, match, firstSeenAt))) !== 'unchanged') counts.final++
                 }
                 cursor = await store.saveCursor(chainId, { ...cursor, durableBlock: t })
-                // a range read whole may mean the node recovered, so the size grows back towards maxRange
-                span = f === from && t === to ? Math.min(deps.maxRange, span * 2) : t - f + 1
+                const size = t - f + 1
+                if (f === from && t === to) {
+                  // a range read whole may mean the node recovered, but one cut short at finalized proves no larger size
+                  if (size === span) span = Math.min(ceiling, span * 2)
+                } else {
+                  if (!halved && lastFitted !== undefined) ceiling = Math.min(ceiling, lastFitted)
+                  halved = true
+                  span = size
+                }
+                lastFitted = size
               },
             },
           )
