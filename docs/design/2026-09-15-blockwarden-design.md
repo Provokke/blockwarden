@@ -36,7 +36,7 @@ OpenZeppelin shut down Defender on 1 July 2026 and open-sourced Monitor and Rela
 
 ## Architecture
 
-TypeScript throughout, using viem for chain access. Lambdas run on the Node.js 22 runtime on arm64, bundled with esbuild. Infrastructure is Terraform. Contracts are Foundry. CI/CD is GitHub Actions deploying to AWS through OIDC, with no long-lived AWS keys.
+TypeScript throughout, using viem for chain access. Lambdas run on the Node.js 24 runtime (`nodejs24.x`, deprecation scheduled for 30 April 2028) on arm64, bundled with esbuild. Infrastructure is Terraform. Contracts are Foundry. CI/CD is GitHub Actions deploying to AWS through OIDC, with no long-lived AWS keys.
 
 ### Repository layout
 
@@ -317,7 +317,7 @@ The user provides:
 - testnet ETH for the signer on Base Sepolia and Arbitrum Sepolia.
 - the npm organisation `@blockwarden`. Its availability is unconfirmed because npm's site refused the automated check; if it is taken, the packages publish unscoped as `blockwarden-kms-signer` and `blockwarden-relayer-client`.
 
-Local tooling to install: AWS CLI v2, Terraform, Foundry, Node.js 22, pnpm. Docker is already installed.
+Local tooling to install: AWS CLI v2, Terraform, Node.js 24, pnpm. Anvil, DynamoDB Local, tflint, checkov and gitleaks run from Docker images. Docker is already installed.
 
 ## Conventions
 
