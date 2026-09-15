@@ -1,0 +1,17 @@
+{
+  "name": "@blockwarden/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "viem": "2.56.3",
+    "zod": "4.6.2"
+  }
+}
