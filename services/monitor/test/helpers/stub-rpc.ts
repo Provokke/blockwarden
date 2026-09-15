@@ -13,6 +13,8 @@ export type StubRpcOptions = {
   preReadHead?: number
   // chain mode only: answer a request whose only call is eth_blockNumber with this result or error instead
   preReadAnswer?: { result: unknown } | { error: JsonRpcErrorBody }
+  // chain mode only: answer eth_blockNumber inside a batch with this result or error instead
+  batchHeadAnswer?: { result: unknown } | { error: JsonRpcErrorBody }
   // chain mode only: return these logs, or reject eth_getLogs with this JSON-RPC error
   logs?: unknown[] | JsonRpcErrorBody
   // chain mode only: answer eth_getBlockByNumber("finalized") with this block number instead of an error
@@ -125,6 +127,7 @@ export function startStubRpc(
           const { id = null, method, params } = entry ?? {}
           if (mode === 'chain' && method === 'eth_blockNumber') {
             if (alone && options.preReadAnswer) return { jsonrpc: '2.0', id, ...options.preReadAnswer }
+            if (!alone && options.batchHeadAnswer) return { jsonrpc: '2.0', id, ...options.batchHeadAnswer }
             return { jsonrpc: '2.0', id, result: hex(alone ? (options.preReadHead ?? head) : head) }
           }
           if (mode === 'chain' && method === 'eth_getLogs') {

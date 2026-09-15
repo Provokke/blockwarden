@@ -41,7 +41,7 @@ export class LaggingNodeError extends Error {
 export class HeadReadError extends Error {
   constructor(cause: unknown) {
     super(
-      `reading the RPC node head before its log request failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      `reading the RPC node head for its log request failed: ${cause instanceof Error ? cause.message : String(cause)}`,
       {
         cause,
       },
@@ -217,6 +217,18 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
     )
   }
 
+  // called in the same tick as requestLogs, so both still go out in one batch
+  const readBatchedHead = async (node: (typeof nodeClients)[number]): Promise<number> => {
+    try {
+      return hexToNumber(await node.request({ method: 'eth_blockNumber' }))
+    } catch (err) {
+      // a head the node cannot answer says nothing about the log range, just like a failed pre-read;
+      // an oversized body fails the whole batch, and a smaller range can fit
+      if (stoppedBy(err) || isTransportError(err) || err instanceof ResponseBodyTooLargeError) throw err
+      throw new HeadReadError(err)
+    }
+  }
+
   return {
     setHardStop(epochMs) {
       hardStop = epochMs
@@ -265,15 +277,16 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
               knownHeads[i] = Math.max(knownHeads[i]!, headBefore)
             }
             // issued in the same tick so the batching http transport sends both in one HTTP request, head first
-            const [head, logs] = await Promise.all([
-              node.request({ method: 'eth_blockNumber' }),
-              requestLogs(node, filter, from, to),
-            ])
-            knownHeads[i] = Math.max(knownHeads[i]!, hexToNumber(head))
-            return { logs, head: hexToNumber(head), headBefore }
+            const [head, logs] = await Promise.all([readBatchedHead(node), requestLogs(node, filter, from, to)])
+            knownHeads[i] = Math.max(knownHeads[i]!, head)
+            return { logs, head, headBefore }
           } catch (err) {
             // the next node would be cut off the same way
             if (stoppedBy(err)) throw hardStopError()
+            if (err instanceof HeadReadError) {
+              headReadError ??= err
+              break
+            }
             if (!isTransportError(err)) {
               rpcErrors.push(err)
               break
