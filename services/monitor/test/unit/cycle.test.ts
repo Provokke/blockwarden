@@ -1179,6 +1179,24 @@ describe('runCycle', () => {
     expect(records(store)).toEqual(['final:1@1:final'])
   })
 
+  it('keeps one record per event when the provider returns the same log twice to both scans', async () => {
+    const chain = new FakeChain(10)
+    chain.emit(5n)
+    const store = new InMemoryStore()
+    store.rules.push(pingRule('fast', { mode: 'fast' }))
+    const read = chain.getLogs.bind(chain)
+    // the fake's batched read goes through getLogs, so the durable scan sees the duplicate too
+    vi.spyOn(chain, 'getLogs').mockImplementation(async (filter, from, to) => {
+      const logs = await read(filter, from, to)
+      return [...logs, ...logs.map((l) => ({ ...l, topics: [...l.topics] }))]
+    })
+
+    expect(await runCycle(deps(chain, store))).toMatchObject({ provisional: 1 })
+    chain.mine(64)
+    expect(await runCycle(deps(chain, store))).toMatchObject({ final: 1 })
+    expect(records(store)).toEqual(['fast:5@11:final'])
+  })
+
   it('computes one match key for the same event in both scans', async () => {
     const chain = new FakeChain(0)
     chain.include({ values: [1n, 2n] }, { values: [3n] })
