@@ -10,3 +10,8 @@ regexes = ['''^0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff8
 description = "Base USDC contract address (public)"
 regexTarget = "secret"
 regexes = ['''^0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913$''']
+
+[[allowlists]]
+description = "Made-up RPC provider key the sweeper Lambda test checks never reaches a log"
+regexTarget = "secret"
+regexes = ['''^k3y-4f9c2e7a1b$''']
