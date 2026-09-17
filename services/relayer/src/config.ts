@@ -32,7 +32,6 @@ export type RelayerConfig = {
   // signers whose balances the sweeper reports
   signerIds: string[]
   requeueAfterMs: number
-  timeBudgetMs: number
 }
 
 type Env = Record<string, string | undefined>
@@ -60,7 +59,6 @@ export async function loadConfig(env: Env, ssm: Pick<SSMClient, 'send'>): Promis
           .filter(Boolean)
       : [],
     requeueAfterMs: seconds(env, 'REQUEUE_AFTER_SECONDS', 600) * 1000,
-    timeBudgetMs: seconds(env, 'TIME_BUDGET_SECONDS', 50) * 1000,
   }
 }
 

@@ -102,6 +102,7 @@ resource "aws_cloudwatch_metric_alarm" "api_5xx" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_actions       = [local.alarm_topic_arn]
+  ok_actions          = [local.alarm_topic_arn]
 }
 
 resource "aws_cloudwatch_metric_alarm" "dead_letters" {

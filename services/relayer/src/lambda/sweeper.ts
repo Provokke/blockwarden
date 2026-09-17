@@ -7,10 +7,9 @@ import type { SignerRecord } from '../records.js'
 import { sweepChain } from '../sweeper.js'
 import { createLogger, createRuntime, once, type Runtime } from './runtime.js'
 
-// the sweeps stop starting transactions this long before the Lambda times out, leaving time for the balance reads
+// no new transactions this close to the timeout, leaving time for the balance reads
 const DEADLINE_MARGIN_MS = 8_000
-// and whatever is still running this long before it is abandoned: one RPC call can take 10 seconds per try per URL,
-// and a chain left running would time the whole invocation out and lose every other chain's metrics and logs
+// a chain still running this close is abandoned, so one slow RPC cannot lose every chain's metrics
 const HARD_STOP_MARGIN_MS = 3_000
 
 type Context = { getRemainingTimeInMillis(): number }
@@ -18,15 +17,14 @@ type Context = { getRemainingTimeInMillis(): number }
 class DeadlineError extends Error {}
 
 export function createSweeperHandler(runtime: () => Promise<Runtime>, logger: Logger, metrics: Metrics) {
-  return async (_event: unknown, context?: Context): Promise<void> => {
+  return async (_event: unknown, context: Context): Promise<void> => {
     const { config, store, chains, queue, accountFor, log } = await runtime()
     const now = Date.now()
-    const remainingMs = context?.getRemainingTimeInMillis() ?? config.timeBudgetMs + DEADLINE_MARGIN_MS
+    const remainingMs = context.getRemainingTimeInMillis()
     const deadlineMs = now + remainingMs - DEADLINE_MARGIN_MS
     const hardStopMs = now + remainingMs - HARD_STOP_MARGIN_MS
-    // Every failure fails the invocation once all chains are done, so the Lambda Errors alarm fires. Each is a
-    // sentence built from describeError: the runtime logs a rejection's message and stack, and a viem error's
-    // carry the RPC URL, API key included.
+    // any failure fails the invocation so the Errors alarm fires; kept as describeError text, since the runtime logs
+    // a thrown error's message and a viem message can hold the RPC URL's API key
     const failures: string[] = []
     // chains whose sweep finished but left transactions it could not settle; a fault that hits every transaction,
     // such as a broken KMS grant, must still fail the invocation
@@ -104,9 +102,8 @@ export function createSweeperHandler(runtime: () => Promise<Runtime>, logger: Lo
       }
     }
 
-    // In parallel, so a slow chain cannot starve the rest. A chain abandoned at the hard stop keeps its promise
-    // running until the container freezes, or into the next invocation; every write it makes is conditioned on
-    // the version it read, so a later sweep overwriting or racing it loses nothing.
+    // in parallel, so a slow chain cannot starve the rest; an abandoned chain may keep writing, but every write is
+    // conditioned on the version it read
     const outcomes = await Promise.allSettled(
       config.chains.map((settings) => beforeHardStop(sweepOne(settings), hardStopMs)),
     )

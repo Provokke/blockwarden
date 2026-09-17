@@ -1,9 +1,9 @@
 import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import type { APIGatewayProxyEventV2 } from 'aws-lambda'
-import { encodeFunctionData, erc20Abi, type Address } from 'viem'
+import { encodeFunctionData, erc20Abi, HttpRequestError, type Address } from 'viem'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createApiHandler, ROUTES, type ApiHandler } from '../../src/api.js'
-import { EstimateError } from '../../src/chain.js'
+import { describeError, EstimateError } from '../../src/chain.js'
 import { RelayerStore, StoreBusyError } from '../../src/store.js'
 import { hashApiKey } from '../../src/submit.js'
 import { FakeChain } from '../helpers/fake-chain.js'
@@ -114,6 +114,26 @@ describe('relayer API handler', () => {
       expect(result.statusCode).toBe(500)
       expect(result.body).not.toContain('dynamo down')
       expect(logs).toEqual(['error: request failed'])
+    })
+
+    it('logs a failure as its short description, never the error itself with an RPC URL inside', async () => {
+      const failure = new HttpRequestError({
+        url: 'https://base-sepolia.example/v2/SECRET-RPC-KEY',
+        details: 'fetch failed',
+      })
+      const entries: Record<string, unknown>[] = []
+      const broken = createApiHandler({
+        store: { getApiKey: () => Promise.reject(failure) } as unknown as RelayerStore,
+        chainFor: () => chain,
+        addressFor: async () => FROM,
+        queue,
+        now: () => new Date(),
+        newTxId: () => 'x',
+        log: (_message, data) => entries.push(data ?? {}),
+      })
+      expect((await broken(event(ROUTES.getTx, { txId: 'x' }))).statusCode).toBe(500)
+      expect(entries).toEqual([{ routeKey: ROUTES.getTx, error: describeError(failure) }])
+      expect(JSON.stringify(entries)).not.toContain('SECRET-RPC-KEY')
     })
 
     it('answers 500 without detail when something that is not an Error is thrown, and logs it', async () => {

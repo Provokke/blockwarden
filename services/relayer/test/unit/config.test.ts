@@ -40,7 +40,6 @@ describe('loadConfig', () => {
         { chainId: 421614, rpcUrls: ['http://localhost:8545'], confirmations: 2, stuckAfterMs: 30_000 },
       ],
       requeueAfterMs: 600_000,
-      timeBudgetMs: 50_000,
     })
     expect(names).toEqual(['/rpc/base-sepolia'])
   })
@@ -108,6 +107,5 @@ describe('loadConfig', () => {
     const { ssm } = fakeSsm({})
     const env = { TABLE_NAME: 't', CHAINS: JSON.stringify([{ chainId: 1, rpcUrls: ['http://x'] }]) }
     await expect(loadConfig({ ...env, REQUEUE_AFTER_SECONDS: '0' }, ssm)).rejects.toThrow(/REQUEUE_AFTER_SECONDS/)
-    expect((await loadConfig({ ...env, TIME_BUDGET_SECONDS: '20' }, ssm)).timeBudgetMs).toBe(20_000)
   })
 })

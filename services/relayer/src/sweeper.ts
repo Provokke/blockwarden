@@ -65,9 +65,7 @@ export type SweepSummary = {
 // not count, or a run of underpriced answers would use the limit up
 export const MAX_ATTEMPTS = 10
 
-// DynamoDB caps an item at 400 KB, and with the 8 KB calldata limit a raw is about 17 KB. The tx's own data and
-// the signer's abandoned attempts take room too, so past this many the oldest refused attempts give up their bytes
-// and keep only their hash, which is what a receipt lookup needs. Refused bytes are never rebroadcast anyway.
+// a raw can be 17 KB and an item at most 400 KB, so past this many the oldest refused attempts keep only their hash
 export const MAX_SIGNED_ATTEMPTS = 16
 
 const LIST_LIMIT = 100

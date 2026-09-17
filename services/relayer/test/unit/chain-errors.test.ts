@@ -18,9 +18,8 @@ import {
 import { chainOptionsFor } from '../../src/lambda/runtime.js'
 import { deadUrl, startMockRpc, type MockReply, type MockRpc } from '../helpers/mock-rpc.js'
 
-// How viem wraps a node's JSON-RPC error. The messages below were measured from Anvil 1.8.1 on 2026-09-17, or
-// copied from go-ethereum's core/txpool/errors.go, core/txpool/validation.go and core/error.go (master, 2026-09-17).
-// geth answers every txpool refusal with -32000.
+// How viem wraps a node's JSON-RPC error, which geth sends as -32000. Messages measured from Anvil 1.8.1, or copied
+// from go-ethereum's core/txpool and core/error.go (master, 2026-09-17).
 function rpcError(message: string, code = -32000) {
   const cause = new RpcRequestError({ body: {}, url: 'http://node', error: { code, message } })
   return code === -32000 ? new InvalidInputRpcError(cause) : new TransactionRejectedRpcError(cause)

@@ -107,9 +107,7 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
             return 'submitted'
           }
         }
-        // A receipt read can miss on a lagging node. If an earlier run held this nonce, its bytes may already be
-        // mined, and signing at a new nonce would run the payload twice. The sweeper settles it by receipt or,
-        // once the nonce has been used long enough with none, fails it.
+        // an earlier run's bytes at this nonce may be mined behind a lagging node; a new nonce could run them twice
         if (tx.nonce !== takenNonce) {
           await store.saveTx(withStatus(tx, 'submitted', stamp()), stamp())
           deps.log('nonce too low on a nonce sent before; left to the sweeper', { txId, nonce: tx.nonce }, 'warn')

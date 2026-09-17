@@ -60,8 +60,8 @@ module "blockwarden" {
   }
 }
 
-# Testnet relaying only. The signer's policy allows the demo contracts from milestone 5; until they exist the
-# allowlist holds the signer's own burn address, so the API refuses every request.
+# Testnet relaying only. Until the milestone 5 demo contracts exist, the allowlist holds only the burn address, and
+# "0x" there allows plain transfers with value to it, up to the 0.05 ETH daily spend cap.
 module "relayer" {
   source             = "../../modules/relayer"
   name               = "blockwarden-demo"
