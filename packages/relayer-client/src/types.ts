@@ -18,6 +18,9 @@ export type RelayRequest = {
   idempotencyKey: string
   // free text of up to 128 characters, stored and returned with the transaction
   reference?: string
+  // an earlier txId: this one is not estimated or signed until that one is confirmed and succeeded, and it fails
+  // if that one does not succeed; gasLimit is required, because there is no estimate to derive it from
+  dependsOn?: string
 }
 
 export type RelayerTx = {
@@ -43,6 +46,7 @@ export type RelayerTx = {
   fillerTxId: string | null
   idempotencyKey: string | null
   reference: string | null
+  dependsOn: string | null
   createdAt: string
   updatedAt: string
 }

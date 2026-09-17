@@ -3,7 +3,7 @@ import type { LocalAccount } from 'viem'
 import { describeError, type RelayerChain } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
-import { latestAttempt, liveAttempt, withStatus, type SignerRecord, type TxRecord } from './records.js'
+import { dependencyState, latestAttempt, liveAttempt, withStatus, type SignerRecord, type TxRecord } from './records.js'
 import { attemptFees, signAttempt } from './sign.js'
 import { TxConflictError, type RelayerStore } from './store.js'
 
@@ -113,8 +113,10 @@ export async function sweepChain(deps: SweeperDeps, deadlineMs: number): Promise
           const pause = pauses.get(tx.signerId)
           // a paused signer's queue waits for its balance; a resumed signer's queue goes back in full, and the
           // resume itself only saw the page it happened on
-          if (pause === 'active') await requeueIfStale(deps, tx, summary)
-          else if (pause === 'resumed' && !requeuedOnResume.has(tx.txId)) await requeue(deps, tx, summary)
+          if (pause === 'resumed' && !requeuedOnResume.has(tx.txId)) await requeue(deps, tx, summary)
+          if (pause !== 'active') continue
+          if (tx.dependsOn !== undefined && tx.nonce === undefined) await requeueIfDependencySettled(deps, tx, summary)
+          else await requeueIfStale(deps, tx, summary)
         } else if (tx.status === 'mined') {
           await checkMined(deps, tx, head, summary)
         } else if (tx.status === 'submitted') {
@@ -175,6 +177,15 @@ async function checkPause(
     }
   }
   return 'resumed'
+}
+
+// a dependent transaction is not requeued while it waits; once its dependency settles it goes back to the signer,
+// once, and after that only as any other stale transaction would
+async function requeueIfDependencySettled(deps: SweeperDeps, tx: TxRecord, summary: SweepSummary): Promise<void> {
+  const dependency = await deps.store.getTx(tx.dependsOn!)
+  if (dependencyState(dependency) === 'waiting') return
+  if (dependency && tx.enqueuedAt >= Date.parse(dependency.updatedAt)) return requeueIfStale(deps, tx, summary)
+  await requeue(deps, tx, summary)
 }
 
 async function requeueIfStale(deps: SweeperDeps, tx: TxRecord, summary: SweepSummary): Promise<void> {

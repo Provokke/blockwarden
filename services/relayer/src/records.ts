@@ -54,6 +54,7 @@ export type TxRecord = {
   error?: string
   fillerTxId?: string
   fillsTxId?: string
+  dependsOn?: string
   idempotencyKey?: string
   reference?: string
   apiKeyHash?: string
@@ -98,9 +99,20 @@ export function toTxBody(tx: TxRecord): RelayerTxBody {
     fillerTxId: tx.fillerTxId ?? null,
     idempotencyKey: tx.idempotencyKey ?? null,
     reference: tx.reference ?? null,
+    dependsOn: tx.dependsOn ?? null,
     createdAt: tx.createdAt,
     updatedAt: tx.updatedAt,
   }
+}
+
+export type DependencyState = 'ready' | 'waiting' | 'unsuccessful'
+
+// a dependency counts once it is confirmed, because a merely mined one can still be reorged out
+export function dependencyState(dependency: TxRecord | undefined): DependencyState {
+  if (!dependency) return 'unsuccessful'
+  if (dependency.status === 'confirmed') return dependency.mined?.status === 'success' ? 'ready' : 'unsuccessful'
+  if (dependency.status === 'failed' || dependency.status === 'cancelled') return 'unsuccessful'
+  return 'waiting'
 }
 
 export function withStatus(tx: TxRecord, status: TxRecord['status'], at: string): TxRecord {

@@ -46,6 +46,7 @@ export async function relay(options: RelayerClientOptions, request: RelayRequest
     ...(request.value === undefined ? {} : { value: request.value.toString() }),
     ...(request.gasLimit === undefined ? {} : { gasLimit: request.gasLimit.toString() }),
     ...(request.reference === undefined ? {} : { reference: request.reference }),
+    ...(request.dependsOn === undefined ? {} : { dependsOn: request.dependsOn }),
   }
   return toTx(await call<RelayerTxBody>(options, 'POST', '/v1/relayer/txs', body))
 }

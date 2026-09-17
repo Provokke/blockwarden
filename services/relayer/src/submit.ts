@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { EstimateError, type RelayerChain } from './chain.js'
 import { checkPolicy, weiToGweiCeil, weiToGweiFloor, worstCaseCostWei, type PolicyIssue } from './policy.js'
 import type { TxQueue } from './queue.js'
-import { toTxBody, type ApiKeyRecord, type SignerRecord, type TxRecord } from './records.js'
+import { dependencyState, toTxBody, type ApiKeyRecord, type SignerRecord, type TxRecord } from './records.js'
 import type { RelayerStore } from './store.js'
 
 export type ApiResult = { status: number; body: unknown }
@@ -36,6 +36,7 @@ export const relayRequestSchema = z.object({
   gasLimit: decimal.optional(),
   idempotencyKey: z.string().regex(/^[\x21-\x7e]{1,128}$/, 'expected 1 to 128 printable ASCII characters'),
   reference: z.string().max(128).optional(),
+  dependsOn: z.string().min(1).max(64).optional(),
 })
 
 // gas estimates move between the estimate and inclusion, so a limit the caller did not set gets 20% headroom
@@ -66,6 +67,7 @@ function requestHash(request: RelayRequest): string {
     value: BigInt(request.value ?? '0').toString(),
     gasLimit: request.gasLimit === undefined ? null : BigInt(request.gasLimit).toString(),
     reference: request.reference ?? null,
+    dependsOn: request.dependsOn ?? null,
   }
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
 }
@@ -110,27 +112,45 @@ export async function submitTx(deps: SubmitDeps, apiKey: ApiKeyRecord, input: un
 
   const from = await deps.addressFor(signer)
   let gasLimit: bigint
-  try {
-    const estimate = await chain.estimateGas({ from, to, data, value })
-    gasLimit = request.gasLimit === undefined ? (estimate * ESTIMATE_HEADROOM_PERCENT) / 100n : BigInt(request.gasLimit)
-  } catch (err) {
-    if (!(err instanceof EstimateError)) throw err
-    // the detailed message can carry the RPC URL, which may hold an API key; only a fixed message reaches the caller
-    deps.log(
-      'estimate failed',
-      {
-        kind: err.kind,
-        chainId: request.chainId,
-        signerId: signer.signerId,
-        error: err.message,
-      },
-      'warn',
-    )
-    if (err.kind === 'reverted') {
-      return error(422, 'estimate_reverted', 'the transaction would revert', { revertData: err.revertData ?? '0x' })
+  if (request.dependsOn !== undefined) {
+    // the call may only succeed once its dependency is mined, so the signer estimates it then instead
+    if (request.gasLimit === undefined) {
+      return error(400, 'invalid_request', 'a transaction with dependsOn needs a gasLimit', {
+        issues: [{ path: 'gasLimit', message: 'required with dependsOn' }],
+      })
     }
-    if (err.kind === 'unavailable') return error(503, 'rpc_unavailable', 'the RPC endpoint is unavailable')
-    return error(422, 'estimate_failed', 'the gas estimate failed')
+    const dependency = await deps.store.getTx(request.dependsOn)
+    if (!dependency || !apiKey.signerIds.includes(dependency.signerId) || dependency.chainId !== request.chainId) {
+      return error(422, 'dependency_not_found', 'no transaction on this chain has the dependsOn id')
+    }
+    if (dependencyState(dependency) === 'unsuccessful') {
+      return error(422, 'dependency_failed', 'the transaction this one depends on did not succeed')
+    }
+    gasLimit = BigInt(request.gasLimit)
+  } else {
+    try {
+      const estimate = await chain.estimateGas({ from, to, data, value })
+      gasLimit =
+        request.gasLimit === undefined ? (estimate * ESTIMATE_HEADROOM_PERCENT) / 100n : BigInt(request.gasLimit)
+    } catch (err) {
+      if (!(err instanceof EstimateError)) throw err
+      // the detailed message can carry the RPC URL, which may hold an API key; only a fixed message reaches the caller
+      deps.log(
+        'estimate failed',
+        {
+          kind: err.kind,
+          chainId: request.chainId,
+          signerId: signer.signerId,
+          error: err.message,
+        },
+        'warn',
+      )
+      if (err.kind === 'reverted') {
+        return error(422, 'estimate_reverted', 'the transaction would revert', { revertData: err.revertData ?? '0x' })
+      }
+      if (err.kind === 'unavailable') return error(503, 'rpc_unavailable', 'the RPC endpoint is unavailable')
+      return error(422, 'estimate_failed', 'the gas estimate failed')
+    }
   }
   const late = checkPolicy(signer.policy, { to, data, value, gasLimit })
   if (late.length > 0) return error(422, 'policy_violation', 'the signer policy refuses this request', { issues: late })
@@ -153,6 +173,7 @@ export async function submitTx(deps: SubmitDeps, apiKey: ApiKeyRecord, input: un
     attempts: [],
     idempotencyKey: request.idempotencyKey,
     ...(request.reference === undefined ? {} : { reference: request.reference }),
+    ...(request.dependsOn === undefined ? {} : { dependsOn: request.dependsOn }),
     apiKeyHash: apiKey.hash,
     requestHash: hash,
     enqueuedAt: now.getTime(),

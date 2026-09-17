@@ -362,6 +362,64 @@ describe('relayer API handler', () => {
     })
   })
 
+  describe('dependsOn', () => {
+    const depend = async (overrides: Record<string, unknown> = {}) =>
+      call(event(ROUTES.submit, { body: request({ gasLimit: '80000', ...overrides }) }))
+
+    it('queues a dependent transaction without estimating it', async () => {
+      const first = await call(event(ROUTES.submit, { body: request() }))
+      chain.calls = []
+      const dependent = await depend({ dependsOn: first.body.txId })
+      expect(dependent).toMatchObject({ status: 202, body: { dependsOn: first.body.txId, gasLimit: '80000' } })
+      expect(chain.calls).toEqual([])
+    })
+
+    it('needs a gas limit', async () => {
+      const first = await call(event(ROUTES.submit, { body: request() }))
+      const response = await call(event(ROUTES.submit, { body: request({ dependsOn: first.body.txId }) }))
+      expect(response).toMatchObject({ status: 400, body: { error: { issues: [{ path: 'gasLimit' }] } } })
+    })
+
+    it('refuses a dependency that is missing, belongs to a signer the key may not use, or is on another chain', async () => {
+      expect(await depend({ dependsOn: 'missing' })).toMatchObject({
+        status: 422,
+        body: { error: { code: 'dependency_not_found' } },
+      })
+      await store.putApiKey({ hash: hashApiKey('bw_other'), signerIds: ['other'], label: 'x', createdAt: 'x' })
+      const theirs = await call(event(ROUTES.submit, { body: request({ signerId: 'other' }), apiKey: 'bw_other' }))
+      expect(theirs.status).toBe(202)
+      expect(await depend({ dependsOn: theirs.body.txId })).toMatchObject({ status: 422 })
+      const first = await call(event(ROUTES.submit, { body: request() }))
+      const tx = (await store.getTx(first.body.txId))!
+      await store.saveTx({ ...tx, chainId: 421614 }, 'x')
+      expect(await depend({ dependsOn: first.body.txId })).toMatchObject({
+        body: { error: { code: 'dependency_not_found' } },
+      })
+    })
+
+    it('refuses a dependency that already failed or reverted', async () => {
+      const first = await call(event(ROUTES.submit, { body: request() }))
+      const tx = (await store.getTx(first.body.txId))!
+      const reverted = await store.saveTx(
+        {
+          ...tx,
+          status: 'confirmed',
+          mined: { hash: `0x${'1'.repeat(64)}`, blockNumber: 1, blockHash: `0x${'2'.repeat(64)}`, status: 'reverted' },
+        },
+        'x',
+      )
+      expect(await depend({ dependsOn: tx.txId })).toMatchObject({
+        status: 422,
+        body: { error: { code: 'dependency_failed' } },
+      })
+      await store.saveTx({ ...reverted, status: 'failed' }, 'x')
+      expect(await depend({ dependsOn: tx.txId })).toMatchObject({
+        status: 422,
+        body: { error: { code: 'dependency_failed' } },
+      })
+    })
+  })
+
   describe('GET routes', () => {
     it('returns a transaction of an allowed signer and hides one of another signer', async () => {
       const created = await call(event(ROUTES.submit, { body: request() }))

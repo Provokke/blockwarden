@@ -1,9 +1,9 @@
 import { clampFees } from '@blockwarden/core'
 import type { LocalAccount } from 'viem'
-import type { RelayerChain } from './chain.js'
+import { EstimateError, type RelayerChain } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
-import { latestAttempt, withStatus, type SignerRecord, type TxRecord } from './records.js'
+import { dependencyState, latestAttempt, withStatus, type SignerRecord, type TxRecord } from './records.js'
 import { signAttempt } from './sign.js'
 import type { RelayerStore } from './store.js'
 
@@ -19,7 +19,7 @@ export type SignerDeps = {
   log(message: string, data?: Record<string, unknown>): void
 }
 
-export type ProcessOutcome = 'missing' | 'skipped' | 'paused' | 'submitted' | 'failed'
+export type ProcessOutcome = 'missing' | 'skipped' | 'paused' | 'waiting' | 'submitted' | 'failed'
 
 // a nonce taken by another sender forces a fresh one; twice in a row means something else keeps sending
 const MAX_NONCE_RESETS = 2
@@ -41,6 +41,21 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
 
   const account = await deps.accountFor(signer)
   const pair = `${signer.signerId}#${tx.chainId}`
+
+  if (tx.dependsOn !== undefined && tx.nonce === undefined) {
+    const state = dependencyState(await store.getTx(tx.dependsOn))
+    // the sweeper requeues this transaction once its dependency settles
+    if (state === 'waiting') return 'waiting'
+    const reason =
+      state === 'unsuccessful'
+        ? 'the transaction this one depends on did not succeed'
+        : await revertsNow(chain, account.address, tx)
+    if (reason) {
+      // no nonce was taken, so no filler is needed
+      await store.saveTx({ ...withStatus(tx, 'failed', stamp()), error: reason }, stamp())
+      return 'failed'
+    }
+  }
 
   for (let resets = 0; ; resets++) {
     if (tx.nonce === undefined) {
@@ -114,6 +129,19 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
       case 'rejected':
         return fail(deps, tx, account, outcome.message, chain)
     }
+  }
+}
+
+// the estimate the API skipped for a dependent transaction, run once its dependency is confirmed
+async function revertsNow(chain: RelayerChain, from: TxRecord['from'], tx: TxRecord): Promise<string | undefined> {
+  try {
+    await chain.estimateGas({ from, to: tx.to, data: tx.data, value: BigInt(tx.value) })
+    return undefined
+  } catch (err) {
+    if (err instanceof EstimateError && err.kind === 'reverted') {
+      return `eth_estimateGas reverted once the dependency was confirmed: ${err.revertData ?? '0x'}`
+    }
+    throw err
   }
 }
 

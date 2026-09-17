@@ -31,6 +31,7 @@ const TX: RelayerTxBody = {
   fillerTxId: null,
   idempotencyKey: 'charge-1',
   reference: 'sub_1:period_3',
+  dependsOn: null,
   createdAt: '2026-09-17T00:00:00.000Z',
   updatedAt: '2026-09-17T00:00:00.000Z',
 }
@@ -83,6 +84,7 @@ describe('relayer client', () => {
         gasLimit: 21_000n,
         idempotencyKey: 'charge-1',
         reference: 'sub_1:period_3',
+        dependsOn: 'tx-0',
       },
     )
     expect(seen).toEqual([
@@ -100,6 +102,7 @@ describe('relayer client', () => {
           value: '340282366920938463463374607431768211456',
           gasLimit: '21000',
           reference: 'sub_1:period_3',
+          dependsOn: 'tx-0',
         }),
       },
     ])

@@ -427,6 +427,35 @@ describe('sweepChain', () => {
       expect(await reload(tx)).toMatchObject({ enqueues: 2, enqueuedAt: nowMs })
     })
 
+    it('holds a dependent transaction until its dependency settles, then requeues it once', async () => {
+      const dependency = await submitted()
+      const tx = queuedTx(account.address, { dependsOn: dependency.txId })
+      await store.createTx(tx, { day: '2026-09-17', costGwei: 1, capGwei: 10 ** 9 }, START)
+      nowMs = START + 3_600_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ requeued: 0 })
+
+      chain.head = 120
+      chain.mine(dependency.attempts[0]!.hash, 100)
+      // both were created in the same millisecond, so the index may list either first: two sweeps cover both orders
+      await sweepChain(deps, FAR)
+      expect((await reload(dependency)).status).toBe('confirmed')
+      await sweepChain(deps, FAR)
+      expect(queue.sent).toEqual([{ txId: tx.txId, enqueues: 2 }])
+      // requeued after the dependency settled, so from here only the usual staleness rule applies
+      nowMs += 60_000
+      await sweepChain(deps, FAR)
+      expect(queue.sent).toHaveLength(1)
+    })
+
+    it('requeues a dependent transaction whose dependency failed, so the signer can fail it', async () => {
+      const dependency = await submitted()
+      await store.saveTx({ ...dependency, status: 'failed' }, new Date(START + 1_000).toISOString())
+      // enqueued just now, so only the settled dependency, not staleness, can send it back
+      const tx = queuedTx(account.address, { dependsOn: dependency.txId, enqueuedAt: START })
+      await store.createTx(tx, { day: '2026-09-17', costGwei: 1, capGwei: 10 ** 9 }, START)
+      expect(await sweepChain(deps, FAR)).toMatchObject({ requeued: 1 })
+    })
+
     it('keeps a paused signer queued until its balance covers the paused transaction, then requeues in nonce order', async () => {
       const later = queuedTx(account.address, { createdAt: '2026-09-17T00:00:01.000Z' })
       const withNonce = queuedTx(account.address, { nonce: 6, createdAt: '2026-09-17T00:00:02.000Z' })
