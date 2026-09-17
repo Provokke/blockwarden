@@ -1,5 +1,14 @@
 import type { Fees } from '@blockwarden/core'
-import { decodeFunctionData, erc20Abi, isAddressEqual, size, slice, type Address, type Hex } from 'viem'
+import {
+  decodeFunctionData,
+  encodeFunctionData,
+  erc20Abi,
+  isAddressEqual,
+  size,
+  slice,
+  type Address,
+  type Hex,
+} from 'viem'
 import { z } from 'zod'
 
 const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'expected a 20-byte hex address')
@@ -17,13 +26,25 @@ export const policySchema = z
   .object({
     allowedTo: z
       .array(
-        z.object({
-          address,
-          // when present, only these functions may be called on this contract; '0x' in the list allows plain transfers
-          selectors: z.array(z.union([selector, z.literal('0x')])).optional(),
-          // when present, an ERC-20 transfer on this contract may only send to these addresses
-          transferRecipients: z.array(address).optional(),
-        }),
+        z
+          .object({
+            address,
+            // when present, only these functions may be called on this contract; '0x' in the list allows plain transfers
+            selectors: z.array(z.union([selector, z.literal('0x')])).optional(),
+            // when present, an ERC-20 transfer on this contract may only send to these addresses
+            transferRecipients: z.array(address).optional(),
+          })
+          // a recipient list only means something if transfer is the one function allowed, or approve and
+          // transferFrom would move the tokens anywhere
+          .refine(
+            (t) =>
+              !t.transferRecipients ||
+              (t.selectors?.length === 1 && t.selectors[0]!.toLowerCase() === TRANSFER_SELECTOR),
+            {
+              message: `transferRecipients needs selectors to be exactly ['${TRANSFER_SELECTOR}']`,
+              path: ['selectors'],
+            },
+          ),
       )
       .min(1),
     maxGasLimit: z.number().int().positive(),
@@ -48,7 +69,8 @@ export type PolicyRequest = { to: Address; data: Hex; value: bigint; gasLimit: b
 
 export function checkPolicy(policy: Policy, request: PolicyRequest): PolicyIssue[] {
   const issues: PolicyIssue[] = []
-  if (size(request.data) > MAX_DATA_BYTES) {
+  const dataSize = size(request.data)
+  if (dataSize > MAX_DATA_BYTES) {
     issues.push({ path: 'data', message: `calldata is larger than ${MAX_DATA_BYTES} bytes` })
   }
   if (request.gasLimit > BigInt(policy.maxGasLimit)) {
@@ -59,15 +81,31 @@ export function checkPolicy(policy: Policy, request: PolicyRequest): PolicyIssue
     issues.push({ path: 'to', message: 'the signer policy does not allow this address' })
     return issues
   }
-  const fn = size(request.data) >= 4 ? slice(request.data, 0, 4).toLowerCase() : '0x'
+  // one to three bytes is not a call to anything, but a contract's fallback would still run it
+  if (dataSize > 0 && dataSize < 4 && (target.selectors || target.transferRecipients)) {
+    issues.push({ path: 'data', message: 'calldata is shorter than a selector and is not a plain transfer' })
+    return issues
+  }
+  const fn = dataSize >= 4 ? slice(request.data, 0, 4).toLowerCase() : '0x'
   if (target.selectors && !target.selectors.some((s) => s.toLowerCase() === fn)) {
     issues.push({ path: 'data', message: `the signer policy does not allow calling ${fn} on this address` })
+  } else if (target.transferRecipients && fn !== TRANSFER_SELECTOR) {
+    // the schema already ties recipients to a transfer-only list; this holds for a policy that skipped it
+    issues.push({ path: 'data', message: 'the signer policy only allows transfer on this address' })
   }
   if (target.transferRecipients && fn === TRANSFER_SELECTOR) {
     let recipient: Address | undefined
     try {
       const decoded = decodeFunctionData({ abi: erc20Abi, data: request.data })
-      if (decoded.functionName === 'transfer') recipient = decoded.args[0]
+      // the decoder ignores dirty address padding and trailing bytes, so only calldata that re-encodes
+      // byte for byte is the transfer it looks like
+      if (
+        decoded.functionName === 'transfer' &&
+        encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: decoded.args }).toLowerCase() ===
+          request.data.toLowerCase()
+      ) {
+        recipient = decoded.args[0]
+      }
     } catch {
       recipient = undefined
     }
