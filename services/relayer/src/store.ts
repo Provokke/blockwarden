@@ -29,6 +29,14 @@ export class TxConflictError extends Error {
   }
 }
 
+// thrown once retryingConflicts gives up; a caller can tell this apart from any other failure and ask for a retry
+export class StoreBusyError extends Error {
+  constructor(what: string, options?: ErrorOptions) {
+    super(`${what} kept conflicting with other DynamoDB transactions`, options)
+    this.name = 'StoreBusyError'
+  }
+}
+
 type Cancellation = { CancellationReasons?: { Code?: string }[] }
 
 function cancellationCodes(err: unknown): string[] | undefined {
@@ -62,7 +70,7 @@ async function retryingConflicts(what: string, send: () => Promise<unknown>): Pr
     } catch (err) {
       if (!isTransactionConflict(err)) throw err
       if (retry >= TRANSACTION_CONFLICT_RETRIES) {
-        throw new Error(`${what} kept conflicting with other DynamoDB transactions`, { cause: err })
+        throw new StoreBusyError(what, { cause: err })
       }
       // full jitter, so the writers that collided do not collide again
       await new Promise((resolve) => setTimeout(resolve, Math.random() * 25 * 2 ** retry))

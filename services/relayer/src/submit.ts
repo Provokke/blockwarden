@@ -62,8 +62,9 @@ function requestHash(request: RelayRequest): string {
     chainId: request.chainId,
     to: request.to.toLowerCase(),
     data: request.data.toLowerCase(),
-    value: request.value ?? '0',
-    gasLimit: request.gasLimit ?? null,
+    // BigInt strips leading zeros, so "00" and "0" (or an omitted value) hash the same
+    value: BigInt(request.value ?? '0').toString(),
+    gasLimit: request.gasLimit === undefined ? null : BigInt(request.gasLimit).toString(),
     reference: request.reference ?? null,
   }
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
@@ -114,11 +115,18 @@ export async function submitTx(deps: SubmitDeps, apiKey: ApiKeyRecord, input: un
     gasLimit = request.gasLimit === undefined ? (estimate * ESTIMATE_HEADROOM_PERCENT) / 100n : BigInt(request.gasLimit)
   } catch (err) {
     if (!(err instanceof EstimateError)) throw err
+    // the detailed message can carry the RPC URL, which may hold an API key; only a fixed message reaches the caller
+    deps.log('estimate failed', {
+      kind: err.kind,
+      chainId: request.chainId,
+      signerId: signer.signerId,
+      error: err.message,
+    })
     if (err.kind === 'reverted') {
-      return error(422, 'estimate_reverted', err.message, { revertData: err.revertData ?? '0x' })
+      return error(422, 'estimate_reverted', 'the transaction would revert', { revertData: err.revertData ?? '0x' })
     }
-    if (err.kind === 'unavailable') return error(503, 'rpc_unavailable', err.message)
-    return error(422, 'estimate_failed', err.message)
+    if (err.kind === 'unavailable') return error(503, 'rpc_unavailable', 'the RPC endpoint is unavailable')
+    return error(422, 'estimate_failed', 'the gas estimate failed')
   }
   const late = checkPolicy(signer.policy, { to, data, value, gasLimit })
   if (late.length > 0) return error(422, 'policy_violation', 'the signer policy refuses this request', { issues: late })

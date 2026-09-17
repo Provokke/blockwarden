@@ -1,6 +1,7 @@
 import type { SignersBody } from '@blockwarden/relayer-client'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import { toTxBody, type ApiKeyRecord } from './records.js'
+import { StoreBusyError } from './store.js'
 import { error, hashApiKey, submitTx, type ApiResult, type SubmitDeps } from './submit.js'
 
 // the route keys the Terraform module registers; a test holds the two lists together
@@ -18,8 +19,15 @@ export function createApiHandler(deps: SubmitDeps): ApiHandler {
     try {
       result = await route(deps, event)
     } catch (err) {
-      deps.log('request failed', { routeKey: event.routeKey, error: (err as Error).message })
-      result = error(500, 'internal', 'the relayer failed to handle the request')
+      deps.log('request failed', {
+        routeKey: event.routeKey,
+        error: err instanceof Error ? err.message : String(err),
+        cause: err,
+      })
+      result =
+        err instanceof StoreBusyError
+          ? error(503, 'busy', 'the relayer is busy; retry the request with the same idempotency key')
+          : error(500, 'internal', 'the relayer failed to handle the request')
     }
     return {
       statusCode: result.status,
@@ -30,8 +38,8 @@ export function createApiHandler(deps: SubmitDeps): ApiHandler {
 }
 
 async function authenticate(deps: SubmitDeps, event: APIGatewayProxyEventV2): Promise<ApiKeyRecord | undefined> {
-  // API Gateway lowercases header names in the version 2.0 payload
-  const match = /^Bearer (\S+)$/.exec(event.headers.authorization ?? '')
+  // API Gateway lowercases header names in the version 2.0 payload; the scheme itself is case-insensitive (RFC 7235)
+  const match = /^Bearer (\S+)$/i.exec(event.headers.authorization ?? '')
   if (!match) return undefined
   return deps.store.getApiKey(hashApiKey(match[1]!))
 }

@@ -4,7 +4,7 @@ import { encodeFunctionData, erc20Abi, type Address } from 'viem'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createApiHandler, ROUTES, type ApiHandler } from '../../src/api.js'
 import { EstimateError } from '../../src/chain.js'
-import { RelayerStore } from '../../src/store.js'
+import { RelayerStore, StoreBusyError } from '../../src/store.js'
 import { hashApiKey } from '../../src/submit.js'
 import { FakeChain } from '../helpers/fake-chain.js'
 import { CHAIN_ID, RecordingQueue, signerRecord, TARGET } from '../helpers/fixtures.js'
@@ -115,6 +115,53 @@ describe('relayer API handler', () => {
       expect(result.body).not.toContain('dynamo down')
       expect(logs).toEqual(['request failed'])
     })
+
+    it('answers 500 without detail when something that is not an Error is thrown, and logs it', async () => {
+      const broken = createApiHandler({
+        store: {
+          getApiKey: () => {
+            throw undefined
+          },
+        } as unknown as RelayerStore,
+        chainFor: () => chain,
+        addressFor: async () => FROM,
+        queue,
+        now: () => new Date(),
+        newTxId: () => 'x',
+        log: (message) => logs.push(message),
+      })
+      const result = await broken(event(ROUTES.getTx, { txId: 'x' }))
+      expect(result.statusCode).toBe(500)
+      expect(logs).toEqual(['request failed'])
+    })
+
+    it('accepts the Bearer scheme case-insensitively', async () => {
+      const e = event(ROUTES.signers)
+      e.headers.authorization = `bearer ${API_KEY}`
+      expect((await call(e)).status).toBe(200)
+    })
+
+    it('answers 503 busy when the store cannot resolve a DynamoDB conflict, and tells the caller to retry', async () => {
+      const busyStore = {
+        getApiKey: store.getApiKey.bind(store),
+        getIdempotency: store.getIdempotency.bind(store),
+        getSigner: store.getSigner.bind(store),
+        createTx: () => Promise.reject(new StoreBusyError('creating transaction tx-1')),
+      } as unknown as RelayerStore
+      const busy = createApiHandler({
+        store: busyStore,
+        chainFor: (chainId) => (chainId === CHAIN_ID ? chain : undefined),
+        addressFor: async () => FROM,
+        queue,
+        now: () => new Date('2026-09-17T12:00:00.000Z'),
+        newTxId: () => 'tx-busy',
+        log: (message) => logs.push(message),
+      })
+      const raw = await busy(event(ROUTES.submit, { body: request() }))
+      const result = { status: raw.statusCode, body: JSON.parse(raw.body as string) }
+      expect(result).toMatchObject({ status: 503, body: { error: { code: 'busy' } } })
+      expect(result.body.error.message).toMatch(/idempotency/i)
+    })
   })
 
   describe('POST /v1/relayer/txs', () => {
@@ -210,14 +257,68 @@ describe('relayer API handler', () => {
       expect(await store.getTx('tx-1')).toBeUndefined()
     })
 
-    it('answers 503 when the RPC is unavailable and 422 when the estimate fails another way', async () => {
+    it('answers 503 when the RPC is unavailable and 422 when the estimate fails another way, storing nothing either time', async () => {
       chain.estimateFailure = new EstimateError('unavailable', 'down')
-      expect((await call(event(ROUTES.submit, { body: request() }))).status).toBe(503)
+      expect((await call(event(ROUTES.submit, { body: request({ idempotencyKey: 'unavailable-1' }) }))).status).toBe(
+        503,
+      )
+      expect(await store.getIdempotency(hashApiKey(API_KEY), 'unavailable-1')).toBeUndefined()
+
       chain.estimateFailure = new EstimateError('failed', 'gas required exceeds allowance')
-      expect(await call(event(ROUTES.submit, { body: request() }))).toMatchObject({
+      expect(await call(event(ROUTES.submit, { body: request({ idempotencyKey: 'failed-1' }) }))).toMatchObject({
         status: 422,
         body: { error: { code: 'estimate_failed' } },
       })
+      expect(await store.getIdempotency(hashApiKey(API_KEY), 'failed-1')).toBeUndefined()
+    })
+
+    it('returns a fixed message per estimate error kind instead of the raw RPC text, and logs the detail', async () => {
+      const secret = 'https://rpc.example/key/super-secret-api-key'
+
+      chain.estimateFailure = new EstimateError('reverted', `eth_estimateGas reverted at ${secret}`, '0xdead')
+      const reverted = await call(event(ROUTES.submit, { body: request({ idempotencyKey: 'msg-reverted' }) }))
+      expect(reverted.body.error.message).not.toContain(secret)
+      expect(reverted.body.error.revertData).toBe('0xdead')
+
+      chain.estimateFailure = new EstimateError('unavailable', `connect ECONNREFUSED ${secret}`)
+      const unavailable = await call(event(ROUTES.submit, { body: request({ idempotencyKey: 'msg-unavailable' }) }))
+      expect(unavailable.body.error.message).not.toContain(secret)
+
+      chain.estimateFailure = new EstimateError('failed', `gas required exceeds allowance at ${secret}`)
+      const failed = await call(event(ROUTES.submit, { body: request({ idempotencyKey: 'msg-failed' }) }))
+      expect(failed.body.error.message).not.toContain(secret)
+
+      expect(logs.filter((l) => l === 'estimate failed')).toHaveLength(3)
+    })
+
+    it('treats leading zeros in a decimal string as unchanged for idempotency', async () => {
+      const key = 'zeros-1'
+      const first = await call(
+        event(ROUTES.submit, { body: request({ idempotencyKey: key, value: '00', gasLimit: '060000' }) }),
+      )
+      expect(first.status).toBe(202)
+      const again = await call(
+        event(ROUTES.submit, { body: request({ idempotencyKey: key, value: '0', gasLimit: '60000' }) }),
+      )
+      expect(again).toEqual({ status: 200, body: first.body })
+    })
+
+    it('hashes an omitted value the same as "0"', async () => {
+      const key = 'omit-value-1'
+      const first = await call(event(ROUTES.submit, { body: request({ idempotencyKey: key }) }))
+      expect(first.status).toBe(202)
+      const again = await call(event(ROUTES.submit, { body: request({ idempotencyKey: key, value: '0' }) }))
+      expect(again).toEqual({ status: 200, body: first.body })
+    })
+
+    it('lets two different API keys use the same idempotencyKey to create separate transactions', async () => {
+      await store.putApiKey({ hash: hashApiKey('bw_second'), signerIds: ['billing'], label: 'second', createdAt: 'x' })
+      const key = 'shared-key'
+      const first = await call(event(ROUTES.submit, { body: request({ idempotencyKey: key }) }))
+      const second = await call(event(ROUTES.submit, { body: request({ idempotencyKey: key }), apiKey: 'bw_second' }))
+      expect(first.status).toBe(202)
+      expect(second.status).toBe(202)
+      expect(second.body.txId).not.toBe(first.body.txId)
     })
 
     it('returns the original transaction for a repeated idempotency key, and 409 for a different body', async () => {
