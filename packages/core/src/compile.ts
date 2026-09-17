@@ -1,4 +1,5 @@
 import { parseAbiItem, toEventSelector, type AbiEvent, type Hex } from 'viem'
+import { actionSchema } from './actions.js'
 import type { Condition, RuleInput } from './rule.js'
 
 export type ValidationIssue = { path: string; message: string }
@@ -33,6 +34,15 @@ export function compileRule(ruleId: string, input: RuleInput): CompiledRule {
     }
   }
 
+  // ruleInputSchema only runs in scripts/put-rule.ts; a rule written any other way is compiled and dispatched
+  // without it, so the actions are checked here too
+  for (const [i, action] of (input.actions ?? []).entries()) {
+    const parsed = actionSchema.safeParse(action)
+    if (parsed.success) continue
+    for (const issue of parsed.error.issues)
+      issues.push({ path: ['actions', i, ...issue.path].join('.'), message: issue.message })
+  }
+
   if (issues.length > 0 || !abiEvent) throw new RuleValidationError(issues)
   return { ...input, ruleId, abiEvent, topic0: toEventSelector(abiEvent) }
 }
@@ -65,6 +75,9 @@ function* leafFields(condition: Condition | undefined, path: string): Generator<
 
 type AbiParameter = AbiEvent['inputs'][number]
 
+// "an address", "an int256", but "a uint256", which is said "you-int"
+const article = (type: string) => (/^[aeio]/.test(type) ? 'an' : 'a')
+
 // viem decodes a tuple as an object, so args.permission.spender is a real path; validating only the first
 // segment let a typo past and the rule then matched nothing, silently
 function resolveAbiPath(inputs: readonly AbiParameter[], segments: string[]): string | undefined {
@@ -72,11 +85,26 @@ function resolveAbiPath(inputs: readonly AbiParameter[], segments: string[]): st
   if (!head) return 'event has no input named ""'
   const found = inputs.find((i) => i.name === head)
   if (!found) return `event has no input named "${head}"`
-  if (rest.length === 0) return undefined
-  const components = (found as { components?: readonly AbiParameter[] }).components
-  if (!components) return `field "${head}" is a ${found.type} and has no components`
-  const [next] = rest
+  return walk(found, head, rest)
+}
+
+// viem decodes an array as an array, so args.items.0.to and args.amounts.length both resolve at run time;
+// refusing them here stopped a live rule compiling, and the monitor then drops such a rule with one log line
+function walk(param: AbiParameter, name: string, segments: string[]): string | undefined {
+  const [next, ...rest] = segments
+  if (next === undefined) return undefined
+  if (/\[\d*\]$/.test(param.type)) {
+    if (next === 'length') {
+      return rest.length === 0 ? undefined : `field "${name}.length" is a number and has no components`
+    }
+    if (!/^\d+$/.test(next))
+      return `field "${name}" is ${article(param.type)} ${param.type}; expected an index or "length"`
+    // one index strips one dimension; the components, if any, belong to the element
+    return walk({ ...param, type: param.type.replace(/\[\d*\]$/, '') }, `${name}.${next}`, rest)
+  }
+  const components = (param as { components?: readonly AbiParameter[] }).components
+  if (!components) return `field "${name}" is ${article(param.type)} ${param.type} and has no components`
   const child = components.find((c) => c.name === next)
-  if (!child) return `tuple "${head}" has no component named "${next ?? ''}"`
-  return resolveAbiPath(components, rest)
+  if (!child) return `tuple "${name}" has no component named "${next}"`
+  return walk(child, next, rest)
 }
