@@ -204,6 +204,12 @@ importers:
         specifier: 12.1.0
         version: 12.1.0
 
+  packages/kms-signer:
+    devDependencies:
+      viem:
+        specifier: 2.56.3
+        version: 2.56.3(typescript@7.0.2)(zod@4.6.2)
+
   services/monitor:
     dependencies:
       '@aws-lambda-powertools/logger':

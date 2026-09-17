@@ -1,0 +1,40 @@
+{
+  "name": "@blockwarden/kms-signer",
+  "version": "0.1.0",
+  "description": "A viem LocalAccount backed by an AWS KMS secp256k1 key",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Provokke/blockwarden.git",
+    "directory": "packages/kms-signer"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "peerDependencies": {
+    "viem": "^2.56.3"
+  },
+  "devDependencies": {
+    "viem": "2.56.3"
+  }
+}
