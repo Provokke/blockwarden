@@ -103,7 +103,7 @@ export async function sweepChain(deps: SweeperDeps, deadlineMs: number): Promise
         if (!signers.has(tx.signerId)) signers.set(tx.signerId, await deps.store.getSigner(tx.signerId))
         const signer = signers.get(tx.signerId)
         if (!signer) {
-          deps.log('pending transaction names a missing signer', { txId: tx.txId, signerId: tx.signerId })
+          deps.log('pending transaction names a missing signer', { txId: tx.txId, signerId: tx.signerId }, 'warn')
           continue
         }
         if (tx.status === 'queued') {
@@ -313,11 +313,11 @@ async function replace(deps: SweeperDeps, signer: SignerRecord, tx: TxRecord, su
   if (!bump.ok || unrefused >= MAX_ATTEMPTS) {
     if (!tx.feeCapReached) {
       await deps.store.saveTx({ ...tx, feeCapReached: true }, at)
-      deps.log('cannot replace: the fee cap or the attempt limit is reached', {
-        txId: tx.txId,
-        required: bump.ok ? undefined : { ...bump.required },
-        attempts: unrefused,
-      })
+      deps.log(
+        'cannot replace: the fee cap or the attempt limit is reached',
+        { txId: tx.txId, required: bump.ok ? undefined : { ...bump.required }, attempts: unrefused },
+        'warn',
+      )
     }
     summary.feeCapReached++
     return false

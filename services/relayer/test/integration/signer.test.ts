@@ -17,6 +17,7 @@ describe('processTx', () => {
   let queue: RecordingQueue
   let deps: SignerDeps
   let logs: string[]
+  let levels: Record<string, string | undefined>
 
   beforeAll(async () => {
     dynamo = await startDynamo()
@@ -32,6 +33,7 @@ describe('processTx', () => {
     chain = new FakeChain(CHAIN_ID)
     queue = new RecordingQueue()
     logs = []
+    levels = {}
     let ids = 0
     await store.putSigner(signerRecord())
     deps = {
@@ -42,7 +44,10 @@ describe('processTx', () => {
       now: () => NOW,
       newTxId: () => `filler-${++ids}`,
       reconciled: new Set(),
-      log: (message) => logs.push(message),
+      log: (message, _data, level) => {
+        logs.push(message)
+        levels[message] = level
+      },
     }
   })
 
@@ -291,6 +296,7 @@ describe('processTx', () => {
     expect((await store.getTx(filler.txId))?.status).toBe('failed')
     expect(queue.sent).toEqual([])
     expect(logs).toContain('filler refused; the nonce stays open')
+    expect(levels['filler refused; the nonce stays open']).toBe('warn')
   })
 
   it('leaves a filler whose nonce is already used to the sweeper, without taking another nonce', async () => {

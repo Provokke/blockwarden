@@ -16,7 +16,7 @@ export type SignerDeps = {
   newTxId(): string
   // signer and chain pairs whose nonce counter this container has reconciled with the chain
   reconciled: Set<string>
-  log(message: string, data?: Record<string, unknown>): void
+  log(message: string, data?: Record<string, unknown>, level?: 'warn' | 'error'): void
 }
 
 export type ProcessOutcome = 'missing' | 'skipped' | 'paused' | 'waiting' | 'submitted' | 'failed'
@@ -159,7 +159,7 @@ async function fail(
   const failed: TxRecord = { ...withStatus(tx, 'failed', at), attempts, error: reason }
   if (tx.kind === 'filler') {
     await deps.store.saveTx(failed, at)
-    deps.log('filler refused; the nonce stays open', { txId: tx.txId, nonce: tx.nonce, reason })
+    deps.log('filler refused; the nonce stays open', { txId: tx.txId, nonce: tx.nonce, reason }, 'warn')
     return 'failed'
   }
   // an L2 transfer can need more than 21000 gas, so the filler is estimated like any other transaction
@@ -189,10 +189,11 @@ async function fail(
   try {
     await deps.queue.send(filler)
   } catch (err) {
-    deps.log('enqueue of filler failed; the sweeper will requeue it', {
-      txId: filler.txId,
-      error: (err as Error).message,
-    })
+    deps.log(
+      'enqueue of filler failed; the sweeper will requeue it',
+      { txId: filler.txId, error: (err as Error).message },
+      'warn',
+    )
   }
   return 'failed'
 }
