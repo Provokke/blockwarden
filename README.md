@@ -27,7 +27,7 @@ Final records trail the head by the chain's finality: about 19 minutes on Base a
 ## How the relayer keeps transactions moving
 
 - **One signer, one queue group.** Requests go to an SQS FIFO queue grouped by signer, so a signer's transactions get nonces in the order they arrived. The nonce is taken and written onto the transaction in one DynamoDB transaction, so a crash can never lose one.
-- **Policy before a nonce.** Each signer has an allowlist of contracts, optional function selectors per contract, optional fixed recipients for ERC-20 transfers, a gas limit, a fee cap and a daily spend cap. A request the policy refuses, or whose gas estimate reverts, is answered with 422 and never reaches the queue.
+- **Policy before a nonce.** Each signer has an allowlist of contracts, optional function selectors per contract, optional fixed recipients for ERC-20 transfers (an entry with recipients may allow only `transfer`), a gas limit, a fee cap and a daily spend cap. A request the policy refuses, or whose gas estimate reverts, is answered with 422 and never reaches the queue. A 503 (`busy` or `rpc_unavailable`) is safe to send again with the same idempotency key.
 - **KMS signatures.** KMS signs the transaction digest and returns DER. The signer normalises `s` to the low half of the curve (EIP-2) and finds `v` by recovering the signer's address.
 - **A sweeper every minute.** It marks transactions mined and then confirmed, replaces a stuck one at the same nonce with fees geth accepts as a replacement, rebroadcasts what a node forgot or a reorg removed, resumes a signer paused for lack of funds, and requeues anything that waited too long. A transaction the node refuses outright is failed and a 0-value transfer takes its nonce, so later transactions are not blocked.
 
@@ -131,7 +131,7 @@ The demo stack in `infra/terraform/envs/demo` deploys the relayer next to the mo
    console.log((await getTx(options, tx.txId)).status)
    ```
 
-A fee cap too low to replace a stuck transaction, or a signer paused for lack of funds, keeps a transaction pending; the `pending-age` alarm fires after 30 minutes.
+A fee cap too low to replace a stuck transaction, or a signer paused for lack of funds, keeps a transaction pending; the `pending-age` alarm fires after 30 minutes. If the sweeper is not invoked for 10 minutes, the `sweeper-not-running` alarm fires.
 
 ## License
 
