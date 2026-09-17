@@ -141,7 +141,7 @@ function beforeHardStop<T>(work: Promise<T>, hardStopMs: number): Promise<T> {
 const logger = createLogger('blockwarden-relayer-sweeper')
 
 export const handler = createSweeperHandler(
-  once(() => createRuntime(logger)),
+  once(() => createRuntime(logger, 'sweeper')),
   logger,
   new Metrics({ namespace: 'Blockwarden', serviceName: 'relayer' }),
 )

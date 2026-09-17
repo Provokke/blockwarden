@@ -76,7 +76,7 @@ describe('sweeper Lambda entry', () => {
   ) => {
     const logger = createLogger(name)
     return createSweeperHandler(
-      async () => ({ ...(await createRuntime(logger)), ...overrides }),
+      async () => ({ ...(await createRuntime(logger, 'sweeper')), ...overrides }),
       logger,
       new Metrics({ namespace: 'Blockwarden', serviceName: 'relayer' }),
     )

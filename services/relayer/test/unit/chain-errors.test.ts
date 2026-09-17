@@ -15,6 +15,7 @@ import {
   describeError,
   EstimateError,
 } from '../../src/chain.js'
+import { chainOptionsFor } from '../../src/lambda/runtime.js'
 import { deadUrl, startMockRpc, type MockReply, type MockRpc } from '../helpers/mock-rpc.js'
 
 // How viem wraps a node's JSON-RPC error. The messages below were measured from Anvil 1.8.1 on 2026-09-17, or
@@ -152,7 +153,7 @@ describe('createRelayerChain against scripted nodes', () => {
     return started
   }
   const estimate = (urls: string[], timeoutMs?: number) =>
-    createRelayerChain(1, urls, timeoutMs)
+    createRelayerChain(1, urls, timeoutMs === undefined ? {} : { timeoutMs })
       .estimateGas({ from: FROM, to: TO, data: '0x', value: 0n })
       .catch((e: unknown) => e as EstimateError)
 
@@ -190,7 +191,7 @@ describe('createRelayerChain against scripted nodes', () => {
     const message = 'insufficient funds for gas * price + value: balance 0, tx cost 42000, overshot 42000'
     const poor = await node(() => ({ error: { code: -32000, message } }))
     expect(await createRelayerChain(1, [poor.url]).send(RAW)).toEqual({ kind: 'insufficient-funds', message })
-    const dead = await createRelayerChain(1, [await deadUrl()], 500).send(RAW)
+    const dead = await createRelayerChain(1, [await deadUrl()], { timeoutMs: 500 }).send(RAW)
     expect(dead.kind).toBe('unknown')
     expect((dead as { message: string }).message).not.toContain(RAW.slice(2))
   })
@@ -208,13 +209,17 @@ describe('createRelayerChain against scripted nodes', () => {
 
     it('keeps a definitive refusal instead of trying a dead URL', async () => {
       const first = await node(refuse('insufficient funds for gas * price + value: balance 0, tx cost 42000'))
-      expect((await createRelayerChain(1, [first.url, await deadUrl()], 500).send(RAW)).kind).toBe('insufficient-funds')
+      expect((await createRelayerChain(1, [first.url, await deadUrl()], { timeoutMs: 500 }).send(RAW)).kind).toBe(
+        'insufficient-funds',
+      )
     })
 
     it('keeps a definitive refusal instead of waiting on a hanging URL', async () => {
       const first = await node(refuse('replacement transaction underpriced'))
       const hanging = await node(() => 'hang')
-      expect((await createRelayerChain(1, [first.url, hanging.url], 300).send(RAW)).kind).toBe('underpriced')
+      expect((await createRelayerChain(1, [first.url, hanging.url], { timeoutMs: 300 }).send(RAW)).kind).toBe(
+        'underpriced',
+      )
       expect(hanging.calls).toEqual([])
     })
 
@@ -229,12 +234,30 @@ describe('createRelayerChain against scripted nodes', () => {
 
     it('moves on after a transport failure or a rate limit', async () => {
       const second = await node(accept)
-      expect(await createRelayerChain(1, [await deadUrl(), second.url], 500).send(RAW)).toEqual({ kind: 'accepted' })
+      expect(await createRelayerChain(1, [await deadUrl(), second.url], { timeoutMs: 500 }).send(RAW)).toEqual({
+        kind: 'accepted',
+      })
       const limited = await node(() => ({ status: 429, text: 'Too Many Requests' }))
       expect(await createRelayerChain(1, [limited.url, second.url]).send(RAW)).toEqual({ kind: 'accepted' })
       const limitedRpc = await node(() => ({ error: { code: -32005, message: 'rate limit exceeded' } }))
       expect(await estimate([limitedRpc.url, second.url])).toBe(21_000n)
     })
+
+    it('fails over from a URL that never answers within about 5 seconds with the API settings', async () => {
+      const hanging = await node(() => 'hang')
+      const second = await node(accept)
+      const urls = [hanging.url, second.url]
+      const started = Date.now()
+      const gas = await createRelayerChain(1, urls, chainOptionsFor('api', urls.length)).estimateGas({
+        from: FROM,
+        to: TO,
+        data: '0x',
+        value: 0n,
+      })
+      expect(gas).toBe(21_000n)
+      expect(Date.now() - started).toBeLessThan(5_500)
+      expect(hanging.calls).toEqual(['eth_estimateGas'])
+    }, 30_000)
 
     it('moves on when a node cannot serve the call, not just when it is unreachable', async () => {
       // an HTTP 500 with a JSON-RPC error body still answers through viem's normal error path, same as a 200 would
@@ -299,9 +322,11 @@ describe('createRelayerChain against scripted nodes', () => {
     it('throws when a URL errored and none had the receipt, but not when another had it', async () => {
       const empty = await node(answering(null))
       const dead = await deadUrl()
-      await expect(createRelayerChain(1, [empty.url, dead], 500).findReceipt(HASH)).rejects.toThrow()
+      await expect(createRelayerChain(1, [empty.url, dead], { timeoutMs: 500 }).findReceipt(HASH)).rejects.toThrow()
       const synced = await node(answering(mined))
-      expect(await createRelayerChain(1, [dead, synced.url], 500).findReceipt(HASH)).toMatchObject({ hash: HASH })
+      expect(await createRelayerChain(1, [dead, synced.url], { timeoutMs: 500 }).findReceipt(HASH)).toMatchObject({
+        hash: HASH,
+      })
     })
   })
 
