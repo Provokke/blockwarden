@@ -24,6 +24,9 @@ export type Attempt = {
   signedAt: number
   // when the node took this attempt on a rebroadcast after refusing it; the stuck clock runs from here
   broadcastAt?: number
+  // when a node took this signature, or may have (an unclassified answer or a timeout); it can still be mined after
+  // a later refusal
+  acceptedAt?: number
   // the node's answer when it refused this signature outright
   rejected?: string
 }
@@ -49,6 +52,8 @@ export type TxRecord = {
   // hashes of refused attempts the sweeper dropped to make room; a node may have taken one before refusing it, so
   // receipts are still looked up for them
   retiredHashes?: Hex[]
+  // a node took one of the dropped attempts, so it can still be mined
+  retiredAccepted?: boolean
   // retiredHashes is full, so the sweeper signs nothing more for this transaction and only rebroadcasts; never cleared
   retiredHashesFull?: boolean
   // the node refused the last signature as underpriced, so the sweeper replaces it without waiting
@@ -84,6 +89,11 @@ export function latestAttempt(tx: TxRecord): Attempt | undefined {
 // the newest signature the node did not refuse, which is the one worth rebroadcasting
 export function liveAttempt(tx: TxRecord): Attempt | undefined {
   return tx.attempts.findLast((a) => a.rejected === undefined)
+}
+
+// marks every copy of this signature as taken by a node, keeping the first time
+export function markAccepted(attempts: Attempt[], hash: Hex, at: number): Attempt[] {
+  return attempts.map((a) => (a.hash === hash && a.acceptedAt === undefined ? { ...a, acceptedAt: at } : a))
 }
 
 export function toTxBody(tx: TxRecord): RelayerTxBody {
