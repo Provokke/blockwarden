@@ -1,6 +1,6 @@
 import { clampFees } from '@blockwarden/core'
 import type { LocalAccount } from 'viem'
-import { EstimateError, type RelayerChain } from './chain.js'
+import { describeError, EstimateError, type RelayerChain } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
 import { dependencyState, latestAttempt, withStatus, type SignerRecord, type TxRecord } from './records.js'
@@ -49,7 +49,7 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
     const reason =
       state === 'unsuccessful'
         ? 'the transaction this one depends on did not succeed'
-        : await revertsNow(chain, account.address, tx)
+        : await revertsNow(deps, chain, account.address, tx)
     if (reason) {
       // no nonce was taken, so no filler is needed
       await store.saveTx({ ...withStatus(tx, 'failed', stamp()), error: reason }, stamp())
@@ -133,14 +133,31 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
 }
 
 // the estimate the API skipped for a dependent transaction, run once its dependency is confirmed
-async function revertsNow(chain: RelayerChain, from: TxRecord['from'], tx: TxRecord): Promise<string | undefined> {
+async function revertsNow(
+  deps: SignerDeps,
+  chain: RelayerChain,
+  from: TxRecord['from'],
+  tx: TxRecord,
+): Promise<string | undefined> {
   try {
-    await chain.estimateGas({ from, to: tx.to, data: tx.data, value: BigInt(tx.value) })
+    const estimate = await chain.estimateGas({ from, to: tx.to, data: tx.data, value: BigInt(tx.value) })
+    // the caller fixed gasLimit before this estimate existed; still send it, just flag that it may run short
+    if (BigInt(tx.gasLimit) < estimate) {
+      deps.log(
+        'dependent transaction gas limit is below the estimate',
+        { txId: tx.txId, gasLimit: tx.gasLimit, estimate: estimate.toString() },
+        'warn',
+      )
+    }
     return undefined
   } catch (err) {
-    if (err instanceof EstimateError && err.kind === 'reverted') {
+    if (!(err instanceof EstimateError)) throw err
+    if (err.kind === 'reverted') {
       return `eth_estimateGas reverted once the dependency was confirmed: ${err.revertData ?? '0x'}`
     }
+    // a definitive refusal that isn't a revert (insufficient balance, gas above the block limit, ...): retrying
+    // the estimate will not clear it either, so this is the same dead end as a revert
+    if (err.kind === 'failed') return describeError(err)
     throw err
   }
 }
