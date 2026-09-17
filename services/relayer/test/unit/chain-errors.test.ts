@@ -238,6 +238,57 @@ describe('createRelayerChain against scripted nodes', () => {
     })
   })
 
+  describe('findReceipt', () => {
+    const HASH = `0x${'cd'.repeat(32)}` as const
+    const answering =
+      (receipt: unknown) =>
+      (method: string): MockReply =>
+        method === 'eth_getTransactionReceipt' ? { result: receipt } : { result: '0x1' }
+    const mined = {
+      transactionHash: HASH,
+      blockHash: `0x${'0f'.repeat(32)}`,
+      blockNumber: '0x64',
+      status: '0x1',
+      transactionIndex: '0x0',
+      from: FROM,
+      to: TO,
+      cumulativeGasUsed: '0x5208',
+      gasUsed: '0x5208',
+      effectiveGasPrice: '0x1',
+      logs: [],
+      logsBloom: `0x${'00'.repeat(256)}`,
+      type: '0x2',
+      contractAddress: null,
+    }
+
+    it('returns the receipt a later URL has when the first answers null', async () => {
+      const lagging = await node(answering(null))
+      const synced = await node(answering(mined))
+      const chain = createRelayerChain(1, [lagging.url, synced.url])
+      expect(await chain.getReceipt(HASH)).toBeUndefined()
+      expect(await chain.findReceipt(HASH)).toEqual({
+        hash: HASH,
+        blockNumber: 100,
+        blockHash: mined.blockHash,
+        status: 'success',
+      })
+    })
+
+    it('returns undefined only when every URL answered null', async () => {
+      const first = await node(answering(null))
+      const second = await node(answering(null))
+      expect(await createRelayerChain(1, [first.url, second.url]).findReceipt(HASH)).toBeUndefined()
+    })
+
+    it('throws when a URL errored and none had the receipt, but not when another had it', async () => {
+      const empty = await node(answering(null))
+      const dead = await deadUrl()
+      await expect(createRelayerChain(1, [empty.url, dead], 500).findReceipt(HASH)).rejects.toThrow()
+      const synced = await node(answering(mined))
+      expect(await createRelayerChain(1, [dead, synced.url], 500).findReceipt(HASH)).toMatchObject({ hash: HASH })
+    })
+  })
+
   describe('when the RPC body carries no message', () => {
     // HTTP 200 with a JSON-RPC error object missing "message", or with "error" as a bare string: both give an
     // RpcRequestError whose .details is undefined

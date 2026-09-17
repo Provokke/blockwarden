@@ -13,10 +13,14 @@ export class FakeChain implements RelayerChain {
   nonces = { latest: 0, pending: 0 }
   balances = new Map<string, bigint>()
   receipts = new Map<Hex, Receipt>()
+  // the other RPC URLs, which only findReceipt asks; a node with a failure errors instead of answering
+  otherNodes: { receipts: Map<Hex, Receipt>; failure?: Error }[] = []
   known = new Set<Hex>()
   // answers for send, used in order; once used up every send is accepted
   sendOutcomes: SendOutcome[] = []
   sent: Hex[] = []
+  // runs before a send is answered, so a test can look at the store as the bytes go out
+  onSend: ((raw: Hex) => Promise<void>) | undefined
   calls: string[] = []
 
   constructor(chainId = 84532) {
@@ -53,6 +57,16 @@ export class FakeChain implements RelayerChain {
     return this.receipts.get(hash)
   }
 
+  async findReceipt(hash: Hex): Promise<Receipt | undefined> {
+    this.calls.push(`findReceipt:${hash}`)
+    const found =
+      this.receipts.get(hash) ?? this.otherNodes.find((n) => !n.failure && n.receipts.has(hash))?.receipts.get(hash)
+    if (found) return found
+    const failed = this.otherNodes.find((n) => n.failure)
+    if (failed) throw failed.failure
+    return undefined
+  }
+
   async isKnown(hash: Hex): Promise<boolean> {
     this.calls.push(`isKnown:${hash}`)
     return this.known.has(hash)
@@ -60,12 +74,17 @@ export class FakeChain implements RelayerChain {
 
   async send(raw: Hex): Promise<SendOutcome> {
     this.sent.push(raw)
+    await this.onSend?.(raw)
     return this.sendOutcomes.shift() ?? { kind: 'accepted' }
   }
 
   mine(hash: Hex, blockNumber = this.head, status: Receipt['status'] = 'success'): Receipt {
-    const receipt = { hash, blockNumber, blockHash: `0x${blockNumber.toString(16).padStart(64, '0')}` as Hex, status }
+    const receipt = receiptAt(hash, blockNumber, status)
     this.receipts.set(hash, receipt)
     return receipt
   }
+}
+
+export function receiptAt(hash: Hex, blockNumber: number, status: Receipt['status'] = 'success'): Receipt {
+  return { hash, blockNumber, blockHash: `0x${blockNumber.toString(16).padStart(64, '0')}` as Hex, status }
 }

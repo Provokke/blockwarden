@@ -6,7 +6,7 @@ import type { Attempt, TxRecord } from '../../src/records.js'
 import { signAttempt } from '../../src/sign.js'
 import { RelayerStore } from '../../src/store.js'
 import { MAX_ATTEMPTS, sweepChain, type SweeperDeps } from '../../src/sweeper.js'
-import { FakeChain } from '../helpers/fake-chain.js'
+import { FakeChain, receiptAt } from '../helpers/fake-chain.js'
 import { CHAIN_ID, localAccount, queuedTx, RecordingQueue, signerRecord } from '../helpers/fixtures.js'
 
 const START = Date.parse('2026-09-17T12:00:00.000Z')
@@ -239,12 +239,19 @@ describe('sweepChain', () => {
   })
 
   describe('a nonce used by someone else', () => {
-    it('waits the confirmation depth, then fails the transaction without a filler', async () => {
+    const MIN_AGE = 600_000
+
+    it('waits the confirmation depth and the minimum age, then fails the transaction without a filler', async () => {
       const tx = await submitted()
       chain.nonces.latest = 4
       chain.head = 200
       await sweepChain(deps, FAR)
-      expect(await reload(tx)).toMatchObject({ status: 'submitted', nonceUsedAtBlock: 200 })
+      expect(await reload(tx)).toMatchObject({
+        status: 'submitted',
+        nonceUsedAtBlock: 200,
+        nonceUsedAt: new Date(START).toISOString(),
+      })
+      nowMs = START + MIN_AGE
       chain.head = 204
       await sweepChain(deps, FAR)
       expect((await reload(tx)).status).toBe('submitted')
@@ -254,13 +261,84 @@ describe('sweepChain', () => {
       expect(queue.sent).toEqual([])
     })
 
+    it('does not fail before the minimum age, however many blocks pass', async () => {
+      const tx = await submitted()
+      chain.nonces.latest = 4
+      chain.head = 200
+      await sweepChain(deps, FAR)
+      chain.head = 10_000
+      nowMs = START + MIN_AGE - 1
+      expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 0 })
+      expect((await reload(tx)).status).toBe('submitted')
+    })
+
+    it('takes the minimum age from the chain settings', async () => {
+      const tx = await submitted()
+      deps.settings = { ...deps.settings, nonceUsedMinAgeMs: 60_000 }
+      chain.nonces.latest = 4
+      await sweepChain(deps, FAR)
+      chain.head += 5
+      nowMs = START + 60_000
+      expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 1 })
+      expect((await reload(tx)).status).toBe('failed')
+    })
+
+    it('clears the wait when the nonce reads as unused again, and starts it afresh', async () => {
+      const tx = await submitted()
+      chain.nonces.latest = 4
+      await sweepChain(deps, FAR)
+      chain.nonces.latest = 3
+      chain.known.add(tx.attempts[0]!.hash)
+      await sweepChain(deps, FAR)
+      const cleared = await reload(tx)
+      expect(cleared.nonceUsedAtBlock).toBeUndefined()
+      expect(cleared.nonceUsedAt).toBeUndefined()
+
+      // an old marker would fail it here; a fresh one waits again
+      chain.nonces.latest = 4
+      chain.head += 10
+      nowMs = START + MIN_AGE
+      expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 0 })
+      expect(await reload(tx)).toMatchObject({ status: 'submitted', nonceUsedAt: new Date(nowMs).toISOString() })
+    })
+
     it('clears the wait when a receipt shows up after all', async () => {
       const tx = await submitted()
       chain.nonces.latest = 4
       await sweepChain(deps, FAR)
       chain.mine(tx.attempts[0]!.hash, 99)
       await sweepChain(deps, FAR)
-      expect((await reload(tx)).nonceUsedAtBlock).toBeUndefined()
+      const mined = await reload(tx)
+      expect(mined.nonceUsedAtBlock).toBeUndefined()
+      expect(mined.nonceUsedAt).toBeUndefined()
+    })
+
+    it('asks every RPC URL for a receipt before failing, and marks it mined when another one has it', async () => {
+      const tx = await submitted()
+      chain.nonces.latest = 4
+      chain.head = 200
+      await sweepChain(deps, FAR)
+      // the URL the fallback reads from lags and answers null; the second one has the receipt
+      chain.otherNodes = [{ receipts: new Map([[tx.attempts[0]!.hash, receiptAt(tx.attempts[0]!.hash, 180)]]) }]
+      chain.head = 205
+      nowMs = START + MIN_AGE
+      expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 0, mined: 1, confirmed: 1 })
+      expect(await reload(tx)).toMatchObject({ status: 'confirmed', mined: { hash: tx.attempts[0]!.hash } })
+    })
+
+    it('does not fail on a sweep where one RPC URL errors', async () => {
+      const tx = await submitted()
+      chain.nonces.latest = 4
+      chain.head = 200
+      await sweepChain(deps, FAR)
+      chain.otherNodes = [{ receipts: new Map(), failure: new Error('connect ECONNREFUSED') }]
+      chain.head = 205
+      nowMs = START + MIN_AGE
+      expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 0 })
+      expect((await reload(tx)).status).toBe('submitted')
+
+      chain.otherNodes = [{ receipts: new Map() }]
+      expect(await sweepChain(deps, FAR)).toMatchObject({ failed: 1 })
     })
   })
 
