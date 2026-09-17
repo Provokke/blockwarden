@@ -32,3 +32,15 @@ updates:
       interval: weekly
     cooldown:
       default-days: 3
+  - package-ecosystem: terraform
+    directory: /infra/terraform/modules/relayer
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+  - package-ecosystem: terraform
+    directory: /infra/terraform/examples/relayer-only
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3

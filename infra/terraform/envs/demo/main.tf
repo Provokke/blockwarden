@@ -60,6 +60,39 @@ module "blockwarden" {
   }
 }
 
+# Testnet relaying only. The signer's policy allows the demo contracts from milestone 5; until they exist the
+# allowlist holds the signer's own burn address, so the API refuses every request.
+module "relayer" {
+  source             = "../../modules/relayer"
+  name               = "blockwarden-demo"
+  relayer_source_dir = "${path.root}/../../../../services/relayer/dist"
+  table              = { name = module.blockwarden.table_name, arn = module.blockwarden.table_arn }
+  alarm_topic_arn    = module.blockwarden.alarm_topic_arn
+
+  chains = {
+    base-sepolia = {
+      chain_id           = 84532
+      rpc_urls_parameter = "/blockwarden-demo/rpc/base-sepolia"
+    }
+    arbitrum-sepolia = {
+      chain_id           = 421614
+      rpc_urls_parameter = "/blockwarden-demo/rpc/arbitrum-sepolia"
+    }
+  }
+
+  signers = {
+    demo = {
+      chain_ids                    = [84532, 421614]
+      allowed_to                   = [{ address = "0x000000000000000000000000000000000000dEaD", selectors = ["0x"] }]
+      max_gas_limit                = 500000
+      max_fee_per_gas_wei          = "5000000000"
+      max_priority_fee_per_gas_wei = "2000000000"
+      daily_spend_cap_wei          = "50000000000000000"
+      balance_alarm_gwei           = 10000000
+    }
+  }
+}
+
 output "table_name" {
   value = module.blockwarden.table_name
 }
@@ -70,4 +103,12 @@ output "monitor_function_names" {
 
 output "alarm_topic_arn" {
   value = module.blockwarden.alarm_topic_arn
+}
+
+output "relayer_api_url" {
+  value = module.relayer.api_url
+}
+
+output "relayer_signer_key_arns" {
+  value = module.relayer.signer_key_arns
 }
