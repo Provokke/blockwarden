@@ -882,6 +882,25 @@ describe('runCycle', () => {
       expect(store.cursors.get(CHAIN_ID)).toEqual({ durableBlock: 0, fastBlock: 70, version: 2 })
       expect(chain.getLogsCalls).toBe(0)
     })
+
+    it('saves a head below the fast cursor before scanning, so a run stopped before its first chunk keeps it', async () => {
+      const chain = new FakeChain(100)
+      chain.finalizedFault = () => 'rpc-error'
+      chain.staleHeadBy = 10
+      const store = new InMemoryStore()
+      store.rules.push(pingRule('fast', { mode: 'fast' }))
+      store.cursors.set(CHAIN_ID, { durableBlock: 0, fastBlock: 100, version: 1 })
+      const getLogs = vi.spyOn(chain, 'getLogs').mockRejectedValue(new DeadlineError())
+
+      expect(await runCycle(deps(chain, store))).toMatchObject({
+        status: 'ok',
+        head: 90,
+        fastBlock: 90,
+        deadlineHit: true,
+      })
+      expect(getLogs.mock.calls.map(([, from, to]) => [from, to])).toEqual([[81, 90]])
+      expect(store.cursors.get(CHAIN_ID)).toEqual({ durableBlock: 0, fastBlock: 90, version: 2 })
+    })
   })
 
   it('makes no fast getLogs call when no rule is in fast mode', async () => {
@@ -1124,6 +1143,25 @@ describe('runCycle', () => {
         [41, 56],
       ])
     })
+
+    it('keeps the size that fitted after a refusal as a ceiling, so a fixed range limit is refused at most once more', async () => {
+      const chain = new FakeChain(124)
+      const store = new InMemoryStore()
+      store.rules.push(pingRule('final', { mode: 'finalized' }))
+      chain.rangeLimit = 5
+      const read = chain.getLogsWithHead.bind(chain)
+      const calls: { from: number; refused: boolean }[] = []
+      vi.spyOn(chain, 'getLogsWithHead').mockImplementation(async (filter, from, to, options) => {
+        calls.push({ from, refused: to - from + 1 > chain.rangeLimit })
+        return read(filter, from, to, options)
+      })
+
+      expect(await runCycle(deps(chain, store, { maxRange: 16 }))).toMatchObject({ status: 'ok', durableBlock: 60 })
+      // the first range, 1..16, is the one that finds the limit by halving
+      const later = calls.filter((c) => c.from > 16)
+      expect(later.filter((c) => !c.refused).length).toBeGreaterThanOrEqual(10)
+      expect(later.filter((c) => c.refused).length).toBeLessThanOrEqual(1)
+    })
   })
 
   it('skips and logs a stored rule that no longer compiles', async () => {
@@ -1139,6 +1177,24 @@ describe('runCycle', () => {
     expect(await runCycle(deps(chain, store, { log }))).toMatchObject({ status: 'ok', final: 1 })
     expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ ruleId: 'broken' }))
     expect(records(store)).toEqual(['final:1@1:final'])
+  })
+
+  it('keeps one record per event when the provider returns the same log twice to both scans', async () => {
+    const chain = new FakeChain(10)
+    chain.emit(5n)
+    const store = new InMemoryStore()
+    store.rules.push(pingRule('fast', { mode: 'fast' }))
+    const read = chain.getLogs.bind(chain)
+    // the fake's batched read goes through getLogs, so the durable scan sees the duplicate too
+    vi.spyOn(chain, 'getLogs').mockImplementation(async (filter, from, to) => {
+      const logs = await read(filter, from, to)
+      return [...logs, ...logs.map((l) => ({ ...l, topics: [...l.topics] }))]
+    })
+
+    expect(await runCycle(deps(chain, store))).toMatchObject({ provisional: 1 })
+    chain.mine(64)
+    expect(await runCycle(deps(chain, store))).toMatchObject({ final: 1 })
+    expect(records(store)).toEqual(['fast:5@11:final'])
   })
 
   it('computes one match key for the same event in both scans', async () => {

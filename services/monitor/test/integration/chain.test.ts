@@ -242,6 +242,37 @@ describe('createChainReader against a stub RPC server', () => {
     expect(store.cursors.get(CHAIN_ID)?.durableBlock).toBe(80)
   })
 
+  it.each([
+    ['a JSON-RPC error', { error: { code: -32603, message: 'internal error' } }],
+    ['a result that is not hex', { result: '0xnothex' }],
+  ])('never halves a range when only the batched head fails, with %s', async (_, batchHeadAnswer) => {
+    const primary = await stub('chain', { head: 100, batchHeadAnswer })
+    const backup = await stub('chain', { head: 100, batchHeadAnswer })
+    const reader = createChainReader([primary.url, backup.url], 2_000)
+
+    const outcome = await outcomeOf(reader.getLogsWithHead(filter, 81, 90))
+
+    expect(outcome).toHaveProperty('rejected')
+    expect(isHalvableError((outcome as { rejected: unknown }).rejected)).toBe(false)
+    // moves on to the next node after one pair, like a failed pre-read
+    expect(primary.bodies().map(methodsOf)).toEqual([HEAD, PAIR])
+    expect(backup.bodies().map(methodsOf)).toEqual([HEAD, PAIR])
+
+    const store = new InMemoryStore()
+    store.rules.push(pingRule('final', { mode: 'finalized' }))
+    const chain: ChainReader = {
+      ...createChainReader([primary.url, backup.url], 2_000),
+      getHead: async () => 100,
+      getFinalized: async () => ({ number: 100, timestamp: 1_700_000_000 }),
+    }
+    await expect(
+      runCycle({ chainId: CHAIN_ID, chain, store, maxRange: 10, timeBudgetMs: 50_000, startBlock: 80 }),
+    ).rejects.toBeTruthy()
+    expect(primary.bodies().map(methodsOf)).toEqual([HEAD, PAIR, HEAD, PAIR])
+    expect(backup.bodies().map(methodsOf)).toEqual([HEAD, PAIR, HEAD, PAIR])
+    expect(store.cursors.get(CHAIN_ID)?.durableBlock).toBe(80)
+  })
+
   it('re-sends the whole pair once on a transport failure and stays on that node when it succeeds', async () => {
     const primary = await stub('chain', { head: 60, failFirstBatches: 1 })
     const backup = await stub('chain', { head: 50 })
@@ -397,6 +428,90 @@ describe('createChainReader against a stub RPC server', () => {
     30_000,
   )
 
+  it('downloads an oversized fast-scan log body once, without retrying it or walking on to the backup, so the scan halves at once', async () => {
+    const oversizedLogs = { bytes: 64 * MB, declareLength: true }
+    const primary = await stub('chain', { head: 100, oversizedLogs })
+    const backup = await stub('chain', { head: 100, oversizedLogs })
+    const urls = [primary.url, backup.url]
+
+    const outcome = await outcomeOf(createChainReader(urls, 10_000).getLogs(filter, 1, 2))
+
+    expect((outcome as { rejected: unknown }).rejected).toBeInstanceOf(ResponseBodyTooLargeError)
+    expect(primary.oversizedBytesSent()).toHaveLength(1)
+    expect(backup.httpRequestCount()).toBe(0)
+
+    // finalized is unavailable, so only the fast scan reads: 99..100, then 99..99, which it cannot halve further
+    const store = new InMemoryStore()
+    store.rules.push(pingRule('fast', { mode: 'fast' }))
+    await expect(
+      runCycle({
+        chainId: CHAIN_ID,
+        chain: createChainReader(urls, 10_000),
+        store,
+        maxRange: 2000,
+        timeBudgetMs: 50_000,
+        startBlock: 98,
+      }),
+    ).rejects.toBeInstanceOf(ResponseBodyTooLargeError)
+    expect(primary.oversizedBytesSent()).toHaveLength(3)
+    // the backup still answers the finalized block the primary refuses, but never a log request
+    expect(backup.oversizedBytesSent()).toHaveLength(0)
+  }, 30_000)
+
+  // viem backs off 150 ms before its first retry, or for as long as Retry-After asks
+  it.each([
+    [
+      'an invalid-params error, without retrying it',
+      'chain',
+      { logs: { code: -32602, message: 'invalid params' } },
+      1,
+      0,
+    ],
+    ['a limit-exceeded error, retried after a backoff', 'chain', { logs: LIMIT_EXCEEDED }, 2, 150],
+    ['an HTTP 500, retried after a backoff', 'http-500', {}, 2, 150],
+    [
+      'an HTTP 429, retried after its Retry-After',
+      'http-500',
+      { failWith: { status: 429, headers: { 'retry-after': '1' } } },
+      2,
+      1_000,
+    ],
+  ] as const)(
+    'retries a fast-scan log read on each URL as viem does for %s',
+    async (_, mode, options, attemptsPerUrl, backoffMs) => {
+      const primary = await stub(mode, options)
+      const backup = await stub(mode, options)
+      const reader = createChainReader([primary.url, backup.url], 5_000)
+
+      const started = Date.now()
+      const outcome = await outcomeOf(reader.getLogs(filter, 1, 2))
+      const elapsed = Date.now() - started
+
+      expect(outcome).toHaveProperty('rejected')
+      expect(primary.httpRequestCount()).toBe(attemptsPerUrl)
+      expect(backup.httpRequestCount()).toBe(attemptsPerUrl)
+      expect(elapsed).toBeGreaterThanOrEqual(2 * backoffMs)
+    },
+    20_000,
+  )
+
+  it('stops a fast-scan log read at the hard stop instead of backing off through every backup URL', async () => {
+    const primary = await stub('chain', { head: 100, delayMs: 8_000 })
+    const backups = await Promise.all(Array.from({ length: 6 }, () => stub('chain', { head: 100 })))
+    const reader = createChainReader([primary.url, ...backups.map((backup) => backup.url)], 10_000)
+    const started = Date.now()
+    reader.setHardStop(started + 500)
+
+    const outcome = await outcomeOf(reader.getLogs(filter, 1, 2))
+    const elapsed = Date.now() - started
+
+    expect((outcome as { rejected: unknown }).rejected).toBeInstanceOf(DeadlineError)
+    // the primary's retry backs off 150 ms before it is refused; walking on would wait that long again for each
+    // backup, which also refuses without sending anything, so six backups would add 900 ms
+    expect(elapsed).toBeLessThan(1_100)
+    for (const backup of backups) expect(backup.httpRequestCount()).toBe(0)
+  }, 20_000)
+
   it('rejects every request still in flight at the hard stop, well before its timeout, without walking on to the backup', async () => {
     const primary = await stub('chain', { head: 100, finalized: 90, delayMs: 8_000 })
     const backup = await stub('chain', { head: 100, finalized: 90 })
@@ -419,6 +534,8 @@ describe('createChainReader against a stub RPC server', () => {
       expect((outcome as { rejected: unknown }).rejected).toBeInstanceOf(DeadlineError)
     }
     expect(backup.httpRequestCount()).toBe(0)
+    // one request per call reached the node before the hard stop aborted it, and nothing was sent after it
+    expect(primary.httpRequestCount()).toBe(4)
   }, 20_000)
 
   it('fails every request at once, without sending it, after the hard stop has passed, until it is cleared', async () => {

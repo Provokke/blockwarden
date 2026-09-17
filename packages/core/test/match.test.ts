@@ -3,7 +3,7 @@ import type { Hex } from 'viem'
 import { describe, expect, it } from 'vitest'
 import { compileRule } from '../src/compile.js'
 import { buildLogFilter } from '../src/filter.js'
-import { assignOrdinals, matchLog, type LogMatch } from '../src/match.js'
+import { assignOrdinals, dedupeLogs, matchLog, type LogMatch } from '../src/match.js'
 import { ruleInputSchema } from '../src/rule.js'
 import { BOB, TOKEN, TRANSFER, erc20Log, erc721Log } from './logs.js'
 
@@ -45,6 +45,29 @@ describe('matchLog', () => {
 
   it('returns one match per rule that accepts the log', () => {
     expect(matchLog([rule('a'), rule('b')], erc20Log(1n)).map((m) => m.rule.ruleId)).toEqual(['a', 'b'])
+  })
+})
+
+describe('dedupeLogs', () => {
+  const blockHash = `0x${'ab'.repeat(32)}` as Hex
+
+  it('keeps one copy of a log the provider returned twice, so it cannot take a second ordinal', () => {
+    const log = erc20Log(1n, { blockHash, logIndex: 2 })
+    const next = erc20Log(1n, { blockHash, logIndex: 3 })
+    const shouted = { ...log, blockHash: `0x${'AB'.repeat(32)}` as Hex }
+
+    const deduped = dedupeLogs([log, next, { ...log, topics: [...log.topics] }, shouted])
+
+    expect(deduped).toEqual([log, next])
+    expect(assignOrdinals(deduped.flatMap((l) => matchLog([rule('r')], l))).map((k) => k.ordinal)).toEqual([0, 1])
+  })
+
+  it('keeps logs that share a log index in different blocks', () => {
+    const logs = [
+      erc20Log(1n, { blockNumber: 1, logIndex: 0 }),
+      erc20Log(1n, { blockNumber: 2, blockHash, logIndex: 0 }),
+    ]
+    expect(dedupeLogs(logs)).toEqual(logs)
   })
 })
 

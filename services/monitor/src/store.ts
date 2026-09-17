@@ -169,6 +169,8 @@ export class MonitorStore implements MonitorStorePort {
     const item: Record<string, unknown> = {
       ...keys.rule(rule.ruleId),
       ...rule,
+      // a bigint written as a number cannot be read back past 2^53
+      input: toStorable(rule.input),
       chainId: rule.input.chainId,
       GSI1SK: keys.ruleOrder(rule.ruleId),
     }
@@ -276,21 +278,27 @@ export class MonitorStore implements MonitorStorePort {
     return Math.floor(this.clock().getTime() / 1000) + MATCH_TTL_SECONDS
   }
 
-  private async queryAll(input: Omit<QueryCommandInput, 'TableName'>): Promise<Record<string, unknown>[]> {
+  // with a limit, each page asks only for the items still needed, so no read is spent on items thrown away
+  private async queryAll(
+    input: Omit<QueryCommandInput, 'TableName'>,
+    limit?: number,
+  ): Promise<Record<string, unknown>[]> {
     const items: Record<string, unknown>[] = []
     let startKey: Record<string, unknown> | undefined
     do {
+      const pageLimit =
+        limit === undefined ? this.options.pageSize : Math.min(limit - items.length, this.options.pageSize ?? limit)
       const page = await this.doc.send(
         new QueryCommand({
           ...input,
           TableName: this.tableName,
-          ...(this.options.pageSize ? { Limit: this.options.pageSize } : {}),
+          ...(pageLimit ? { Limit: pageLimit } : {}),
           ...(startKey ? { ExclusiveStartKey: startKey } : {}),
         }),
       )
       items.push(...(page.Items ?? []))
       startKey = page.LastEvaluatedKey
-    } while (startKey)
+    } while (startKey && (limit === undefined || items.length < limit))
     return items
   }
 }

@@ -41,7 +41,7 @@ export class LaggingNodeError extends Error {
 export class HeadReadError extends Error {
   constructor(cause: unknown) {
     super(
-      `reading the RPC node head before its log request failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      `reading the RPC node head for its log request failed: ${cause instanceof Error ? cause.message : String(cause)}`,
       {
         cause,
       },
@@ -73,11 +73,18 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304])
 // viem's default limit; it can only apply it to a body this fetch has already read, so the limit is enforced here too
 export const MAX_RESPONSE_BODY_BYTES = 10_485_760
 
+// viem retries an error that has no numeric code (utils/buildRequest.ts:291-322), which would download an oversized
+// body again from the same URL. A code viem neither retries nor maps to its own error classes (buildRequest.ts:171-263)
+// stops that, and the error still reaches us as this instance. The code is outside JSON-RPC's reserved range.
+class OversizedResponseError extends ResponseBodyTooLargeError {
+  readonly code = -39_001
+}
+
 async function readBodyWithinLimit(response: Response): Promise<Uint8Array<ArrayBuffer>> {
   const declared = Number(response.headers.get('content-length'))
   if (declared > MAX_RESPONSE_BODY_BYTES) {
     await response.body?.cancel().catch(() => {})
-    throw new ResponseBodyTooLargeError({ maxSize: MAX_RESPONSE_BODY_BYTES, size: declared })
+    throw new OversizedResponseError({ maxSize: MAX_RESPONSE_BODY_BYTES, size: declared })
   }
   const chunks: Uint8Array[] = []
   let size = 0
@@ -89,7 +96,7 @@ async function readBodyWithinLimit(response: Response): Promise<Uint8Array<Array
       size += value.byteLength
       if (size > MAX_RESPONSE_BODY_BYTES) {
         await reader.cancel().catch(() => {})
-        throw new ResponseBodyTooLargeError({ maxSize: MAX_RESPONSE_BODY_BYTES, size })
+        throw new OversizedResponseError({ maxSize: MAX_RESPONSE_BODY_BYTES, size })
       }
       chunks.push(value)
     }
@@ -179,6 +186,16 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
     ),
     cacheTime: 0,
   })
+  // the same retries as client, but fallback walks on to the next URL unless shouldThrow stops it
+  // (clients/transports/fallback.ts:162). An oversized body needs a smaller range, not another node, and after the
+  // hard stop every URL would refuse anyway, only after sitting through its retry backoff
+  const logsClient = createPublicClient({
+    transport: fallback(
+      rpcUrls.map((url) => http(url, { timeout: timeoutMs, retryCount: 1, fetchFn })),
+      { retryCount: 0, shouldThrow: (err) => err instanceof ResponseBodyTooLargeError || causedByHardStop(err) },
+    ),
+    cacheTime: 0,
+  })
   // fallback fails over each call on its own, which would pair one node's head with another node's logs;
   // viem retries each call on its own too, so retries happen per pair in getLogsWithHead
   const nodeClients = rpcUrls.map((url) =>
@@ -217,6 +234,18 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
     )
   }
 
+  // called in the same tick as requestLogs, so both still go out in one batch
+  const readBatchedHead = async (node: (typeof nodeClients)[number]): Promise<number> => {
+    try {
+      return hexToNumber(await node.request({ method: 'eth_blockNumber' }))
+    } catch (err) {
+      // a head the node cannot answer says nothing about the log range, just like a failed pre-read;
+      // an oversized body fails the whole batch, and a smaller range can fit
+      if (stoppedBy(err) || isTransportError(err) || err instanceof ResponseBodyTooLargeError) throw err
+      throw new HeadReadError(err)
+    }
+  }
+
   return {
     setHardStop(epochMs) {
       hardStop = epochMs
@@ -239,7 +268,7 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
         }
       }),
 
-    getLogs: (filter, from, to) => guarded(() => requestLogs(client, filter, from, to)),
+    getLogs: (filter, from, to) => guarded(() => requestLogs(logsClient, filter, from, to)),
 
     async getLogsWithHead(filter, from, to, options) {
       const rpcErrors: unknown[] = []
@@ -265,15 +294,16 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
               knownHeads[i] = Math.max(knownHeads[i]!, headBefore)
             }
             // issued in the same tick so the batching http transport sends both in one HTTP request, head first
-            const [head, logs] = await Promise.all([
-              node.request({ method: 'eth_blockNumber' }),
-              requestLogs(node, filter, from, to),
-            ])
-            knownHeads[i] = Math.max(knownHeads[i]!, hexToNumber(head))
-            return { logs, head: hexToNumber(head), headBefore }
+            const [head, logs] = await Promise.all([readBatchedHead(node), requestLogs(node, filter, from, to)])
+            knownHeads[i] = Math.max(knownHeads[i]!, head)
+            return { logs, head, headBefore }
           } catch (err) {
             // the next node would be cut off the same way
             if (stoppedBy(err)) throw hardStopError()
+            if (err instanceof HeadReadError) {
+              headReadError ??= err
+              break
+            }
             if (!isTransportError(err)) {
               rpcErrors.push(err)
               break

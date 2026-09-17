@@ -10,6 +10,10 @@ updates:
     groups:
       aws-sdk:
         patterns: ['@aws-sdk/*']
+    ignore:
+      # the Lambda runtime is nodejs24.x, so the types stay on the Node.js 24 line
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:
