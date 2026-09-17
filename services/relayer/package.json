@@ -1,0 +1,34 @@
+{
+  "name": "@blockwarden/relayer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run test/unit",
+    "test:integration": "vitest run test/integration --testTimeout=180000 --hookTimeout=180000",
+    "build": "node scripts/build.mjs",
+    "apikey:create": "tsx scripts/create-api-key.ts"
+  },
+  "dependencies": {
+    "@aws-lambda-powertools/logger": "2.35.0",
+    "@aws-lambda-powertools/metrics": "2.35.0",
+    "@aws-sdk/client-dynamodb": "3.1131.0",
+    "@aws-sdk/client-sqs": "3.1131.0",
+    "@aws-sdk/client-ssm": "3.1131.0",
+    "@aws-sdk/lib-dynamodb": "3.1131.0",
+    "@blockwarden/core": "workspace:*",
+    "@blockwarden/dynamo": "workspace:*",
+    "@blockwarden/kms-signer": "workspace:*",
+    "@blockwarden/relayer-client": "workspace:*",
+    "viem": "2.56.3",
+    "zod": "4.6.2"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "8.10.163",
+    "esbuild": "0.28.2",
+    "solc": "0.8.37",
+    "testcontainers": "12.1.0",
+    "tsx": "4.23.13"
+  }
+}
