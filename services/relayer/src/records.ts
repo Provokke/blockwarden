@@ -17,6 +17,7 @@ export type ApiKeyRecord = { hash: string; signerIds: string[]; label: string; c
 
 export type Attempt = {
   hash: Hex
+  // '0x' once the sweeper dropped the bytes of an old refused attempt to keep the item small
   raw: Hex
   maxFeePerGas: string
   maxPriorityFeePerGas: string

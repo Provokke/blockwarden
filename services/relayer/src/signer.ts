@@ -79,14 +79,7 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
       }
 
       case 'insufficient-funds': {
-        const requiredWei = BigInt(tx.value) + BigInt(tx.gasLimit) * BigInt(attempt.maxFeePerGas)
-        await store.pause({
-          signerId: signer.signerId,
-          chainId: tx.chainId,
-          address: account.address,
-          requiredWei: requiredWei.toString(),
-          since: stamp(),
-        })
+        await store.pauseForFunds(tx, account.address, attempt.maxFeePerGas, stamp())
         deps.log('signer paused: insufficient funds', { signerId: signer.signerId, chainId: tx.chainId, txId })
         return 'paused'
       }

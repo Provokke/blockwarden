@@ -385,6 +385,18 @@ export class RelayerStore {
     )
   }
 
+  // pauses the signer on the tx's chain until the address holds the value plus the gas limit at this fee
+  async pauseForFunds(tx: TxRecord, address: Address, maxFeePerGas: string, since: string): Promise<void> {
+    const requiredWei = BigInt(tx.value) + BigInt(tx.gasLimit) * BigInt(maxFeePerGas)
+    await this.pause({
+      signerId: tx.signerId,
+      chainId: tx.chainId,
+      address,
+      requiredWei: requiredWei.toString(),
+      since,
+    })
+  }
+
   // deletes only the pause that was read, so a newer pause written since is kept
   async unpause(record: PauseRecord): Promise<boolean> {
     try {
