@@ -1,4 +1,5 @@
-import type { RelayerTx, RelayerTxBody, TxStatus } from './types.js'
+import { TX_STATUSES, type RelayerTx, type RelayerTxBody, type TxStatus } from './types.js'
+import { isTxBody } from './validate.js'
 
 export const SIGNATURE_HEADER = 'x-blockwarden-signature'
 export const DELIVERY_HEADER = 'x-blockwarden-delivery'
@@ -46,13 +47,14 @@ export async function verifyWebhook(options: VerifyWebhookOptions): Promise<Webh
   if (Math.abs(now - timestamp) > tolerance) {
     throw new WebhookVerificationError(`the signature timestamp is more than ${tolerance} seconds from now`)
   }
-  const secrets = Array.isArray(options.secret) ? options.secret : [options.secret]
-  if (secrets.length === 0 || secrets.some((s) => s.length === 0)) {
+  const secrets: unknown[] = Array.isArray(options.secret) ? options.secret : [options.secret]
+  if (secrets.some((s) => typeof s !== 'string')) throw new WebhookVerificationError('webhook secret must be a string')
+  if (secrets.length === 0 || secrets.some((s) => (s as string).length === 0)) {
     throw new WebhookVerificationError('webhook secret must not be empty')
   }
   let matched = false
   for (const secret of secrets) {
-    const expected = await hmacHex(secret, `${timestamp}.${options.payload}`)
+    const expected = await hmacHex(secret as string, `${timestamp}.${options.payload}`)
     // every candidate is compared, so the time taken does not reveal which one matched
     for (const candidate of signatures) if (constantTimeEqual(candidate, expected)) matched = true
   }
@@ -72,12 +74,15 @@ export async function verifyWebhook(options: VerifyWebhookOptions): Promise<Webh
 }
 
 export async function signWebhook(options: { payload: string; secret: string; nowMs?: number }): Promise<string> {
+  if (typeof options.secret !== 'string' || options.secret.length === 0) {
+    throw new TypeError('webhook secret must not be empty')
+  }
   const timestamp = Math.floor((options.nowMs ?? Date.now()) / 1000)
   return `t=${timestamp},v1=${await hmacHex(options.secret, `${timestamp}.${options.payload}`)}`
 }
 
 export function isTxEvent(event: WebhookEvent): event is TxEvent {
-  return event.type.startsWith('tx.')
+  return (TX_STATUSES as readonly string[]).some((status) => event.type === `tx.${status}`) && isTxBody(event.data)
 }
 
 export function parseTx(body: RelayerTxBody): RelayerTx {

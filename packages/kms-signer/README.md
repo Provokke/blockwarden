@@ -14,7 +14,11 @@ await wallet.sendTransaction({ to: '0x...', value: 1n })
 
 `toKmsAccount` reads the public key once, to learn the address, and every signature after that is one KMS `Sign` call over the digest. It implements `sign`, `signMessage`, `signTypedData` and `signTransaction`. KMS returns DER signatures; the account normalises `s` to the lower half of the curve (EIP-2) and finds the recovery id by recovering its own address. Blob transactions are refused.
 
-Pass `client` to reuse a `KMSClient` with your own endpoint, credentials or retry settings.
+Build the account once and reuse it: each `toKmsAccount` call makes a `GetPublicKey` request.
+
+Pass `client` to reuse a `KMSClient` with your own endpoint, credentials or retry settings. Any `@aws-sdk/client-kms` v3 `KMSClient` fits, and so does any object with a matching `send`.
+
+A signature that does not recover to the key's address throws `InvalidSignatureError`, and a key that is not an uncompressed secp256k1 public key throws `InvalidPublicKeyError`.
 
 The caller needs `kms:GetPublicKey` and `kms:Sign` on the key.
 

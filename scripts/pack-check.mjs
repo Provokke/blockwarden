@@ -8,7 +8,7 @@ import { gunzipSync } from 'node:zlib'
 // exports point at files that are in it, every entry imports under plain Node, and it exports what consumers use.
 const packages = {
   'packages/kms-signer': {
-    '.': ['toKmsAccount', 'toDigestSignerAccount', 'kmsDigestSigner', 'InvalidSignatureError'],
+    '.': ['toKmsAccount', 'toDigestSignerAccount', 'kmsDigestSigner', 'InvalidSignatureError', 'InvalidPublicKeyError'],
     './testing': ['createLocalDigestSigner'],
   },
   'packages/relayer-client': {
@@ -46,6 +46,8 @@ for (const [dir, entries] of Object.entries(packages)) {
   const out = join(root, '.pack')
   rmSync(out, { recursive: true, force: true })
   mkdirSync(out)
+  mkdirSync(join(root, 'dist'), { recursive: true })
+  writeFileSync(join(root, 'dist', 'stale.js'), '')
   pnpm(['run', 'build'], root)
   pnpm(['pack', '--pack-destination', out], root)
   const tgz = readdirSync(out).find((f) => f.endsWith('.tgz'))
@@ -59,6 +61,30 @@ for (const [dir, entries] of Object.entries(packages)) {
       console.error(`${manifest.name}: ${file} is not in the tarball`)
       failures++
     }
+  }
+
+  // older resolvers and some bundlers read only the top-level fields
+  for (const field of ['main', 'types']) {
+    if (typeof manifest[field] !== 'string') {
+      console.error(`${manifest.name}: ${field} is not set in the packed manifest`)
+      failures++
+      continue
+    }
+    try {
+      readFileSync(join(out, 'package', manifest[field]))
+    } catch {
+      console.error(`${manifest.name}: ${field} ${manifest[field]} is not in the tarball`)
+      failures++
+    }
+  }
+  if (manifest.sideEffects !== false) {
+    console.error(`${manifest.name}: sideEffects is not false`)
+    failures++
+  }
+  // build clears dist first, so a file from a deleted source cannot ride along
+  if (readdirSync(join(out, 'package', 'dist')).includes('stale.js')) {
+    console.error(`${manifest.name}: dist holds a file the build did not write`)
+    failures++
   }
 
   for (const [entry, names] of Object.entries(entries)) {

@@ -4,7 +4,7 @@ import { bytesToHex, keccak256, type Address } from 'viem'
 import { describe, expect, it } from 'vitest'
 import { encodeDerSignature, InvalidSignatureError, parseDerSignature, SECP256K1_N, toLowS } from '../src/der.js'
 import { toRecoverableSignature } from '../src/signature.js'
-import { publicKeyFromSpki } from '../src/spki.js'
+import { InvalidPublicKeyError, publicKeyFromSpki } from '../src/spki.js'
 
 // OpenSSL is the oracle here: it produces DER the way KMS does, with random nonces, so high s, short r and s,
 // and zero-padded integers all turn up without this code having made them
@@ -67,7 +67,14 @@ describe('DER signatures from OpenSSL', () => {
   it('refuses a key on another curve', () => {
     const { publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
     const spki = new Uint8Array(publicKey.export({ type: 'spki', format: 'der' }))
-    expect(() => publicKeyFromSpki(spki)).toThrow(InvalidSignatureError)
+    expect(() => publicKeyFromSpki(spki)).toThrow(InvalidPublicKeyError)
+  })
+
+  it('refuses an r that is not the x of any curve point with InvalidSignatureError, not a raw curve error', async () => {
+    // x = 5 gives x^3 + 7 with no square root mod p
+    const der = encodeDerSignature(5n, 1n)
+    const signer = opensslKey()
+    await expect(toRecoverableSignature(keccak256('0x01'), der, signer.address)).rejects.toThrow(InvalidSignatureError)
   })
 
   it('refuses a signature from a different key', async () => {

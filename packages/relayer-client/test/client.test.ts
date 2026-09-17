@@ -169,8 +169,97 @@ describe('relayer client', () => {
     })
   })
 
-  it('throws bad_response for a success without JSON', async () => {
+  it('throws invalid_response for a success without JSON', async () => {
     answer = { status: 200, body: '' }
-    expect(await getTx({ baseUrl, apiKey: 'k' }, 'x').catch((e: unknown) => e)).toMatchObject({ code: 'bad_response' })
+    expect(await getTx({ baseUrl, apiKey: 'k' }, 'x').catch((e: unknown) => e)).toMatchObject({
+      code: 'invalid_response',
+    })
+  })
+
+  const failure = (promise: Promise<unknown>) =>
+    promise.then(
+      () => {
+        throw new Error('expected a rejection')
+      },
+      (e: unknown) => e,
+    )
+
+  it('throws network_error with status 0 and the cause when the relayer cannot be reached', async () => {
+    const dead = createServer()
+    await new Promise<void>((resolve) => dead.listen(0, '127.0.0.1', resolve))
+    const { port } = dead.address() as { port: number }
+    await new Promise<void>((resolve) => dead.close(() => resolve()))
+    for (const call of [
+      getTx({ baseUrl: `http://127.0.0.1:${port}`, apiKey: 'k' }, 'x'),
+      listSigners({ baseUrl: `http://127.0.0.1:${port}`, apiKey: 'k' }),
+    ]) {
+      const err = await failure(call)
+      expect(err).toBeInstanceOf(RelayerApiError)
+      expect(err).toMatchObject({ status: 0, code: 'network_error' })
+      expect((err as Error).cause).toBeDefined()
+    }
+  })
+
+  it('throws network_error when the request times out', async () => {
+    const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+    const err = await failure(
+      relay(
+        { baseUrl, apiKey: 'k', fetch: () => Promise.reject(timeout) },
+        { signerId: 's', chainId: 1, to: TX.to, data: '0x', idempotencyKey: 'i' },
+      ),
+    )
+    expect(err).toBeInstanceOf(RelayerApiError)
+    expect(err).toMatchObject({ status: 0, code: 'network_error', message: expect.stringMatching(/timed out/) })
+    expect((err as Error).cause).toBe(timeout)
+  })
+
+  it('throws invalid_response for a success body that is not the expected shape', async () => {
+    const bodies = [
+      { ...TX, txId: 1 },
+      { ...TX, value: '' },
+      { ...TX, gasLimit: '21e3' },
+      { ...TX, status: 'lost' },
+      { ...TX, nonce: '1' },
+      [],
+      null,
+    ]
+    for (const body of bodies) {
+      answer = { status: 200, body: JSON.stringify(body) }
+      expect(await failure(getTx({ baseUrl, apiKey: 'k' }, 'x'))).toMatchObject({
+        status: 200,
+        code: 'invalid_response',
+      })
+    }
+    answer = { status: 202, body: JSON.stringify({ ...TX, value: '' }) }
+    expect(
+      await failure(
+        relay({ baseUrl, apiKey: 'k' }, { signerId: 's', chainId: 1, to: TX.to, data: '0x', idempotencyKey: 'i' }),
+      ),
+    ).toMatchObject({ code: 'invalid_response' })
+    for (const body of [
+      {},
+      { signers: [{ signerId: 'billing' }] },
+      { signers: [{ ...{ signerId: 'b', address: TX.from }, chainIds: ['1'] }] },
+    ]) {
+      answer = { status: 200, body: JSON.stringify(body) }
+      expect(await failure(listSigners({ baseUrl, apiKey: 'k' }))).toMatchObject({ code: 'invalid_response' })
+    }
+  })
+
+  it("keeps API Gateway's own message, and names a 429 throttled", async () => {
+    answer = { status: 404, body: JSON.stringify({ message: 'Not Found' }) }
+    expect(await failure(getTx({ baseUrl, apiKey: 'k' }, 'x'))).toMatchObject({
+      status: 404,
+      code: 'http_error',
+      message: 'Not Found',
+    })
+    answer = { status: 429, body: JSON.stringify({ message: 'Too Many Requests' }) }
+    expect(await failure(listSigners({ baseUrl, apiKey: 'k' }))).toMatchObject({
+      status: 429,
+      code: 'throttled',
+      message: 'Too Many Requests',
+    })
+    answer = { status: 429, body: '' }
+    expect(await failure(listSigners({ baseUrl, apiKey: 'k' }))).toMatchObject({ code: 'throttled' })
   })
 })

@@ -1,9 +1,10 @@
-import { GetPublicKeyCommand, SignCommand } from '@aws-sdk/client-kms'
+import { GetPublicKeyCommand, KMSClient, SignCommand } from '@aws-sdk/client-kms'
 import { generateKeyPairSync } from 'node:crypto'
 import { keccak256, verifyMessage, verifyTypedData } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 import { InvalidSignatureError } from '../src/der.js'
+import { InvalidPublicKeyError } from '../src/spki.js'
 import { kmsDigestSigner, toKmsAccount, type KmsClientLike } from '../src/kms.js'
 import { createLocalDigestSigner } from '../src/testing.js'
 
@@ -13,15 +14,16 @@ const KEY_ID = 'arn:aws:kms:us-east-1:111122223333:key/test'
 // answers the two KMS calls from a local key and records what it was asked
 function fakeKms(options: { publicKey?: Uint8Array; signWith?: `0x${string}` } = {}) {
   const calls: { name: string; input: Record<string, unknown> }[] = []
+  // no cast: any object with a matching send is a client, not only the SDK's own class
   const client: KmsClientLike = {
-    send: (async (command: GetPublicKeyCommand | SignCommand) => {
+    async send(command: GetPublicKeyCommand | SignCommand) {
       calls.push({ name: command.constructor.name, input: { ...command.input } })
       if (command instanceof GetPublicKeyCommand) {
         return { PublicKey: options.publicKey ?? (await createLocalDigestSigner(PRIVATE_KEY).getPublicKey()) }
       }
       const signer = createLocalDigestSigner(options.signWith ?? PRIVATE_KEY)
       return { Signature: await signer.signDigest(command.input.Message as Uint8Array) }
-    }) as KmsClientLike['send'],
+    },
   }
   return { client, calls }
 }
@@ -81,7 +83,9 @@ describe('toKmsAccount', () => {
   it('refuses a key that is not secp256k1', async () => {
     const { publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
     const kms = fakeKms({ publicKey: new Uint8Array(publicKey.export({ type: 'spki', format: 'der' })) })
-    await expect(toKmsAccount({ keyId: KEY_ID, client: kms.client })).rejects.toThrow(/ECC_SECG_P256K1/)
+    const refused = toKmsAccount({ keyId: KEY_ID, client: kms.client })
+    await expect(refused).rejects.toThrow(InvalidPublicKeyError)
+    await expect(refused).rejects.toThrow(/ECC_SECG_P256K1/)
   })
 
   it('refuses a signature that does not recover to the key address', async () => {
@@ -91,9 +95,15 @@ describe('toKmsAccount', () => {
   })
 
   it('reports an empty KMS answer instead of signing with nothing', async () => {
-    const client: KmsClientLike = { send: (async () => ({})) as KmsClientLike['send'] }
+    const client: KmsClientLike = { send: async () => ({}) }
     const signer = kmsDigestSigner({ keyId: KEY_ID, client })
     await expect(signer.getPublicKey()).rejects.toThrow(/no public key/)
     await expect(signer.signDigest(new Uint8Array(32))).rejects.toThrow(/no signature/)
+  })
+
+  it('takes a KMSClient from @aws-sdk/client-kms as its client', () => {
+    expectTypeOf<KMSClient>().toExtend<KmsClientLike>()
+    const client: KmsClientLike = new KMSClient({ region: 'us-east-1' })
+    expect(kmsDigestSigner({ keyId: KEY_ID, client })).toBeDefined()
   })
 })
