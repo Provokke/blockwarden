@@ -26,11 +26,11 @@ describe('processRecords', () => {
         seen.push(txId)
         if (txId === 't1') throw new Error('KMS throttled')
       },
-      (message) => logs.push(message),
+      (message, _data, level) => logs.push(`${level}: ${message}`),
     )
     expect(seen).toEqual(['t1', 't2', 't4'])
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }, { itemIdentifier: 'm3' }])
-    expect(logs).toEqual(['message failed; SQS will deliver it again'])
+    expect(logs).toEqual(['error: message failed; SQS will deliver it again'])
   })
 
   it('hands back a message whose body is not a transaction message', async () => {

@@ -17,7 +17,8 @@ export type Runtime = {
   chains: Map<number, RelayerChain>
   queue: TxQueue
   accountFor(signer: SignerRecord): Promise<LocalAccount>
-  log(message: string, data?: Record<string, unknown>): void
+  // info unless a level is given; failures go to warn or error so a filter on the level finds them
+  log(message: string, data?: Record<string, unknown>, level?: 'warn' | 'error'): void
 }
 
 export function createLogger(serviceName: string): Logger {
@@ -57,7 +58,7 @@ export async function createRuntime(logger: Logger): Promise<Runtime> {
     chains,
     queue,
     accountFor,
-    log: (message, data) => logger.info(message, data ?? {}),
+    log: (message, data, level) => logger[level ?? 'info'](message, data ?? {}),
   }
 }
 

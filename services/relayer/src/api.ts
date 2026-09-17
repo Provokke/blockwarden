@@ -19,11 +19,15 @@ export function createApiHandler(deps: SubmitDeps): ApiHandler {
     try {
       result = await route(deps, event)
     } catch (err) {
-      deps.log('request failed', {
-        routeKey: event.routeKey,
-        error: err instanceof Error ? err.message : String(err),
-        cause: err,
-      })
+      deps.log(
+        'request failed',
+        {
+          routeKey: event.routeKey,
+          error: err instanceof Error ? err.message : String(err),
+          cause: err,
+        },
+        'error',
+      )
       result =
         err instanceof StoreBusyError
           ? error(503, 'busy', 'the relayer is busy; retry the request with the same idempotency key')

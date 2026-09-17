@@ -21,7 +21,7 @@ export type SubmitDeps = {
   queue: TxQueue
   now(): Date
   newTxId(): string
-  log(message: string, data?: Record<string, unknown>): void
+  log(message: string, data?: Record<string, unknown>, level?: 'warn' | 'error'): void
 }
 
 const hex = z.string().regex(/^0x([0-9a-fA-F]{2})*$/, 'expected even-length hex')
@@ -116,12 +116,16 @@ export async function submitTx(deps: SubmitDeps, apiKey: ApiKeyRecord, input: un
   } catch (err) {
     if (!(err instanceof EstimateError)) throw err
     // the detailed message can carry the RPC URL, which may hold an API key; only a fixed message reaches the caller
-    deps.log('estimate failed', {
-      kind: err.kind,
-      chainId: request.chainId,
-      signerId: signer.signerId,
-      error: err.message,
-    })
+    deps.log(
+      'estimate failed',
+      {
+        kind: err.kind,
+        chainId: request.chainId,
+        signerId: signer.signerId,
+        error: err.message,
+      },
+      'warn',
+    )
     if (err.kind === 'reverted') {
       return error(422, 'estimate_reverted', 'the transaction would revert', { revertData: err.revertData ?? '0x' })
     }
@@ -179,7 +183,7 @@ export async function submitTx(deps: SubmitDeps, apiKey: ApiKeyRecord, input: un
     await deps.queue.send(tx)
   } catch (err) {
     // the transaction is stored, and the sweeper requeues a queued transaction that sat too long
-    deps.log('enqueue failed; the sweeper will requeue it', { txId: tx.txId, error: (err as Error).message })
+    deps.log('enqueue failed; the sweeper will requeue it', { txId: tx.txId, error: (err as Error).message }, 'warn')
   }
   return { status: 202, body: toTxBody(tx) satisfies RelayerTxBody }
 }
