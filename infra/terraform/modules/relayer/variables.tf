@@ -36,6 +36,11 @@ variable "chains" {
     condition     = alltrue([for c in var.chains : c.confirmations >= 1 && c.stuck_after_seconds >= 1])
     error_message = "confirmations and stuck_after_seconds must be at least 1."
   }
+
+  validation {
+    condition     = length(distinct([for c in var.chains : c.chain_id])) == length(var.chains)
+    error_message = "chain_id values in chains must be unique."
+  }
 }
 
 variable "signers" {
@@ -87,6 +92,14 @@ variable "signers" {
   validation {
     condition     = alltrue(flatten([for s in var.signers : [for id in s.chain_ids : contains([for c in var.chains : c.chain_id], id)]]))
     error_message = "Every chain id a signer lists must be in chains."
+  }
+
+  validation {
+    condition = alltrue(flatten([for s in var.signers : [for t in s.allowed_to :
+      t.transfer_recipients == null ||
+      (length(coalesce(t.selectors, [])) == 1 && lower(t.selectors[0]) == "0xa9059cbb")
+    ]]))
+    error_message = "An allowed_to entry with transfer_recipients set must have selectors exactly [\"0xa9059cbb\"]."
   }
 }
 
