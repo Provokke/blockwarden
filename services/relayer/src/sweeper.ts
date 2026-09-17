@@ -68,6 +68,10 @@ export const MAX_ATTEMPTS = 10
 // a raw can be 17 KB and an item at most 400 KB, so past this many the oldest refused attempts keep only their hash
 export const MAX_SIGNED_ATTEMPTS = 16
 
+// 16 signed at 17 KB plus the calldata is about 290 KB, leaving room for 48 hash-only attempts at up to 450 bytes
+// each with over 80 KB to spare; nothing is appended past this, so the item cannot outgrow 400 KB
+export const MAX_STORED_ATTEMPTS = 64
+
 const LIST_LIMIT = 100
 
 export const DEFAULT_NONCE_USED_MIN_AGE_MS = 10 * 60_000
@@ -359,6 +363,9 @@ async function replace(
   summary: SweepSummary,
 ): Promise<TxRecord | undefined> {
   const at = deps.now().toISOString()
+  if (tx.attempts.length >= MAX_STORED_ATTEMPTS) {
+    return flagFeeCap(deps, tx, summary, { attempts: tx.attempts.length })
+  }
   const cap = feeCap(signer.policy)
   const estimate = await deps.chain.estimateFees()
   const live = liveAttempt(tx)
@@ -385,6 +392,8 @@ async function replace(
       return flagFeeCap(deps, tx, summary, { estimate: { ...estimate } })
     }
     fees = clampFees(estimate, cap)
+    // the same or lower fees would only be refused again, and every try grows the item
+    if (refusedBefore(tx, fees, cap)) return tx
   }
 
   const account = await deps.accountFor(signer)
@@ -442,6 +451,19 @@ async function flagFeeCap(
 
 function raises(next: Fees, previous: Fees): boolean {
   return next.maxFeePerGas > previous.maxFeePerGas || next.maxPriorityFeePerGas > previous.maxPriorityFeePerGas
+}
+
+// A refusal at the cap only says the cap was too low at the time, so it does not hold back fees the cap no longer
+// touches; that is how a transaction refused during a spike recovers once fees fall.
+function refusedBefore(tx: TxRecord, fees: Fees, cap: Fees): boolean {
+  return tx.attempts.some(
+    (a) =>
+      a.rejected !== undefined && !raises(fees, attemptFees(a)) && (atCap(fees, cap) || !atCap(attemptFees(a), cap)),
+  )
+}
+
+function atCap(fees: Fees, cap: Fees): boolean {
+  return fees.maxFeePerGas >= cap.maxFeePerGas || fees.maxPriorityFeePerGas >= cap.maxPriorityFeePerGas
 }
 
 // leaves room for one more signed attempt by dropping the bytes of the oldest refused ones
