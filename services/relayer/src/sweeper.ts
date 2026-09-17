@@ -316,6 +316,20 @@ async function rebroadcast(
   summary.rebroadcast++
   const at = deps.now().toISOString()
   switch (outcome.kind) {
+    case 'accepted':
+    case 'already-known':
+    case 'unknown':
+      // a refused attempt the node now takes is live again
+      if (attempt.rejected !== undefined) {
+        const attempts = tx.attempts.map((a) => {
+          if (a.hash !== attempt.hash || a.raw !== attempt.raw) return a
+          const { rejected: _r, ...live } = a
+          return live
+        })
+        const { needsBump: _b, feeCapReached: _f, ...rest } = tx
+        await deps.store.saveTx({ ...rest, attempts }, at)
+      }
+      return
     case 'rejected':
       await failRefused(deps, deps.chain, tx, attempt.hash, tx.from, outcome.message)
       summary.failed++
@@ -392,8 +406,17 @@ async function replace(
       return flagFeeCap(deps, tx, summary, { estimate: { ...estimate } })
     }
     fees = clampFees(estimate, cap)
-    // the same or lower fees would only be refused again, and every try grows the item
-    if (refusedBefore(tx, fees, cap)) return tx
+    const blocking = refusedAtOrAbove(tx, fees, cap)
+    if (blocking.length > 0) {
+      // Signing the same or lower fees again only grows the item, but the base fee may have fallen since the
+      // refusal, so the stored bytes go out again. Without them, one signature at those fees takes their place.
+      const top = blocking.find((a) => a.raw !== '0x')
+      if (top) {
+        await rebroadcast(deps, signer, tx, top, summary)
+        return undefined
+      }
+      fees = clampFees(attemptFees(blocking[0]!), cap)
+    }
   }
 
   const account = await deps.accountFor(signer)
@@ -453,13 +476,21 @@ function raises(next: Fees, previous: Fees): boolean {
   return next.maxFeePerGas > previous.maxFeePerGas || next.maxPriorityFeePerGas > previous.maxPriorityFeePerGas
 }
 
-// A refusal at the cap only says the cap was too low at the time, so it does not hold back fees the cap no longer
-// touches; that is how a transaction refused during a spike recovers once fees fall.
-function refusedBefore(tx: TxRecord, fees: Fees, cap: Fees): boolean {
-  return tx.attempts.some(
-    (a) =>
-      a.rejected !== undefined && !raises(fees, attemptFees(a)) && (atCap(fees, cap) || !atCap(attemptFees(a), cap)),
-  )
+// Refused attempts with fees at least as high as these, highest first. A refusal at the cap only says the cap was too
+// low at the time, so it does not hold back fees the cap no longer touches; that is how a transaction refused during
+// a spike recovers once fees fall.
+function refusedAtOrAbove(tx: TxRecord, fees: Fees, cap: Fees): Attempt[] {
+  return tx.attempts
+    .filter(
+      (a) =>
+        a.rejected !== undefined && !raises(fees, attemptFees(a)) && (atCap(fees, cap) || !atCap(attemptFees(a), cap)),
+    )
+    .sort((a, b) => compareFees(attemptFees(b), attemptFees(a)))
+}
+
+function compareFees(a: Fees, b: Fees): number {
+  const diff = a.maxFeePerGas - b.maxFeePerGas || a.maxPriorityFeePerGas - b.maxPriorityFeePerGas
+  return diff > 0n ? 1 : diff < 0n ? -1 : 0
 }
 
 function atCap(fees: Fees, cap: Fees): boolean {
