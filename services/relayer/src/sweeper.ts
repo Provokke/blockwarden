@@ -1,5 +1,5 @@
 import { bumpFees, clampFees, type Fees } from '@blockwarden/core'
-import type { LocalAccount } from 'viem'
+import type { Hex, LocalAccount } from 'viem'
 import { describeError, type RelayerChain, type SendOutcome } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
@@ -54,6 +54,8 @@ export type SweepSummary = {
   resumed: number
   failed: number
   feeCapReached: number
+  // transactions that needed room for a signature while retiredHashes was full
+  retiredHashesFull: number
   conflicts: number
   // transactions whose sweep threw something other than a conflict; each is logged with its txId
   errors: number
@@ -69,9 +71,13 @@ export const MAX_ATTEMPTS = 10
 export const MAX_SIGNED_ATTEMPTS = 16
 
 // 16 signed at 17 KB plus the calldata is about 290 KB, leaving room for 48 hash-only attempts at up to 450 bytes
-// each with over 80 KB to spare; past this the oldest refused attempt goes to make room, so the item cannot outgrow
-// 400 KB
+// each with over 80 KB to spare; past this the oldest refused attempt goes to make room, keeping only its hash, so the
+// item cannot outgrow 400 KB
 export const MAX_STORED_ATTEMPTS = 64
+
+// A dropped attempt's hash is kept, since a node may have taken it before refusing it. At about 70 bytes a hash this
+// is about 36 KB, which fits the 80 KB left over above; once it is full nothing more is signed for the transaction.
+export const MAX_RETIRED_HASHES = 512
 
 const LIST_LIMIT = 100
 
@@ -89,6 +95,7 @@ export async function sweepChain(deps: SweeperDeps, deadlineMs: number): Promise
     resumed: 0,
     failed: 0,
     feeCapReached: 0,
+    retiredHashesFull: 0,
     conflicts: 0,
     errors: 0,
     oldestPendingSeconds: 0,
@@ -258,6 +265,11 @@ async function checkSubmitted(
 
   const minedNonce = await deps.chain.getNonce(tx.from, 'latest')
   if (minedNonce > tx.nonce!) {
+    // a retired hash can only be mined once the nonce is used, so its up to 512 lookups wait for that
+    for (const hash of [...(tx.retiredHashes ?? [])].reverse()) {
+      const receipt = await deps.chain.getReceipt(hash)
+      if (receipt) return markMined(deps, tx, receipt, head, summary)
+    }
     // The nonce is used, but by none of our hashes. A lagging node can show that for a while, so wait both the
     // confirmation depth and a minimum age, then ask every URL, before deciding it was replaced from outside.
     if (tx.nonceUsedAtBlock === undefined || tx.nonceUsedAt === undefined) {
@@ -267,10 +279,10 @@ async function checkSubmitted(
     const minAge = deps.settings.nonceUsedMinAgeMs ?? DEFAULT_NONCE_USED_MIN_AGE_MS
     if (head - tx.nonceUsedAtBlock < deps.settings.confirmations) return
     if (deps.now().getTime() - Date.parse(tx.nonceUsedAt) < minAge) return
-    for (const attempt of [...tx.attempts].reverse()) {
+    for (const hash of receiptHashes(tx)) {
       let receipt
       try {
-        receipt = await deps.chain.findReceipt(attempt.hash)
+        receipt = await deps.chain.findReceipt(hash)
       } catch (err) {
         // a URL that could not answer might be the one with the receipt
         deps.log(
@@ -419,15 +431,23 @@ async function replace(
 
   // checked only now, so stored bytes above still go out at the limit
   let kept = tx.attempts
+  let retired = tx.retiredHashes
   if (kept.length >= MAX_STORED_ATTEMPTS) {
     const drop = dropIndex(kept)
     if (drop === -1) return flagFeeCap(deps, tx, summary, { attempts: kept.length })
+    if ((retired?.length ?? 0) >= MAX_RETIRED_HASHES) return flagRetiredHashesFull(deps, tx, summary)
+    const { hash } = kept[drop]!
     kept = kept.toSpliced(drop, 1)
+    // a twin signed at the same fees shares the hash, and one copy is enough
+    if (!kept.some((a) => a.hash === hash) && !retired?.includes(hash)) retired = [...(retired ?? []), hash]
   }
   const account = await deps.accountFor(signer)
   const attempt = await signAttempt(account, tx, fees, deps.now().getTime())
   const { needsBump: _b, ...rest } = tx
-  const saved = await deps.store.saveTx({ ...rest, attempts: [...makeRoom(kept), attempt] }, at)
+  const saved = await deps.store.saveTx(
+    { ...rest, attempts: [...makeRoom(kept), attempt], ...(retired ? { retiredHashes: retired } : {}) },
+    at,
+  )
   const outcome = await deps.chain.send(attempt.raw)
   summary.replaced++
   await afterReplacement(deps, signer, saved, attempt, outcome, summary)
@@ -487,6 +507,25 @@ async function flagFeeCap(
   const saved = await deps.store.saveTx({ ...tx, feeCapReached: true }, deps.now().toISOString())
   deps.log('cannot replace: the fee cap or the attempt limit is reached', { txId: tx.txId, ...data }, 'warn')
   return saved
+}
+
+// Its own flag rather than feeCapReached, which a node taking any bytes clears: this limit never lifts, so the
+// warning would repeat after every revival.
+async function flagRetiredHashesFull(deps: SweeperDeps, tx: TxRecord, summary: SweepSummary): Promise<TxRecord> {
+  summary.retiredHashesFull++
+  if (tx.retiredHashesFull) return tx
+  const saved = await deps.store.saveTx({ ...tx, retiredHashesFull: true }, deps.now().toISOString())
+  deps.log(
+    'cannot sign again: the limit of dropped attempt hashes is reached, so stored bytes are only rebroadcast',
+    { txId: tx.txId, retiredHashes: tx.retiredHashes?.length },
+    'warn',
+  )
+  return saved
+}
+
+// every hash of ours that could be mined at this nonce, stored attempts first, newest first
+function receiptHashes(tx: TxRecord): Hex[] {
+  return [...tx.attempts.map((a) => a.hash).reverse(), ...[...(tx.retiredHashes ?? [])].reverse()]
 }
 
 function raises(next: Fees, previous: Fees): boolean {

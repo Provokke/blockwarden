@@ -46,6 +46,11 @@ export type TxRecord = {
   // the newest signatures at a nonce this tx gave up after nonce too low, kept as evidence without their bytes;
   // nothing rebroadcasts them
   abandonedAttempts?: (Attempt & { nonce: number })[]
+  // hashes of refused attempts the sweeper dropped to make room; a node may have taken one before refusing it, so
+  // receipts are still looked up for them
+  retiredHashes?: Hex[]
+  // retiredHashes is full, so the sweeper signs nothing more for this transaction and only rebroadcasts; never cleared
+  retiredHashesFull?: boolean
   // the node refused the last signature as underpriced, so the sweeper replaces it without waiting
   needsBump?: boolean
   // the policy fee cap is below the node's replacement minimum, so the sweeper can only rebroadcast
