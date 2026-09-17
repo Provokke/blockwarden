@@ -27,7 +27,9 @@ try {
 }
 ```
 
-`relay` is idempotent per API key: the same `idempotencyKey` returns the original transaction, and a different request under the same key is refused with a 409. `dependsOn` holds a transaction until an earlier one is confirmed, for a call that reverts until that one is mined; it needs `gasLimit`.
+`relay` is idempotent per API key: the same `idempotencyKey` returns the original transaction, and a different request under the same key is refused with a 409.
+
+`dependsOn` holds a transaction until an earlier one is confirmed, for a call that reverts until that one is mined. The dependency must be on the same chain and a signer this API key may use, and the request needs an explicit `gasLimit` (there is no estimate to derive it from until the dependency lands). If the dependency fails, is cancelled or reverts, the dependent fails too, with `error` set and no attempt made. A bad `dependsOn` is refused with `dependency_not_found` (missing, wrong chain, or a signer this key may not use) or `dependency_failed` (already failed, cancelled or reverted).
 
 ## Webhooks
 
