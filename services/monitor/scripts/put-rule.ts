@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { compileRule, ruleInputSchema } from '@blockwarden/core'
-import { createDocumentClient, MonitorStore } from '../src/store.js'
+import { createDocumentClient } from '@blockwarden/dynamo'
+import { MonitorStore } from '../src/store.js'
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,

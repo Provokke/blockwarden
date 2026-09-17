@@ -1,7 +1,7 @@
 import { DeadlineError, ruleInputSchema, type LogFilter, type RawLog, type RuleInput } from '@blockwarden/core'
+import { toStorable } from '@blockwarden/dynamo'
 import { encodeAbiParameters, encodeEventTopics, HttpRequestError, parseAbiItem, type Hex } from 'viem'
 import type { ChainReader } from '../../src/chain.js'
-import { toStorable } from '../../src/storable.js'
 import {
   CursorConflictError,
   type Cursor,

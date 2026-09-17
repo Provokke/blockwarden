@@ -1,7 +1,6 @@
-import type { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import {
   DeleteCommand,
-  DynamoDBDocumentClient,
+  type DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
   QueryCommand,
@@ -9,10 +8,9 @@ import {
   type QueryCommandInput,
 } from '@aws-sdk/lib-dynamodb'
 import type { RuleInput } from '@blockwarden/core'
+import { GSI1, GSI2, isConditionFailure, toStorable } from '@blockwarden/dynamo'
 import type { Hex } from 'viem'
 import { keys } from './keys.js'
-import { toStorable } from './storable.js'
-import { GSI1, GSI2 } from './table.js'
 
 export type Cursor = { durableBlock: number; fastBlock: number; version: number }
 
@@ -58,14 +56,6 @@ export interface MonitorStorePort {
   writeProvisional(match: NewMatch): Promise<boolean>
   writeFinal(match: NewMatch): Promise<FinalWrite>
   dropStaleProvisional(chainId: number, maxBlockInclusive: number): Promise<number>
-}
-
-export function createDocumentClient(client: DynamoDBClient): DynamoDBDocumentClient {
-  return DynamoDBDocumentClient.from(client, { marshallOptions: { removeUndefinedValues: true } })
-}
-
-function isConditionFailure(err: unknown): boolean {
-  return (err as Error | undefined)?.name === 'ConditionalCheckFailedException'
 }
 
 // picks the stored fields explicitly so a caller's extra properties never reach the item

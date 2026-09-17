@@ -191,6 +191,19 @@ importers:
         specifier: 4.6.2
         version: 4.6.2
 
+  packages/dynamo:
+    dependencies:
+      '@aws-sdk/client-dynamodb':
+        specifier: 3.1131.0
+        version: 3.1131.0
+      '@aws-sdk/lib-dynamodb':
+        specifier: 3.1131.0
+        version: 3.1131.0(@aws-sdk/client-dynamodb@3.1131.0)
+    devDependencies:
+      testcontainers:
+        specifier: 12.1.0
+        version: 12.1.0
+
   services/monitor:
     dependencies:
       '@aws-lambda-powertools/logger':
@@ -211,6 +224,9 @@ importers:
       '@blockwarden/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@blockwarden/dynamo':
+        specifier: workspace:*
+        version: link:../../packages/dynamo
       viem:
         specifier: 2.56.3
         version: 2.56.3(typescript@7.0.2)(zod@4.6.2)
