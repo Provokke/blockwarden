@@ -97,7 +97,7 @@ Free RPC tiers often cap `eth_getLogs` at a small block range. The poller halves
 
 The demo stack in `infra/terraform/envs/demo` deploys the relayer next to the monitor and shares its table. To deploy the relayer on its own, use `infra/terraform/modules/relayer` as `infra/terraform/examples/relayer-only` does.
 
-1. Put each testnet's RPC URLs in SSM, as for the monitor:
+1. Put each testnet's RPC URLs in SSM, as for the monitor. The relayer takes at most 3 URLs per chain and refuses to start with more:
 
    ```bash
    aws ssm put-parameter --name /blockwarden-demo/rpc/base-sepolia --type SecureString --value "https://first,https://second"

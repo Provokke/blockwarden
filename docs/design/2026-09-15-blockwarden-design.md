@@ -234,7 +234,7 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 ## Error handling
 
 **RPC**
-- Each chain has an ordered list of RPC URLs with failover.
+- Each chain has an ordered list of RPC URLs with failover. The relayer refuses more than 3 per chain at startup, since at the 1 second floor a cold first send that fails over three hung URLs of four would take 12 seconds, past the signer's 9.
 - The relayer tries each URL once per call, with a timeout sized so a hung URL cannot use up the function: the API splits 12 seconds over its URLs (1 to 4 seconds each), the signer splits 9 seconds over the four calls of a cold first send (1 to 2.5 seconds each), and the sweeper splits 20 seconds (1 to 4 seconds each).
 - The durable log read sends `eth_blockNumber` and `eth_getLogs` as one batch to one node and fails over the pair together, so a head and its logs always come from the same node.
 - A failed cycle never advances the cursor past blocks that were not fully read and written; the next invocation resumes.

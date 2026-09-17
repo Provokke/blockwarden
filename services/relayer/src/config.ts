@@ -3,6 +3,9 @@ import { z } from 'zod'
 
 const rpcUrl = z.string().url()
 
+// at the signer's 1 second timeout floor, a cold send failing over 3 hung URLs of 4 takes 12 seconds, past its 9
+export const MAX_RPC_URLS = 3
+
 const chainSchema = z
   .object({
     chainId: z.number().int().positive(),
@@ -42,9 +45,15 @@ export async function loadConfig(env: Env, ssm: Pick<SSMClient, 'send'>): Promis
   const chains: ChainConfig[] = []
   for (const chain of parsedChains) {
     if (chains.some((c) => c.chainId === chain.chainId)) throw new Error(`CHAINS lists chainId ${chain.chainId} twice`)
+    const rpcUrls = chain.rpcUrls ?? (await fromParameter(ssm, chain.rpcUrlsParameter!))
+    if (rpcUrls.length > MAX_RPC_URLS) {
+      throw new Error(
+        `chain ${chain.chainId} has ${rpcUrls.length} RPC URLs; the relayer takes at most ${MAX_RPC_URLS}`,
+      )
+    }
     chains.push({
       chainId: chain.chainId,
-      rpcUrls: chain.rpcUrls ?? (await fromParameter(ssm, chain.rpcUrlsParameter!)),
+      rpcUrls,
       confirmations: chain.confirmations,
       stuckAfterMs: chain.stuckAfterSeconds * 1000,
     })
