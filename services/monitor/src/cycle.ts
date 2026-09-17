@@ -183,8 +183,8 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
                 cursor = await store.saveCursor(chainId, { ...cursor, durableBlock: t })
                 const size = t - f + 1
                 if (f === from && t === to) {
-                  // a range read whole may mean the node recovered, but one cut short at finalized proves no larger size
-                  if (size === span) span = Math.min(ceiling, span * 2)
+                  // a range read whole may mean the node recovered, so the size grows back towards the ceiling
+                  span = Math.min(ceiling, span * 2)
                 } else {
                   if (!halved && lastFitted !== undefined) ceiling = Math.min(ceiling, lastFitted)
                   halved = true
