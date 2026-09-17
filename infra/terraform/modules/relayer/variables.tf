@@ -33,8 +33,16 @@ variable "chains" {
   }
 
   validation {
-    condition     = alltrue([for c in var.chains : c.confirmations >= 1 && c.stuck_after_seconds >= 1])
-    error_message = "confirmations and stuck_after_seconds must be at least 1."
+    condition = alltrue([for c in var.chains :
+      c.confirmations >= 1 && c.confirmations == floor(c.confirmations) &&
+      c.stuck_after_seconds >= 1 && c.stuck_after_seconds == floor(c.stuck_after_seconds)
+    ])
+    error_message = "confirmations and stuck_after_seconds must be positive whole numbers."
+  }
+
+  validation {
+    condition     = alltrue([for c in var.chains : c.chain_id >= 1 && c.chain_id == floor(c.chain_id)])
+    error_message = "chain_id must be a positive whole number."
   }
 
   validation {
@@ -69,6 +77,16 @@ variable "signers" {
   }
 
   validation {
+    condition     = alltrue([for s in var.signers : length(s.allowed_to) > 0])
+    error_message = "allowed_to must have at least one entry."
+  }
+
+  validation {
+    condition     = alltrue([for s in var.signers : s.max_gas_limit >= 1 && s.max_gas_limit == floor(s.max_gas_limit)])
+    error_message = "max_gas_limit must be a positive whole number."
+  }
+
+  validation {
     condition = alltrue(flatten([for s in var.signers : [for t in s.allowed_to : concat(
       [can(regex("^0x[0-9a-fA-F]{40}$", t.address))],
       [for r in coalesce(t.transfer_recipients, []) : can(regex("^0x[0-9a-fA-F]{40}$", r))],
@@ -85,8 +103,22 @@ variable "signers" {
   }
 
   validation {
-    condition     = alltrue([for s in var.signers : tonumber(s.max_priority_fee_per_gas_wei) <= tonumber(s.max_fee_per_gas_wei)])
+    # can() first: tonumber() on a non-decimal string errors outright, and the "Wei amounts are decimal strings"
+    # validation above already reports that case on its own
+    condition = alltrue([for s in var.signers :
+      !can(tonumber(s.max_priority_fee_per_gas_wei)) || !can(tonumber(s.max_fee_per_gas_wei)) ||
+      tonumber(s.max_priority_fee_per_gas_wei) <= tonumber(s.max_fee_per_gas_wei)
+    ])
     error_message = "max_priority_fee_per_gas_wei cannot exceed max_fee_per_gas_wei."
+  }
+
+  validation {
+    # mirrors policySchema's .refine in services/relayer/src/policy.ts: the daily counter is kept in gwei so it
+    # stays a DynamoDB number JavaScript reads back exactly, which needs it under Number.MAX_SAFE_INTEGER
+    condition = alltrue([for s in var.signers :
+      !can(tonumber(s.daily_spend_cap_wei)) || floor(tonumber(s.daily_spend_cap_wei) / 1000000000) <= 9007199254740991
+    ])
+    error_message = "daily_spend_cap_wei is too large to count in gwei."
   }
 
   validation {
