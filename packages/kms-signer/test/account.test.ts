@@ -138,4 +138,46 @@ describe('toDigestSignerAccount', () => {
     } as const
     await expect(account.signTransaction(blob as TransactionSerializable)).rejects.toThrow(/blob transactions/)
   })
+
+  it('refuses an untyped transaction that carries blob fields', async () => {
+    const account = await toDigestSignerAccount(createLocalDigestSigner(`0x${'44'.repeat(32)}`))
+    // no `type`; viem's own serializer infers eip4844 from these fields and would sign over a hash
+    // that includes the sidecars, so this must be refused just like the explicitly typed case above
+    const untypedBlob = {
+      chainId: 84532,
+      nonce: 0,
+      to: '0x000000000000000000000000000000000000dEaD',
+      value: 1n,
+      data: '0x',
+      gas: 100_000n,
+      maxFeePerGas: parseGwei('2'),
+      maxPriorityFeePerGas: parseGwei('1'),
+      blobVersionedHashes: [`0x01${'00'.repeat(31)}`],
+      maxFeePerBlobGas: 1n,
+    } as const
+    await expect(account.signTransaction(untypedBlob as TransactionSerializable)).rejects.toThrow(/blob transactions/)
+  })
+
+  it('signs an EIP-2930 transaction too', async () => {
+    const privateKey = `0x${'66'.repeat(32)}` as const
+    const account = await toDigestSignerAccount(createLocalDigestSigner(privateKey))
+    const withAccessList: TransactionSerializable = {
+      type: 'eip2930',
+      chainId: 1,
+      nonce: 0,
+      gas: 21_000n,
+      gasPrice: 1n,
+      to: account.address,
+      value: 0n,
+      accessList: [{ address: account.address, storageKeys: [`0x${'00'.repeat(32)}`] }],
+    }
+    expect(await account.signTransaction(withAccessList)).toBe(
+      await privateKeyToAccount(privateKey).signTransaction(withAccessList),
+    )
+  })
+
+  it('refuses a hash that is not 32 bytes', async () => {
+    const account = await toDigestSignerAccount(createLocalDigestSigner(`0x${'55'.repeat(32)}`))
+    await expect(account.sign!({ hash: '0x1234' })).rejects.toThrow(/32-byte digest/)
+  })
 })

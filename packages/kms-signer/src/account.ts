@@ -1,4 +1,5 @@
 import {
+  getTransactionType,
   hashMessage,
   hashTypedData,
   hexToBytes,
@@ -25,7 +26,12 @@ export type KmsAccount = LocalAccount<'kms'>
 export async function toDigestSignerAccount(signer: DigestSigner): Promise<KmsAccount> {
   const publicKey = publicKeyFromSpki(await signer.getPublicKey())
   const address = publicKeyToAddress(publicKey)
-  const signHash = async (hash: Hex) => toRecoverableSignature(hash, await signer.signDigest(hexToBytes(hash)), address)
+  // both signers (KMS and the in-memory test signer) go through here, so the digest-length check applies to both
+  const signHash = async (hash: Hex) => {
+    const digest = hexToBytes(hash)
+    if (digest.length !== 32) throw new Error(`expected a 32-byte digest, got ${digest.length} bytes`)
+    return toRecoverableSignature(hash, await signer.signDigest(digest), address)
+  }
 
   const account = toAccount({
     address,
@@ -39,8 +45,9 @@ export async function toDigestSignerAccount(signer: DigestSigner): Promise<KmsAc
       return serializeSignature(await signHash(hashTypedData(typedData)))
     },
     async signTransaction(transaction, options) {
-      // a blob transaction is signed without its sidecars, which this account has no test for, so it refuses one
-      if (transaction.type === 'eip4844') throw new Error('blob transactions are not supported')
+      // a blob transaction is signed without its sidecars, which this account has no test for, so it refuses
+      // one; viem infers the type from blob fields even on an untyped transaction, so check that instead of `.type`
+      if (getTransactionType(transaction) === 'eip4844') throw new Error('blob transactions are not supported')
       const serializer = options?.serializer ?? serializeTransaction
       const signature = await signHash(keccak256(await serializer(transaction)))
       return serializer(transaction, signature)
