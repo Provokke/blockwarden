@@ -58,6 +58,25 @@ describe('classifySendError', () => {
     // a proxy error page that happens to contain a node message is still a transport failure
     expect(classifySendError(refused).kind).toBe('unknown')
   })
+
+  it('does not throw when the node answered with no message', () => {
+    // {"error":{"code":-32000}}: RpcRequestError.details is undefined, not the empty string
+    const noMessage = new InvalidInputRpcError(
+      new RpcRequestError({
+        body: {},
+        url: 'http://node',
+        error: { code: -32000, message: undefined as unknown as string },
+      }),
+    )
+    expect(classifySendError(noMessage).kind).toBe('unknown')
+    // {"error":"rate limited"}: viem reads "error" as a bare string, so .code and .message are both undefined
+    const stringError = new RpcRequestError({
+      body: {},
+      url: 'http://node',
+      error: 'rate limited' as unknown as { code: number; message: string },
+    })
+    expect(classifySendError(stringError).kind).toBe('unknown')
+  })
 })
 
 describe('classifyEstimateError', () => {
@@ -76,6 +95,31 @@ describe('classifyEstimateError', () => {
     const down = new EstimateGasExecutionError(new HttpRequestError({ url: 'http://node', status: 503 }), {})
     expect(classifyEstimateError(down).kind).toBe('unavailable')
     expect(classifyEstimateError(new Error('plain')).kind).toBe('failed')
+  })
+
+  it('does not throw when the node answered with no message', () => {
+    const noMessage = new EstimateGasExecutionError(
+      new InvalidInputRpcError(
+        new RpcRequestError({
+          body: {},
+          url: 'http://node',
+          error: { code: -32000, message: undefined as unknown as string },
+        }),
+      ),
+      {},
+    )
+    expect(classifyEstimateError(noMessage)).toMatchObject({ kind: 'failed', message: expect.any(String) })
+    expect(classifyEstimateError(noMessage).message).not.toBe('')
+    const stringError = new EstimateGasExecutionError(
+      new RpcRequestError({
+        body: {},
+        url: 'http://node',
+        error: 'rate limited' as unknown as { code: number; message: string },
+      }),
+      {},
+    )
+    expect(classifyEstimateError(stringError)).toMatchObject({ kind: 'failed', message: expect.any(String) })
+    expect(classifyEstimateError(stringError).message).not.toBe('')
   })
 })
 
@@ -174,6 +218,44 @@ describe('createRelayerChain against scripted nodes', () => {
       expect(await createRelayerChain(1, [limited.url, second.url]).send(RAW)).toEqual({ kind: 'accepted' })
       const limitedRpc = await node(() => ({ error: { code: -32005, message: 'rate limit exceeded' } }))
       expect(await estimate([limitedRpc.url, second.url])).toBe(21_000n)
+    })
+
+    it('moves on when a node cannot serve the call, not just when it is unreachable', async () => {
+      // an HTTP 500 with a JSON-RPC error body still answers through viem's normal error path, same as a 200 would
+      const brokenNode =
+        (message: string, code: number) =>
+        (method: string): MockReply =>
+          method === 'eth_sendRawTransaction' || method === 'eth_estimateGas'
+            ? { error: { code, message }, status: 500 }
+            : { result: '0x1' }
+      const internalError = await node(brokenNode('Internal error', -32603))
+      const second = await node(accept)
+      expect(await createRelayerChain(1, [internalError.url, second.url]).send(RAW)).toEqual({ kind: 'accepted' })
+
+      const methodNotSupported = await node(() => ({ error: { code: -32601, message: 'Method not found' } }))
+      const third = await node(accept)
+      expect(await estimate([methodNotSupported.url, third.url])).toBe(21_000n)
+    })
+  })
+
+  describe('when the RPC body carries no message', () => {
+    // HTTP 200 with a JSON-RPC error object missing "message", or with "error" as a bare string: both give an
+    // RpcRequestError whose .details is undefined
+    const noMessage = (): MockReply => ({ status: 200, text: '{"jsonrpc":"2.0","id":1,"error":{"code":-32000}}' })
+    const stringError = (): MockReply => ({ status: 200, text: '{"jsonrpc":"2.0","id":1,"error":"rate limited"}' })
+
+    it('send returns a result instead of throwing', async () => {
+      const noMsg = await node(noMessage)
+      expect(await createRelayerChain(1, [noMsg.url]).send(RAW)).toMatchObject({ kind: 'unknown' })
+      const strErr = await node(stringError)
+      expect(await createRelayerChain(1, [strErr.url]).send(RAW)).toMatchObject({ kind: 'unknown' })
+    })
+
+    it('estimate returns a result instead of throwing', async () => {
+      const noMsg = await node(noMessage)
+      expect(await estimate([noMsg.url])).toBeInstanceOf(EstimateError)
+      const strErr = await node(stringError)
+      expect(await estimate([strErr.url])).toBeInstanceOf(EstimateError)
     })
   })
 })
