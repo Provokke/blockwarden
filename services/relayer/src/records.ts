@@ -22,6 +22,8 @@ export type Attempt = {
   maxFeePerGas: string
   maxPriorityFeePerGas: string
   signedAt: number
+  // when the node took this attempt on a rebroadcast after refusing it; the stuck clock runs from here
+  broadcastAt?: number
   // the node's answer when it refused this signature outright
   rejected?: string
 }

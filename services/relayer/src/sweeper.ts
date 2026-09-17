@@ -69,7 +69,8 @@ export const MAX_ATTEMPTS = 10
 export const MAX_SIGNED_ATTEMPTS = 16
 
 // 16 signed at 17 KB plus the calldata is about 290 KB, leaving room for 48 hash-only attempts at up to 450 bytes
-// each with over 80 KB to spare; nothing is appended past this, so the item cannot outgrow 400 KB
+// each with over 80 KB to spare; past this the oldest refused attempt goes to make room, so the item cannot outgrow
+// 400 KB
 export const MAX_STORED_ATTEMPTS = 64
 
 const LIST_LIMIT = 100
@@ -230,8 +231,9 @@ async function checkMined(
     const { mined: _mined, ...rest } = tx
     const saved = await deps.store.saveTx(withStatus(rest, 'submitted', at), at)
     summary.reorged++
-    const attempt = tx.attempts.find((a) => a.hash === mined.hash)
-    if (attempt && attempt.raw !== '0x') await rebroadcast(deps, signer, saved, attempt, summary)
+    // a signature made again at the same fees has the same hash, so skip a copy whose bytes were dropped
+    const attempt = tx.attempts.find((a) => a.hash === mined.hash && a.raw !== '0x')
+    if (attempt) await rebroadcast(deps, signer, saved, attempt, summary)
     return
   }
   if (head - mined.blockNumber + 1 >= deps.settings.confirmations) {
@@ -293,7 +295,7 @@ async function checkSubmitted(
     tx = await deps.store.saveTx(rest, at)
   }
 
-  const stuck = deps.now().getTime() - latestAttempt(tx)!.signedAt >= deps.settings.stuckAfterMs
+  const stuck = deps.now().getTime() - lastSentAt(tx) >= deps.settings.stuckAfterMs
   // a replacement only helps the next nonce to be mined; a later one waits for the gap below it either way
   if (minedNonce === tx.nonce && (tx.needsBump || stuck)) {
     const unchanged = await replace(deps, signer, tx, summary)
@@ -324,15 +326,14 @@ async function rebroadcast(
         const attempts = tx.attempts.map((a) => {
           if (a.hash !== attempt.hash || a.raw !== attempt.raw) return a
           const { rejected: _r, ...live } = a
-          return live
+          return { ...live, broadcastAt: deps.now().getTime() }
         })
         const { needsBump: _b, feeCapReached: _f, ...rest } = tx
         await deps.store.saveTx({ ...rest, attempts }, at)
       }
       return
     case 'rejected':
-      await failRefused(deps, deps.chain, tx, attempt.hash, tx.from, outcome.message)
-      summary.failed++
+      await refuse(deps, tx, attempt, outcome.message, summary)
       return
     case 'insufficient-funds':
       await pauseSigner(deps, signer, tx, attempt, at)
@@ -377,9 +378,6 @@ async function replace(
   summary: SweepSummary,
 ): Promise<TxRecord | undefined> {
   const at = deps.now().toISOString()
-  if (tx.attempts.length >= MAX_STORED_ATTEMPTS) {
-    return flagFeeCap(deps, tx, summary, { attempts: tx.attempts.length })
-  }
   const cap = feeCap(signer.policy)
   const estimate = await deps.chain.estimateFees()
   const live = liveAttempt(tx)
@@ -401,9 +399,9 @@ async function replace(
     }
     fees = bump.fees
   } else {
-    // nothing is in a mempool to outbid, but a signature under a base fee above the cap would only be refused again
+    // nothing is in a mempool to outbid; over the cap, bytes at the cap may still be taken once the base fee dips
     if (estimate.maxFeePerGas > cap.maxFeePerGas) {
-      return flagFeeCap(deps, tx, summary, { estimate: { ...estimate } })
+      tx = await flagFeeCap(deps, tx, summary, { estimate: { ...estimate } })
     }
     fees = clampFees(estimate, cap)
     const blocking = refusedAtOrAbove(tx, fees, cap)
@@ -419,13 +417,20 @@ async function replace(
     }
   }
 
+  // checked only now, so stored bytes above still go out at the limit
+  let kept = tx.attempts
+  if (kept.length >= MAX_STORED_ATTEMPTS) {
+    const drop = dropIndex(kept)
+    if (drop === -1) return flagFeeCap(deps, tx, summary, { attempts: kept.length })
+    kept = kept.toSpliced(drop, 1)
+  }
   const account = await deps.accountFor(signer)
   const attempt = await signAttempt(account, tx, fees, deps.now().getTime())
   const { needsBump: _b, ...rest } = tx
-  const saved = await deps.store.saveTx({ ...rest, attempts: [...makeRoom(tx.attempts), attempt] }, at)
+  const saved = await deps.store.saveTx({ ...rest, attempts: [...makeRoom(kept), attempt] }, at)
   const outcome = await deps.chain.send(attempt.raw)
   summary.replaced++
-  await afterReplacement(deps, signer, saved, attempt, outcome, live === undefined, summary)
+  await afterReplacement(deps, signer, saved, attempt, outcome, summary)
   return undefined
 }
 
@@ -435,7 +440,6 @@ async function afterReplacement(
   tx: TxRecord,
   attempt: Attempt,
   outcome: SendOutcome,
-  nothingLive: boolean,
   summary: SweepSummary,
 ): Promise<void> {
   const at = deps.now().toISOString()
@@ -447,16 +451,29 @@ async function afterReplacement(
     return
   }
   if (outcome.kind === 'nonce-too-low') return
-  // with no earlier signature in a mempool, an outright refusal is as final as it is for the signer
-  if (outcome.kind === 'rejected' && nothingLive) {
-    await failRefused(deps, deps.chain, tx, attempt.hash, tx.from, outcome.message)
-    summary.failed++
-    return
-  }
+  if (outcome.kind === 'rejected') return refuse(deps, tx, attempt, outcome.message, summary)
   if (outcome.kind === 'insufficient-funds') await pauseSigner(deps, signer, tx, attempt, at)
   // the earlier attempts may still be in the mempool, so a refused replacement does not fail the transaction
   const attempts = tx.attempts.map((a) => (a.hash === attempt.hash ? { ...a, rejected: outcome.message } : a))
   await deps.store.saveTx({ ...tx, attempts, ...(outcome.kind === 'underpriced' ? { needsBump: true } : {}) }, at)
+}
+
+// An outright refusal is as final as it is for the signer only when no other signature at the nonce could still be
+// mined; otherwise the attempt is marked and the transaction waits on the others.
+async function refuse(
+  deps: SweeperDeps,
+  tx: TxRecord,
+  attempt: Attempt,
+  message: string,
+  summary: SweepSummary,
+): Promise<void> {
+  if (!tx.attempts.some((a) => a.rejected === undefined && a.hash !== attempt.hash)) {
+    await failRefused(deps, deps.chain, tx, attempt.hash, tx.from, message)
+    summary.failed++
+    return
+  }
+  const attempts = tx.attempts.map((a) => (a.hash === attempt.hash ? { ...a, rejected: message } : a))
+  await deps.store.saveTx({ ...tx, attempts }, deps.now().toISOString())
 }
 
 async function flagFeeCap(
@@ -495,6 +512,17 @@ function compareFees(a: Fees, b: Fees): number {
 
 function atCap(fees: Fees, cap: Fees): boolean {
   return fees.maxFeePerGas >= cap.maxFeePerGas || fees.maxPriorityFeePerGas >= cap.maxPriorityFeePerGas
+}
+
+// a revived attempt was only just taken by the node, so it gets the full stuck threshold again
+function lastSentAt(tx: TxRecord): number {
+  return Math.max(...tx.attempts.map((a) => a.broadcastAt ?? a.signedAt))
+}
+
+// the oldest refused attempt, preferring one whose bytes are already gone; one the node took is never dropped
+function dropIndex(attempts: TxRecord['attempts']): number {
+  const stripped = attempts.findIndex((a) => a.rejected !== undefined && a.raw === '0x')
+  return stripped !== -1 ? stripped : attempts.findIndex((a) => a.rejected !== undefined)
 }
 
 // leaves room for one more signed attempt by dropping the bytes of the oldest refused ones
