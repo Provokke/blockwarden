@@ -24,21 +24,30 @@ describe('createRuntime', () => {
 })
 
 describe('chainOptionsFor', () => {
-  it('gives the API and signer one try per URL, with every URL hanging in turn inside the function timeout', () => {
-    for (const [kind, timeoutMs] of [
-      ['api', 15_000],
-      ['signer', 30_000],
-    ] as const) {
-      for (let urls = 1; urls <= 6; urls++) {
-        const options = chainOptionsFor(kind, urls)
-        expect(options.retryCount).toBe(0)
-        expect(options.timeoutMs! * urls).toBeLessThanOrEqual(timeoutMs - 3_000)
-      }
+  it('gives the API one try per URL, with every URL hanging in turn inside the function timeout', () => {
+    for (let urls = 1; urls <= 6; urls++) {
+      const options = chainOptionsFor('api', urls)
+      expect(options.retryCount).toBe(0)
+      expect(options.timeoutMs! * urls).toBeLessThanOrEqual(15_000 - 3_000)
     }
     expect(chainOptionsFor('api', 2).timeoutMs).toBe(4_000)
   })
 
-  it('leaves the sweeper its longer settings behind its hard stop', () => {
-    expect(chainOptionsFor('sweeper', 3)).toEqual({ timeoutMs: 10_000, retryCount: 1 })
+  it("sizes the signer's timeout so a cold first send's four calls fit in 9 seconds, between 1 and 2.5 seconds", () => {
+    for (let urls = 1; urls <= 6; urls++) {
+      const options = chainOptionsFor('signer', urls)
+      expect(options.retryCount).toBe(0)
+      expect(options.timeoutMs).toBe(Math.max(1_000, Math.min(2_500, Math.floor(9_000 / (4 * urls)))))
+    }
+    expect(chainOptionsFor('signer', 1).timeoutMs).toBe(2_250)
+    expect(chainOptionsFor('signer', 2).timeoutMs).toBe(1_125)
+    expect(chainOptionsFor('signer', 3).timeoutMs).toBe(1_000)
+  })
+
+  it('gives the sweeper one try per URL, splitting 20 seconds over the URLs, between 1 and 4 seconds', () => {
+    expect(chainOptionsFor('sweeper', 1)).toEqual({ timeoutMs: 4_000, retryCount: 0 })
+    expect(chainOptionsFor('sweeper', 5)).toEqual({ timeoutMs: 4_000, retryCount: 0 })
+    expect(chainOptionsFor('sweeper', 6)).toEqual({ timeoutMs: 3_333, retryCount: 0 })
+    expect(chainOptionsFor('sweeper', 30)).toEqual({ timeoutMs: 1_000, retryCount: 0 })
   })
 })

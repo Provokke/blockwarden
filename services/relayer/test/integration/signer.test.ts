@@ -191,6 +191,22 @@ describe('processTx', () => {
     })
   })
 
+  it('gives the message back instead of sending at a fresh nonce when the batch deadline is near', async () => {
+    const tx = await create()
+    chain.sendOutcomes = [{ kind: 'nonce-too-low', message: 'nonce too low' }]
+    await expect(processTx(deps, tx.txId, () => 11_999)).rejects.toThrow(/too little time/)
+    const stored = (await store.getTx(tx.txId))!
+    // given up and saved first, so the next delivery takes a fresh nonce
+    expect(stored).toMatchObject({ status: 'queued', attempts: [] })
+    expect(stored.nonce).toBeUndefined()
+    expect(stored.abandonedAttempts).toHaveLength(1)
+    expect(chain.sent).toHaveLength(1)
+
+    chain.nonces.pending = 1
+    expect(await processTx(deps, tx.txId, () => 12_000)).toBe('submitted')
+    expect(chain.sent).toHaveLength(2)
+  })
+
   it('leaves a redelivered transaction to the sweeper on nonce too low instead of signing at a new nonce', async () => {
     const tx = await create()
     // the first run's send reached the node, then the run died before recording it
