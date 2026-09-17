@@ -81,6 +81,83 @@ describe('verifyWebhook', () => {
       await expect(verifyWebhook({ payload, signature, secret: 's', nowMs: NOW })).rejects.toThrow(message)
     }
   })
+
+  it('rejects a non-finite tolerance instead of accepting every timestamp', async () => {
+    const payload = event('tx.mined')
+    const signature = await signWebhook({ payload, secret: 's', nowMs: NOW })
+    for (const toleranceSeconds of [NaN, Infinity, -Infinity]) {
+      await expect(verifyWebhook({ payload, signature, secret: 's', nowMs: NOW, toleranceSeconds })).rejects.toThrow(
+        /toleranceSeconds must be a finite number/,
+      )
+    }
+  })
+
+  it('rejects a negative tolerance', async () => {
+    const payload = event('tx.mined')
+    const signature = await signWebhook({ payload, secret: 's', nowMs: NOW })
+    await expect(verifyWebhook({ payload, signature, secret: 's', nowMs: NOW, toleranceSeconds: -1 })).rejects.toThrow(
+      /toleranceSeconds must be a finite number/,
+    )
+  })
+
+  it('rejects a non-finite nowMs instead of accepting every timestamp', async () => {
+    const payload = event('tx.mined')
+    const signature = await signWebhook({ payload, secret: 's', nowMs: NOW })
+    for (const nowMs of [NaN, Infinity, -Infinity]) {
+      await expect(verifyWebhook({ payload, signature, secret: 's', nowMs })).rejects.toThrow(
+        /nowMs must be a finite number/,
+      )
+    }
+  })
+
+  it('rejects an empty secret instead of throwing a raw DOMException', async () => {
+    const payload = event('tx.mined')
+    const signature = await signWebhook({ payload, secret: 'real', nowMs: NOW })
+    await expect(verifyWebhook({ payload, signature, secret: '', nowMs: NOW })).rejects.toThrow(
+      /webhook secret must not be empty/,
+    )
+  })
+
+  it('rejects an empty secret in a rotation list even when another entry would match', async () => {
+    const payload = event('tx.mined')
+    const signature = await signWebhook({ payload, secret: 'real', nowMs: NOW })
+    await expect(verifyWebhook({ payload, signature, secret: ['', 'real'], nowMs: NOW })).rejects.toThrow(
+      /webhook secret must not be empty/,
+    )
+  })
+
+  it('rejects an empty secret list', async () => {
+    const payload = event('tx.mined')
+    const signature = await signWebhook({ payload, secret: 'real', nowMs: NOW })
+    await expect(verifyWebhook({ payload, signature, secret: [], nowMs: NOW })).rejects.toThrow(
+      /webhook secret must not be empty/,
+    )
+  })
+
+  it('rejects a non-numeric t in the header', async () => {
+    await expect(
+      verifyWebhook({ payload: event('x'), signature: `t=abc,v1=${'a'.repeat(64)}`, secret: 's', nowMs: NOW }),
+    ).rejects.toThrow(/no timestamp/)
+  })
+
+  it('tolerates whitespace around the parts of the header', async () => {
+    const payload = event('tx.mined')
+    const signature = await signWebhook({ payload, secret: 's', nowMs: NOW })
+    const spaced = signature
+      .split(',')
+      .map((part) => ` ${part} `)
+      .join(' , ')
+    await expect(verifyWebhook({ payload, signature: spaced, secret: 's', nowMs: NOW })).resolves.toBeDefined()
+  })
+
+  it('rejects a tampered value inside the JSON with the specific no-match reason', async () => {
+    const payload = event('tx.mined', { note: 'hello' })
+    const signature = await signWebhook({ payload, secret: 's', nowMs: NOW })
+    const tampered = payload.replace('hello', 'HELLO')
+    await expect(verifyWebhook({ payload: tampered, signature, secret: 's', nowMs: NOW })).rejects.toThrow(
+      'no signature matches the payload',
+    )
+  })
 })
 
 describe('isTxEvent and parseTx', () => {
