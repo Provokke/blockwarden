@@ -43,6 +43,36 @@ describe('processRecords', () => {
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }])
   })
 
+  it('stops before starting a record once too little time remains, and hands back every later record too', async () => {
+    const seen: string[] = []
+    const logs: string[] = []
+    const remaining = [20_000, 5_000, 5_000]
+    let call = 0
+    const result = await processRecords(
+      [record('m1', 'a', 't1'), record('m2', 'b', 't2'), record('m3', 'c', 't3')],
+      async (txId) => seen.push(txId),
+      (message) => logs.push(message),
+      () => remaining[call++]!,
+    )
+    expect(seen).toEqual(['t1'])
+    expect(result.batchItemFailures).toEqual([{ itemIdentifier: 'm2' }, { itemIdentifier: 'm3' }])
+    expect(logs).toEqual([
+      'message not processed; too little time remains before the Lambda timeout',
+      'message not processed; too little time remains before the Lambda timeout',
+    ])
+  })
+
+  it('processes every record when remainingMs is not given', async () => {
+    const seen: string[] = []
+    const result = await processRecords(
+      [record('m1', 'a', 't1'), record('m2', 'b', 't2')],
+      async (txId) => seen.push(txId),
+      () => {},
+    )
+    expect(seen).toEqual(['t1', 't2'])
+    expect(result).toEqual({ batchItemFailures: [] })
+  })
+
   it.each(['{}', '{"txId":1}', '{"txId":""}', 'null'])(
     'hands back and logs a message whose body is %s',
     async (body) => {
