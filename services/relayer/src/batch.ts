@@ -1,4 +1,5 @@
 import type { SQSBatchResponse, SQSRecord } from 'aws-lambda'
+import { describeError } from './chain.js'
 import type { TxMessage } from './queue.js'
 
 // FIFO order holds only if nothing after a failed message in its group runs ahead of it, so once one message
@@ -22,7 +23,7 @@ export async function processRecords(
       if (typeof txId !== 'string' || txId === '') throw new Error('message body has no txId')
       await processTx(txId)
     } catch (err) {
-      log('message failed; SQS will deliver it again', { messageId: record.messageId, error: (err as Error).message })
+      log('message failed; SQS will deliver it again', { messageId: record.messageId, error: describeError(err) })
       failedGroups.add(group)
       batchItemFailures.push({ itemIdentifier: record.messageId })
     }

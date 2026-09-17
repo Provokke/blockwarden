@@ -1,5 +1,6 @@
 import type { Logger } from '@aws-lambda-powertools/logger'
 import { Metrics, MetricUnit } from '@aws-lambda-powertools/metrics'
+import { describeError } from '../chain.js'
 import { sweepChain } from '../sweeper.js'
 import { createLogger, createRuntime, once, type Runtime } from './runtime.js'
 
@@ -14,6 +15,9 @@ export function createSweeperHandler(runtime: () => Promise<Runtime>, logger: Lo
     const remaining = context?.getRemainingTimeInMillis()
     const deadlineMs = Date.now() + (remaining === undefined ? config.timeBudgetMs : remaining - DEADLINE_MARGIN_MS)
     let failure: unknown
+    // chains whose sweep finished but left transactions it could not settle; a fault that hits every transaction,
+    // such as a broken KMS grant, must still fail the invocation so the Lambda Errors alarm fires
+    const erroredChains: number[] = []
     for (const settings of config.chains) {
       const chain = chains.get(settings.chainId)!
       try {
@@ -31,6 +35,7 @@ export function createSweeperHandler(runtime: () => Promise<Runtime>, logger: Lo
           deadlineMs,
         )
         logger.info('sweep finished', { chainId: settings.chainId, ...summary })
+        if (summary.errors > 0) erroredChains.push(settings.chainId)
         // a single metric publishes at once, with its own dimensions plus the service dimension
         const perChain = metrics.singleMetric()
         perChain.addDimension('chainId', String(settings.chainId))
@@ -47,9 +52,13 @@ export function createSweeperHandler(runtime: () => Promise<Runtime>, logger: Lo
         }
       } catch (err) {
         // one chain's RPC outage must not stop the sweep of the others; the error still fails the invocation
-        logger.error('sweep failed', { chainId: settings.chainId, error: (err as Error).message })
+        logger.error('sweep failed', { chainId: settings.chainId, error: describeError(err) })
         failure ??= err
       }
+    }
+    if (erroredChains.length > 0) {
+      logger.error('sweep left transaction errors', { chainIds: erroredChains })
+      failure ??= new Error(`sweep left transaction errors on chains ${erroredChains.join(', ')}`)
     }
     if (failure) throw failure
   }

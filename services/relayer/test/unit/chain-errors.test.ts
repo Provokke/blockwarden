@@ -8,7 +8,13 @@ import {
   TransactionRejectedRpcError,
 } from 'viem'
 import { afterEach, describe, expect, it } from 'vitest'
-import { classifyEstimateError, classifySendError, createRelayerChain, EstimateError } from '../../src/chain.js'
+import {
+  classifyEstimateError,
+  classifySendError,
+  createRelayerChain,
+  describeError,
+  EstimateError,
+} from '../../src/chain.js'
 import { deadUrl, startMockRpc, type MockReply, type MockRpc } from '../helpers/mock-rpc.js'
 
 // How viem wraps a node's JSON-RPC error. The messages below were measured from Anvil 1.8.1 on 2026-09-17, or
@@ -76,6 +82,16 @@ describe('classifySendError', () => {
       error: 'rate limited' as unknown as { code: number; message: string },
     })
     expect(classifySendError(stringError).kind).toBe('unknown')
+  })
+})
+
+describe('describeError', () => {
+  it('never includes the RPC URL, which can carry a provider API key', () => {
+    const err = new HttpRequestError({ url: 'http://node.example/abcSECRETKEY', status: 502, details: 'nonce too low' })
+    const message = describeError(err)
+    expect(message).not.toContain('node.example')
+    expect(message).not.toContain('abcSECRETKEY')
+    expect(message).not.toBe('')
   })
 })
 

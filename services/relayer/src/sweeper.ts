@@ -1,6 +1,6 @@
 import { bumpFees } from '@blockwarden/core'
 import type { LocalAccount } from 'viem'
-import type { RelayerChain } from './chain.js'
+import { describeError, type RelayerChain } from './chain.js'
 import { feeCap } from './policy.js'
 import type { TxQueue } from './queue.js'
 import { latestAttempt, liveAttempt, withStatus, type SignerRecord, type TxRecord } from './records.js'
@@ -137,7 +137,7 @@ function countFailure(deps: SweeperDeps, tx: TxRecord, err: unknown, summary: Sw
     return
   }
   summary.errors++
-  deps.log('sweeping a transaction failed', { txId: tx.txId, error: (err as Error).message })
+  deps.log('sweeping a transaction failed', { txId: tx.txId, error: describeError(err) })
 }
 
 type PauseState = 'active' | 'paused' | 'resumed'
@@ -243,7 +243,7 @@ async function checkSubmitted(
         // a URL that could not answer might be the one with the receipt
         deps.log('receipt check failed on an RPC URL; not failing the transaction this sweep', {
           txId: tx.txId,
-          error: (err as Error).message,
+          error: describeError(err),
         })
         return
       }
