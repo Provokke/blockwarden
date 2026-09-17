@@ -28,6 +28,8 @@ export type SweeperDeps = {
   // a queued transaction older than this is sent to the queue again
   requeueAfterMs: number
   log(message: string, data?: Record<string, unknown>): void
+  // pending transactions read per page; tests set it low to cross page boundaries
+  pageSize?: number
 }
 
 export type SweepSummary = {
@@ -42,6 +44,8 @@ export type SweepSummary = {
   failed: number
   feeCapReached: number
   conflicts: number
+  // transactions whose sweep threw something other than a conflict; each is logged with its txId
+  errors: number
   // the age of the oldest unsettled transaction, for the pending-age alarm
   oldestPendingSeconds: number
 }
@@ -66,46 +70,68 @@ export async function sweepChain(deps: SweeperDeps, deadlineMs: number): Promise
     failed: 0,
     feeCapReached: 0,
     conflicts: 0,
+    errors: 0,
     oldestPendingSeconds: 0,
   }
-  const pending = await deps.store.listPending(deps.settings.chainId, LIST_LIMIT)
-  if (pending.length === 0) return summary
-  const nowMs = deps.now().getTime()
-  summary.oldestPendingSeconds = Math.max(...pending.map((tx) => Math.floor((nowMs - Date.parse(tx.createdAt)) / 1000)))
+  const pageSize = deps.pageSize ?? LIST_LIMIT
+  let page = await deps.store.listPendingPage(deps.settings.chainId, pageSize)
+  if (page.txs.length === 0) return summary
   const head = await deps.chain.getBlockNumber()
   const signers = new Map<string, SignerRecord | undefined>()
   // each signer's pause state on this chain, looked up once per sweep
   const pauses = new Map<string, PauseState>()
+  // what a resume sent back already, so the loop below does not send it twice
+  const requeuedOnResume = new Set<string>()
 
-  for (const tx of pending) {
-    if (Date.now() >= deadlineMs) break
-    summary.checked++
-    try {
-      if (!signers.has(tx.signerId)) signers.set(tx.signerId, await deps.store.getSigner(tx.signerId))
-      const signer = signers.get(tx.signerId)
-      if (!signer) {
-        deps.log('pending transaction names a missing signer', { txId: tx.txId, signerId: tx.signerId })
-        continue
-      }
-      if (tx.status === 'queued') {
-        if (!pauses.has(tx.signerId)) pauses.set(tx.signerId, await checkPause(deps, signer, pending, summary))
-        // a paused signer's queue waits for its balance; a resumed signer's queue was just requeued in full
-        if (pauses.get(tx.signerId) === 'active') await requeueIfStale(deps, tx, summary)
-      } else if (tx.status === 'mined') {
-        await checkMined(deps, tx, head, summary)
-      } else if (tx.status === 'submitted') {
-        await checkSubmitted(deps, signer, tx, head, summary)
-      }
-    } catch (err) {
-      if (err instanceof TxConflictError) {
-        // the signer or an overlapping sweep changed it first; the next sweep sees the new state
-        summary.conflicts++
-        continue
-      }
-      throw err
+  // every page, not just the oldest: one stuck signer's backlog must not hide every other signer's transactions
+  for (;;) {
+    const nowMs = deps.now().getTime()
+    for (const tx of page.txs) {
+      const age = Math.floor((nowMs - Date.parse(tx.createdAt)) / 1000)
+      summary.oldestPendingSeconds = Math.max(summary.oldestPendingSeconds, age)
     }
+    for (const tx of page.txs) {
+      if (Date.now() >= deadlineMs) return summary
+      summary.checked++
+      try {
+        if (!signers.has(tx.signerId)) signers.set(tx.signerId, await deps.store.getSigner(tx.signerId))
+        const signer = signers.get(tx.signerId)
+        if (!signer) {
+          deps.log('pending transaction names a missing signer', { txId: tx.txId, signerId: tx.signerId })
+          continue
+        }
+        if (tx.status === 'queued') {
+          if (!pauses.has(tx.signerId)) {
+            pauses.set(tx.signerId, await checkPause(deps, signer, page.txs, requeuedOnResume, summary, deadlineMs))
+          }
+          const pause = pauses.get(tx.signerId)
+          // a paused signer's queue waits for its balance; a resumed signer's queue goes back in full, and the
+          // resume itself only saw the page it happened on
+          if (pause === 'active') await requeueIfStale(deps, tx, summary)
+          else if (pause === 'resumed' && !requeuedOnResume.has(tx.txId)) await requeue(deps, tx, summary)
+        } else if (tx.status === 'mined') {
+          await checkMined(deps, tx, head, summary)
+        } else if (tx.status === 'submitted') {
+          await checkSubmitted(deps, signer, tx, head, summary)
+        }
+      } catch (err) {
+        countFailure(deps, tx, err, summary)
+      }
+    }
+    if (!page.cursor || Date.now() >= deadlineMs) return summary
+    page = await deps.store.listPendingPage(deps.settings.chainId, pageSize, page.cursor)
   }
-  return summary
+}
+
+// A conflict means the signer or an overlapping sweep changed the transaction first, and the next sweep sees the new
+// state. Anything else, StoreBusyError included, is one transaction's trouble and must not stop the rest.
+function countFailure(deps: SweeperDeps, tx: TxRecord, err: unknown, summary: SweepSummary): void {
+  if (err instanceof TxConflictError) {
+    summary.conflicts++
+    return
+  }
+  summary.errors++
+  deps.log('sweeping a transaction failed', { txId: tx.txId, error: (err as Error).message })
 }
 
 type PauseState = 'active' | 'paused' | 'resumed'
@@ -115,7 +141,9 @@ async function checkPause(
   deps: SweeperDeps,
   signer: SignerRecord,
   pending: TxRecord[],
+  requeued: Set<string>,
   summary: SweepSummary,
+  deadlineMs: number,
 ): Promise<PauseState> {
   const pause = await deps.store.getPause(signer.signerId, deps.settings.chainId)
   if (!pause) return 'active'
@@ -130,12 +158,14 @@ async function checkPause(
     .filter((tx) => tx.signerId === signer.signerId && tx.status === 'queued')
     .sort((a, b) => (a.nonce ?? Infinity) - (b.nonce ?? Infinity) || Date.parse(a.createdAt) - Date.parse(b.createdAt))
   for (const tx of queued) {
+    // the pause is already gone, so anything left goes back once it is stale
+    if (Date.now() >= deadlineMs) break
+    requeued.add(tx.txId)
     try {
       await requeue(deps, tx, summary)
     } catch (err) {
       // one changed transaction must not leave the rest of the queue behind
-      if (!(err instanceof TxConflictError)) throw err
-      summary.conflicts++
+      countFailure(deps, tx, err, summary)
     }
   }
   return 'resumed'
