@@ -63,6 +63,47 @@ describe('loadConfig', () => {
     ).rejects.toThrow(/no RPC URLs/)
   })
 
+  it('refuses a misspelt chain key, so a setting is never silently left at its default', async () => {
+    const { ssm } = fakeSsm({})
+    const chains = JSON.stringify([{ chainId: 1, rpcUrls: ['http://x'], confirmation: 2 }])
+    await expect(loadConfig({ TABLE_NAME: 't', CHAINS: chains }, ssm)).rejects.toThrow(/confirmation/)
+  })
+
+  it('names CHAINS when it is not JSON, without repeating its contents', async () => {
+    const { ssm } = fakeSsm({})
+    const err = await loadConfig({ TABLE_NAME: 't', CHAINS: 'SECRETKEY' }, ssm).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    )
+    expect(err).toBeInstanceOf(Error)
+    expect(err?.message).toMatch(/CHAINS/)
+    expect(`${err?.message}${err?.stack}`).not.toContain('SECRETKEY')
+    expect(err?.cause).toBeUndefined()
+  })
+
+  it('checks URLs read from SSM like inline ones, without repeating them', async () => {
+    const { ssm } = fakeSsm({ '/p': 'https://ok.example, not-a-url-SECRETKEY' })
+    const err = await loadConfig(
+      { TABLE_NAME: 't', CHAINS: JSON.stringify([{ chainId: 1, rpcUrlsParameter: '/p' }]) },
+      ssm,
+    ).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    )
+    expect(err).toBeInstanceOf(Error)
+    expect(err?.message).toMatch(/\/p/)
+    expect(`${err?.message}${err?.stack}`).not.toContain('SECRETKEY')
+  })
+
+  it('refuses the same chainId twice', async () => {
+    const { ssm } = fakeSsm({})
+    const chains = JSON.stringify([
+      { chainId: 1, rpcUrls: ['http://a'] },
+      { chainId: 1, rpcUrls: ['http://b'] },
+    ])
+    await expect(loadConfig({ TABLE_NAME: 't', CHAINS: chains }, ssm)).rejects.toThrow(/chainId 1/)
+  })
+
   it('refuses a non-positive time setting', async () => {
     const { ssm } = fakeSsm({})
     const env = { TABLE_NAME: 't', CHAINS: JSON.stringify([{ chainId: 1, rpcUrls: ['http://x'] }]) }
