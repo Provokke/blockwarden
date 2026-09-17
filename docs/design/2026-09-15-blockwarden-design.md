@@ -149,7 +149,7 @@ Each run takes the chain's lease, runs both scans inside a 50-second budget, and
 
 ### Match keys
 
-`matchKey` is `keccak256(chainId, transactionHash, ordinal, ruleId)`. `ordinal` is the log's position among the logs in the same transaction that match the same rule. A transaction's logs all sit in one block, so both scans compute the same key for the same event. The key leaves out the block, so a provisional record and its final record stay one item even when a shallow reorg re-includes the transaction in a different block.
+`matchKey` is `keccak256(chainId, transactionHash, ordinal, ruleId)`. `ordinal` is the log's position among the logs in the same transaction and block that match the same rule. A transaction's logs all sit in one block, so both scans compute the same key for the same event. The block is counted too because one fast-scan read can be several `eth_getLogs` responses (a halved range), and a reorg between them can return the same transaction in an orphaned block and in its new block; counted per transaction alone, the second copy would take ordinal 1 and become a provisional record for an event that never happened. The key leaves out the block, so a provisional record and its final record stay one item even when a shallow reorg re-includes the transaction in a different block.
 
 Known limit: if a reorg changes which of a transaction's logs match (for example, it now emits a different number of them), the fast alert ends `dropped` and the final record arrives as a separate event.
 

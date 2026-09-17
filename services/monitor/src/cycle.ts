@@ -229,7 +229,8 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
         const filter = buildLogFilter(fastRules)!
         let reached = from
         try {
-          // a chunk never splits a block, so ordinals computed per chunk match the durable scan's
+          // a chunk never splits a block, so ordinals computed per chunk match the durable scan's; a halved chunk is
+          // several reads that a reorg can separate, which is why ordinals are counted per block, not per transaction
           while (reached < head) {
             const end = Math.min(head, reached + deps.maxRange)
             const logs = await fetchLogs(chain, filter, reached + 1, end, shouldStop)

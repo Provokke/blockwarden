@@ -128,6 +128,22 @@ describe('assignOrdinals', () => {
     ])
   })
 
+  it('numbers a transaction per block, so logs read from two forks never shift each other', () => {
+    // a halved fast-scan range is several eth_getLogs calls; a reorg between them can return the transaction twice
+    const orphaned = {
+      ...erc20Log(1n, { blockNumber: 8, blockHash: `0x${'08'.repeat(32)}`, logIndex: 0 }),
+      transactionHash: txA,
+    }
+    const canonical = {
+      ...erc20Log(1n, { blockNumber: 9, blockHash: `0x${'09'.repeat(32)}`, logIndex: 0 }),
+      transactionHash: txA,
+    }
+    expect(ordinals([m('r', orphaned), m('r', canonical)])).toEqual([
+      ['r', txA, 0, 0],
+      ['r', txA, 0, 0],
+    ])
+  })
+
   it('gives the same ordinals for shuffled input', () => {
     const matches = [
       m('a', at(txA, 0)),
