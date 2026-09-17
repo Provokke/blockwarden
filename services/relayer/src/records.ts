@@ -41,8 +41,9 @@ export type TxRecord = {
   status: TxStatus
   nonce?: number
   attempts: Attempt[]
-  // signatures at a nonce this tx gave up after nonce too low, kept as evidence; the sweeper never reads them
-  abandonedAttempts?: Attempt[]
+  // the newest signatures at a nonce this tx gave up after nonce too low, kept as evidence without their bytes;
+  // nothing rebroadcasts them
+  abandonedAttempts?: (Attempt & { nonce: number })[]
   // the node refused the last signature as underpriced, so the sweeper replaces it without waiting
   needsBump?: boolean
   // the policy fee cap is below the node's replacement minimum, so the sweeper can only rebroadcast

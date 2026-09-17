@@ -2,7 +2,7 @@ import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import { keccak256, parseTransaction, type LocalAccount } from 'viem'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { EstimateError } from '../../src/chain.js'
-import { processTx, type SignerDeps } from '../../src/signer.js'
+import { MAX_ABANDONED_ATTEMPTS, processTx, type SignerDeps } from '../../src/signer.js'
 import { RelayerStore } from '../../src/store.js'
 import { FakeChain } from '../helpers/fake-chain.js'
 import { CHAIN_ID, localAccount, queuedTx, RecordingQueue, signerRecord } from '../helpers/fixtures.js'
@@ -183,8 +183,12 @@ describe('processTx', () => {
     expect(chain.sent).toHaveLength(2)
     // the refused signature at nonce 0 is kept, apart from the attempts the sweeper checks
     expect(stored.abandonedAttempts).toHaveLength(1)
-    expect(stored.abandonedAttempts![0]).toMatchObject({ raw: chain.sent[0], rejected: 'nonce too low' })
-    expect(parseTransaction(stored.abandonedAttempts![0]!.raw).nonce).toBe(0)
+    expect(stored.abandonedAttempts![0]).toMatchObject({
+      hash: keccak256(chain.sent[0]!),
+      raw: '0x',
+      nonce: 0,
+      rejected: 'nonce too low',
+    })
   })
 
   it('leaves a redelivered transaction to the sweeper on nonce too low instead of signing at a new nonce', async () => {
@@ -245,7 +249,7 @@ describe('processTx', () => {
     const held = (await store.getTx(tx.txId))!
     expect(held).toMatchObject({ status: 'queued', nonce: 2 })
     expect(held.attempts.map((a) => a.raw)).toEqual([chain.sent[2]])
-    expect(held.abandonedAttempts?.map((a) => a.raw)).toEqual([chain.sent[0], chain.sent[1]])
+    expect(held.abandonedAttempts?.map((a) => a.hash)).toEqual([keccak256(chain.sent[0]!), keccak256(chain.sent[1]!)])
 
     // the redelivery did not take that nonce, so it hands the transaction to the sweeper rather than throwing again
     const counter = countSignatures()
@@ -255,6 +259,29 @@ describe('processTx', () => {
     expect(settled.attempts).toEqual(held.attempts)
     expect(chain.sent[3]).toBe(held.attempts[0]!.raw)
     expect(counter.signatures).toBe(0)
+  })
+
+  it(`keeps only the newest ${MAX_ABANDONED_ATTEMPTS} abandoned attempts across runs, without their bytes`, async () => {
+    const tx = await create()
+    chain.sendOutcomes = Array.from({ length: 9 }, () => ({ kind: 'nonce-too-low', message: 'nonce too low' }) as const)
+    // three runs that each give up two nonces; between them the transaction is back to queued with no nonce
+    for (let run = 0; run < 3; run++) {
+      await expect(processTx(deps, tx.txId)).rejects.toThrow(/kept hitting nonce too low/)
+      const { nonce: _nonce, ...held } = (await store.getTx(tx.txId))!
+      await store.saveTx({ ...held, attempts: [] }, NOW.toISOString())
+    }
+    const stored = (await store.getTx(tx.txId))!
+    expect(chain.sent).toHaveLength(9)
+    expect(stored.abandonedAttempts).toHaveLength(MAX_ABANDONED_ATTEMPTS)
+    expect(stored.abandonedAttempts!.every((a) => a.raw === '0x')).toBe(true)
+    // the two dropped are the first run's; the run's last send held its nonce and was never abandoned
+    const abandonedSends = chain.sent.filter((_, i) => i % 3 !== 2)
+    expect(stored.abandonedAttempts!.map((a) => a.hash)).toEqual(
+      abandonedSends.slice(-MAX_ABANDONED_ATTEMPTS).map((raw) => keccak256(raw)),
+    )
+    expect(stored.abandonedAttempts!.map((a) => a.nonce)).toEqual(
+      abandonedSends.slice(-MAX_ABANDONED_ATTEMPTS).map((raw) => parseTransaction(raw).nonce),
+    )
   })
 
   it('fails a refused transaction and queues a filler at the same nonce', async () => {
