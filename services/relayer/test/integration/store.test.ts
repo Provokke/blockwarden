@@ -82,6 +82,37 @@ describe('RelayerStore', () => {
       expect(await store.createTx(queuedTx(FROM), spend(1_001), NOW)).toEqual({ created: false, reason: 'spend-cap' })
     })
 
+    it('lets exactly as many racing creations through as the cap has room for', async () => {
+      const txs = Array.from({ length: 10 }, () => queuedTx(FROM))
+      const results = await Promise.all(txs.map((tx) => store.createTx(tx, spend(300), NOW)))
+      expect(results.filter((r) => r.created)).toHaveLength(3)
+      expect(results.filter((r) => !r.created && r.reason === 'spend-cap')).toHaveLength(7)
+      // the counter only grows, so its final value is the most it ever held
+      const { Item } = await dynamo.doc.send(
+        new GetCommand({ TableName: tableName, Key: keys.spend('billing', CHAIN_ID, '2026-09-17') }),
+      )
+      expect(Item?.spentGwei).toBe(900)
+      expect((await Promise.all(txs.map((tx) => store.getTx(tx.txId)))).filter(Boolean)).toHaveLength(3)
+      expect(await pendingIds()).toHaveLength(3)
+    })
+
+    it('creates one transaction when racing creations share an idempotency key', async () => {
+      const first = queuedTx(FROM)
+      const txs = [first, ...Array.from({ length: 7 }, () => queuedTx(FROM, { idempotencyKey: first.idempotencyKey }))]
+      const results = await Promise.all(txs.map((tx) => store.createTx(tx, spend(100), NOW)))
+      const winners = txs.filter((_, i) => results[i]!.created)
+      expect(winners).toHaveLength(1)
+      expect(results.filter((r) => !r.created)).toEqual(Array(7).fill({ created: false, reason: 'duplicate' }))
+      // every loser's caller replays the winner through the key
+      expect(await store.getIdempotency(first.apiKeyHash!, first.idempotencyKey!)).toEqual({ txId: winners[0]!.txId })
+      const stored = await Promise.all(txs.map((tx) => store.getTx(tx.txId)))
+      expect(stored.filter(Boolean).map((tx) => tx!.txId)).toEqual([winners[0]!.txId])
+      const { Item } = await dynamo.doc.send(
+        new GetCommand({ TableName: tableName, Key: keys.spend('billing', CHAIN_ID, '2026-09-17') }),
+      )
+      expect(Item?.spentGwei).toBe(100)
+    })
+
     it('keeps one day and one chain apart from another', async () => {
       await store.createTx(queuedTx(FROM), spend(1_000), NOW)
       expect(await store.createTx(queuedTx(FROM), { ...spend(1_000), day: '2026-09-18' }, NOW)).toEqual({
