@@ -26,6 +26,8 @@ export type StubRpcOptions = {
   // chain mode only: answer a request that carries eth_getLogs with a body of this many bytes, sent as fast as
   // the client reads it, with or without a content-length header
   oversizedLogs?: { bytes: number; declareLength: boolean }
+  // http-500 mode only: answer with this status and these headers instead of a plain 500
+  failWith?: { status: number; headers?: Record<string, string> }
   // wait this long after a request arrives before answering it, whatever the mode
   delayMs?: number
 }
@@ -99,7 +101,8 @@ export function startStubRpc(
           nth <= (options.failFirst ?? 0) ||
           (carriesLogs && nthLogBatch <= (options.failFirstBatches ?? 0))
         ) {
-          res.writeHead(500, { 'content-type': 'application/json' })
+          const failure = mode === 'http-500' ? options.failWith : undefined
+          res.writeHead(failure?.status ?? 500, { 'content-type': 'application/json', ...failure?.headers })
           res.end(JSON.stringify({ error: 'stub rpc: internal error' }))
           return
         }
