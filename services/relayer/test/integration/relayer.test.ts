@@ -124,6 +124,7 @@ describe('relayer end to end', () => {
         queue,
         now: () => new Date(),
         requeueAfterMs: 600_000,
+        newTxId: () => crypto.randomUUID(),
         log: () => {},
       },
       Date.now() + 30_000,

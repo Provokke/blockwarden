@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { Logger } from '@aws-lambda-powertools/logger'
 import { Metrics, MetricUnit } from '@aws-lambda-powertools/metrics'
 import { describeError } from '../chain.js'
@@ -73,6 +74,7 @@ export function createSweeperHandler(runtime: () => Promise<Runtime>, logger: Lo
           queue,
           now: () => new Date(),
           requeueAfterMs: config.requeueAfterMs,
+          newTxId: randomUUID,
           log,
         },
         deadlineMs,

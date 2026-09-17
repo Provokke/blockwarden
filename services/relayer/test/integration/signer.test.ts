@@ -157,6 +157,7 @@ describe('processTx', () => {
     expect(await processTx(deps, next.txId)).toBe('paused')
     expect((await store.getTx(next.txId))?.nonce).toBeUndefined()
     expect(chain.sent).toHaveLength(1)
+    expect(levels['signer paused: insufficient funds']).toBe('warn')
   })
 
   it('checks for a receipt on nonce too low, and submits when one of its hashes was mined', async () => {
@@ -208,6 +209,7 @@ describe('processTx', () => {
     expect(counter.signatures).toBe(0)
     expect(chain.sent).toEqual([crashed.attempts[0]!.raw, crashed.attempts[0]!.raw])
     expect(await store.getNextNonce('billing', CHAIN_ID)).toBe(1)
+    expect(levels['nonce too low on a nonce sent before; left to the sweeper']).toBe('warn')
   })
 
   it('resends the same bytes when the save after an accepted send conflicts', async () => {
