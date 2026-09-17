@@ -18,6 +18,8 @@ export async function processRecords(
     }
     try {
       const { txId } = JSON.parse(record.body) as TxMessage
+      // processTx reads a missing txId as a deleted transaction and the message would vanish; the DLQ keeps it
+      if (typeof txId !== 'string' || txId === '') throw new Error('message body has no txId')
       await processTx(txId)
     } catch (err) {
       log('message failed; SQS will deliver it again', { messageId: record.messageId, error: (err as Error).message })

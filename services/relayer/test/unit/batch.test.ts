@@ -42,4 +42,21 @@ describe('processRecords', () => {
     )
     expect(result.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }])
   })
+
+  it.each(['{}', '{"txId":1}', '{"txId":""}', 'null'])(
+    'hands back and logs a message whose body is %s',
+    async (body) => {
+      const seen: string[] = []
+      const logs: string[] = []
+      const bad = { messageId: 'm1', body, attributes: { MessageGroupId: 'a' } } as unknown as SQSRecord
+      const result = await processRecords(
+        [bad, record('m2', 'b', 't2')],
+        async (txId) => seen.push(txId),
+        (message) => logs.push(message),
+      )
+      expect(seen).toEqual(['t2'])
+      expect(result.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }])
+      expect(logs).toEqual(['message failed; SQS will deliver it again'])
+    },
+  )
 })

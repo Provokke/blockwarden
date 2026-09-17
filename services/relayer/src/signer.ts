@@ -27,6 +27,8 @@ const MAX_NONCE_RESETS = 2
 export async function processTx(deps: SignerDeps, txId: string): Promise<ProcessOutcome> {
   const { store } = deps
   const stamp = () => deps.now().toISOString()
+  // the nonce this run took from the counter: no earlier run can have broadcast anything at it
+  let takenNonce: number | undefined
   let tx = await store.getTx(txId)
   if (!tx) return 'missing'
   if (tx.status !== 'queued') return 'skipped'
@@ -48,6 +50,7 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
         deps.reconciled.add(pair)
       }
       tx = await store.assignNonce(tx, stamp())
+      takenNonce = tx.nonce
     }
     if (tx.attempts.length === 0) {
       const fees = clampFees(await chain.estimateFees(), feeCap(signer.policy))
@@ -95,11 +98,23 @@ export async function processTx(deps: SignerDeps, txId: string): Promise<Process
             return 'submitted'
           }
         }
+        // A receipt read can miss on a lagging node. If an earlier run held this nonce, its bytes may already be
+        // mined, and signing at a new nonce would run the payload twice. The sweeper settles it by receipt or,
+        // once the nonce has been used long enough with none, fails it.
+        if (tx.nonce !== takenNonce) {
+          await store.saveTx(withStatus(tx, 'submitted', stamp()), stamp())
+          deps.log('nonce too low on a nonce sent before; left to the sweeper', { txId, nonce: tx.nonce })
+          return 'submitted'
+        }
         if (resets >= MAX_NONCE_RESETS) throw new Error(`transaction ${txId} kept hitting nonce too low`)
         // another sender used this nonce: give it up and take the next one after reconciling
         deps.reconciled.delete(pair)
         const { nonce: _nonce, ...rest } = tx
-        tx = await store.saveTx({ ...rest, attempts: [] }, stamp())
+        const abandoned = tx.attempts.map((a) => ({ ...a, rejected: outcome.message }))
+        tx = await store.saveTx(
+          { ...rest, attempts: [], abandonedAttempts: [...(tx.abandonedAttempts ?? []), ...abandoned] },
+          stamp(),
+        )
         continue
       }
 
