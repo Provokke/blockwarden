@@ -40,8 +40,14 @@ describe('ruleInputSchema', () => {
     expect(ruleInputSchema.safeParse({ ...valid, conditions }).success).toBe(false)
   })
 
-  it('keeps unknown action fields for the actions milestone to validate', () => {
+  it('refuses an unknown action key, so a misspelt option is not silently dropped', () => {
     const parsed = ruleInputSchema.parse({ ...valid, actions: [{ type: 'webhook', url: 'https://example.com' }] })
     expect(parsed.actions).toEqual([{ type: 'webhook', url: 'https://example.com' }])
+    const result = ruleInputSchema.safeParse({
+      ...valid,
+      actions: [{ type: 'webhook', url: 'https://example.com', secrets: 'x' }],
+    })
+    expect(result.success).toBe(false)
+    expect(result.error?.issues[0]?.path[0]).toBe('actions')
   })
 })
