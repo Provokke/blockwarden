@@ -41,6 +41,8 @@ export type RelayerTx = {
   // set once mined: a mined transaction can still have reverted
   receiptStatus: 'success' | 'reverted' | null
   error: string | null
+  // the raw revert data when a transaction failed because its call reverts, for decoding a custom error
+  revertData: Hex | null
   // on a failed transaction, the filler that took its nonce
   fillerTxId: string | null
   idempotencyKey: string | null
@@ -72,3 +74,33 @@ export type ApiErrorBody = {
     revertData?: Hex
   }
 }
+
+export const MATCH_STATUSES = ['provisional', 'final', 'dropped'] as const
+export type MatchStatus = (typeof MATCH_STATUSES)[number]
+
+// A decoded event argument. viem decodes a tuple as an object and a fixed or dynamic array as an array; every
+// numeric value is sent as a decimal string, because JSON numbers cannot hold a uint256.
+export type DecodedValue = string | boolean | DecodedValue[] | { [key: string]: DecodedValue }
+
+export type MatchEventData = {
+  matchKey: Hex
+  ruleId: string
+  status: MatchStatus
+  chainId: number
+  address: Address
+  transactionHash: Hex
+  blockNumber: number
+  blockHash: Hex
+  logIndex: number
+  // the log's position among the logs of the same transaction, block and rule
+  ordinal: number
+  // the rule's event signature, and the event's name taken from it
+  event: string
+  eventName: string
+  args: Record<string, DecodedValue>
+  firstSeenAt: string
+  // set when the match became final
+  finalizedAt: string | null
+}
+
+export type MatchEventBody = MatchEventData
