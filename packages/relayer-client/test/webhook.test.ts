@@ -1,8 +1,9 @@
 import { createHmac } from 'node:crypto'
 import fc from 'fast-check'
+import { decodeEventLog, encodeAbiParameters, encodeEventTopics, parseAbi, parseAbiParameters } from 'viem'
 import { describe, expect, it } from 'vitest'
-import { isMatchEvent, WEBHOOK_SPEC_VERSION, type MatchEventData } from '../src/index.js'
-import type { RelayerTxBody } from '../src/types.js'
+import { isMatchEvent, toDecodedValue, WEBHOOK_SPEC_VERSION, type MatchEventData } from '../src/index.js'
+import type { DecodedValue, Hex, RelayerTxBody } from '../src/types.js'
 import { isTxEvent, parseTx, signWebhook, verifyWebhook, WebhookVerificationError } from '../src/webhook.js'
 
 const NOW = 1_800_000_000_000
@@ -202,6 +203,19 @@ describe('isTxEvent and parseTx', () => {
     if (isTxEvent(verified)) expect(parseTx(verified.data).value).toBe(10n ** 21n)
   })
 
+  it('reports revertData as null for a 0.1.x body that has no such field', async () => {
+    const { revertData: _absent, ...old } = TX
+    const payload = event('tx.failed', old)
+    const verified = await verifyWebhook({
+      payload,
+      signature: await signWebhook({ payload, secret: 's', nowMs: NOW }),
+      secret: 's',
+      nowMs: NOW,
+    })
+    expect(isTxEvent(verified)).toBe(true)
+    if (isTxEvent(verified)) expect(parseTx(verified.data).revertData).toBeNull()
+  })
+
   it('refuses an event whose type is not a known status or whose data is not a transaction', () => {
     const base = { id: 'del_1', createdAt: '2026-09-17T00:00:00Z' }
     expect(isTxEvent({ ...base, type: 'tx.mined', data: TX })).toBe(true)
@@ -222,6 +236,14 @@ describe('isTxEvent and parseTx', () => {
       const e = { ...base, type: 'tx.mined', data }
       expect(isTxEvent(e)).toBe(false)
     }
+  })
+})
+
+describe('hex that has no fixed width', () => {
+  it('accepts calldata and revert data of any length, which is what makes the loose check worth keeping', () => {
+    const base = { id: 'del_1', createdAt: '2026-09-17T00:00:00Z', type: 'tx.failed' }
+    expect(isTxEvent({ ...base, data: { ...TX, data: '0x', revertData: '0x08c379a0' } })).toBe(true)
+    expect(isTxEvent({ ...base, data: { ...TX, data: `0x${'ab'.repeat(500)}`, revertData: '0x' } })).toBe(true)
   })
 })
 
@@ -299,6 +321,19 @@ describe('isMatchEvent', () => {
     expect(isMatchEvent(eventFor('match.final', { ...matchData, args: ['a'] }))).toBe(false)
   })
 
+  it('refuses a hash or an address that is not the width the schema publishes', () => {
+    for (const key of ['matchKey', 'transactionHash', 'blockHash', 'address'] as const) {
+      expect(isMatchEvent(eventFor('match.final', { ...matchData, [key]: '0x' })), key).toBe(false)
+      expect(isMatchEvent(eventFor('match.final', { ...matchData, [key]: `${matchData[key]}ff` })), key).toBe(false)
+    }
+  })
+
+  // the doc no longer promises a lowercase address, so a checksummed one has to be accepted
+  it('accepts an address in the case the node returned it', () => {
+    const checksummed = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, address: checksummed }))).toBe(true)
+  })
+
   it('accepts finalizedAt as null on a provisional match', () => {
     expect(
       isMatchEvent(eventFor('match.provisional', { ...matchData, status: 'provisional', finalizedAt: null })),
@@ -335,5 +370,46 @@ describe('the envelope', () => {
     const verified = await verifyWebhook({ payload, signature, secret: 's', nowMs })
     expect(verified.specVersion).toBeUndefined()
     expect(isMatchEvent(verified)).toBe(true)
+  })
+})
+
+describe('toDecodedValue', () => {
+  // viem decodes an integer of 48 bits or fewer as a JS number, so a stored arg really can hold one
+  const abi = parseAbi(['event Tick(int24 tick, uint8 decimals, uint256 amount)'])
+  const decoded = decodeEventLog({
+    abi,
+    // nothing in the event is indexed, so the only topic is the event's own selector
+    topics: encodeEventTopics({ abi, eventName: 'Tick' }) as [Hex],
+    data: encodeAbiParameters(parseAbiParameters('int24, uint8, uint256'), [-201_234, 8, 10n ** 18n]),
+  })
+
+  it('turns the numbers a real viem decode returns into the decimal strings the guard accepts', () => {
+    const raw = decoded.args as Record<string, unknown>
+    expect(typeof raw.tick).toBe('number')
+    expect(typeof raw.decimals).toBe('number')
+
+    const args = toDecodedValue(raw) as Record<string, DecodedValue>
+    expect(args).toEqual({ tick: '-201234', decimals: '8', amount: '1000000000000000000' })
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, args }))).toBe(true)
+  })
+
+  it('converts a number nested in an array and in a tuple', () => {
+    expect(toDecodedValue({ ticks: [1, [2]], permission: { fee: 3000, to: '0xab', unlimited: true } })).toEqual({
+      ticks: ['1', ['2']],
+      permission: { fee: '3000', to: '0xab', unlimited: true },
+    })
+  })
+
+  it('leaves a string, a boolean and hex alone', () => {
+    expect(toDecodedValue({ to: '0xab', ok: false, amounts: ['1', '2'] })).toEqual({
+      to: '0xab',
+      ok: false,
+      amounts: ['1', '2'],
+    })
+  })
+
+  it('refuses a number that is not an integer, because no ABI integer decodes to one', () => {
+    expect(() => toDecodedValue({ fee: 0.5 })).toThrow(/not an integer/)
+    expect(() => toDecodedValue({ ticks: [[1.5]] })).toThrow(/not an integer/)
   })
 })
