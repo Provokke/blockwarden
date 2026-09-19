@@ -24,8 +24,12 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
+  "devDependencies": {
+    "viem": "2.56.3"
+  },
   "engines": {
     "node": ">=22"
   },
