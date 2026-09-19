@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto'
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
+import { isMatchEvent, WEBHOOK_SPEC_VERSION, type MatchEventData } from '../src/index.js'
 import type { RelayerTxBody } from '../src/types.js'
 import { isTxEvent, parseTx, signWebhook, verifyWebhook, WebhookVerificationError } from '../src/webhook.js'
 
@@ -178,6 +179,7 @@ const TX: RelayerTxBody = {
   blockHash: `0x${'cd'.repeat(32)}`,
   receiptStatus: 'success',
   error: null,
+  revertData: null,
   fillerTxId: null,
   idempotencyKey: 'charge-1',
   reference: null,
@@ -236,5 +238,102 @@ describe('secrets that are not strings', () => {
         WebhookVerificationError,
       )
     }
+  })
+})
+
+const matchData: MatchEventData = {
+  matchKey: '0x1111111111111111111111111111111111111111111111111111111111111111',
+  ruleId: 'f0c2a1e6-0000-4000-8000-000000000001',
+  status: 'final',
+  chainId: 8453,
+  address: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+  transactionHash: '0x2222222222222222222222222222222222222222222222222222222222222222',
+  blockNumber: 12345678,
+  blockHash: '0x3333333333333333333333333333333333333333333333333333333333333333',
+  logIndex: 4,
+  ordinal: 0,
+  event: 'event Transfer(address indexed from, address indexed to, uint256 value)',
+  eventName: 'Transfer',
+  args: {
+    from: '0x4444444444444444444444444444444444444444',
+    to: '0x5555555555555555555555555555555555555555',
+    value: '1000000000000000000',
+  },
+  firstSeenAt: '2026-09-20T10:00:00.000Z',
+  finalizedAt: '2026-09-20T10:19:00.000Z',
+}
+
+const eventFor = (type: string, data: unknown) => ({
+  id: 'dlv_0',
+  type,
+  createdAt: '2026-09-20T10:19:00.000Z',
+  specVersion: WEBHOOK_SPEC_VERSION,
+  data,
+})
+
+describe('isMatchEvent', () => {
+  it('accepts the three match types with a whole match body', () => {
+    for (const type of ['match.provisional', 'match.final', 'match.dropped']) {
+      expect(isMatchEvent(eventFor(type, matchData)), type).toBe(true)
+    }
+  })
+
+  it('refuses a type that is not a match event', () => {
+    expect(isMatchEvent(eventFor('tx.mined', matchData))).toBe(false)
+    expect(isMatchEvent(eventFor('match.nope', matchData))).toBe(false)
+    expect(isMatchEvent(eventFor('match', matchData))).toBe(false)
+  })
+
+  it('refuses a body missing a field, so a reader can trust every field it reads', () => {
+    for (const key of Object.keys(matchData)) {
+      const partial = { ...matchData } as Record<string, unknown>
+      delete partial[key]
+      expect(isMatchEvent(eventFor('match.final', partial)), key).toBe(false)
+    }
+  })
+
+  it('refuses a body whose types are wrong', () => {
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, blockNumber: '12345678' }))).toBe(false)
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, args: null }))).toBe(false)
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, status: 'sometimes' }))).toBe(false)
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, args: ['a'] }))).toBe(false)
+  })
+
+  it('accepts finalizedAt as null on a provisional match', () => {
+    expect(
+      isMatchEvent(eventFor('match.provisional', { ...matchData, status: 'provisional', finalizedAt: null })),
+    ).toBe(true)
+  })
+
+  it('accepts nested tuple args', () => {
+    const nested = {
+      ...matchData,
+      args: { permission: { account: '0xabc', spender: '0xdef', allowance: '1' }, hash: '0x00' },
+    }
+    expect(isMatchEvent(eventFor('match.final', nested))).toBe(true)
+  })
+})
+
+describe('the envelope', () => {
+  it('carries a spec version of 1', () => {
+    expect(WEBHOOK_SPEC_VERSION).toBe(1)
+  })
+
+  it('verifies a body that carries specVersion and returns it', async () => {
+    const payload = JSON.stringify(eventFor('match.final', matchData))
+    const nowMs = 1789000000000
+    const signature = await signWebhook({ payload, secret: 's', nowMs })
+    const verified = await verifyWebhook({ payload, signature, secret: 's', nowMs })
+    expect(verified.specVersion).toBe(1)
+    expect(isMatchEvent(verified)).toBe(true)
+  })
+
+  it('still verifies a body with no specVersion, so an older sender is not refused', async () => {
+    const payload = JSON.stringify({ id: 'dlv_1', type: 'match.final', createdAt: 'x', data: matchData })
+    const nowMs = 1789000000000
+    const signature = await signWebhook({ payload, secret: 's', nowMs })
+    const verified = await verifyWebhook({ payload, signature, secret: 's', nowMs })
+    expect(verified.specVersion).toBeUndefined()
+    expect(isMatchEvent(verified)).toBe(true)
   })
 })
