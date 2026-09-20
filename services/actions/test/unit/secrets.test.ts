@@ -1,0 +1,48 @@
+import { describe, expect, it, vi } from 'vitest'
+import { ssmSecrets } from '../../src/secrets.js'
+
+const client = (value: string | undefined, fail?: Error) => {
+  const send = vi.fn(async (_command: { input: unknown }) => {
+    if (fail) throw fail
+    return { Parameter: { Value: value } }
+  })
+  return { client: { send } as never, send }
+}
+
+describe('ssmSecrets', () => {
+  it('splits a parameter on commas and trims each secret', async () => {
+    const { client: c } = client(' new-secret , old-secret ')
+    expect(await ssmSecrets(c).read('/bw/secret')).toEqual(['new-secret', 'old-secret'])
+  })
+
+  it('reads a parameter once inside its cache window and again after it', async () => {
+    let now = 0
+    const { client: c, send } = client('s')
+    const secrets = ssmSecrets(c, { ttlMs: 1_000, now: () => now })
+    await secrets.read('/bw/secret')
+    await secrets.read('/bw/secret')
+    expect(send).toHaveBeenCalledTimes(1)
+    now = 1_001
+    await secrets.read('/bw/secret')
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks with decryption, because the parameter is a SecureString', async () => {
+    const { client: c, send } = client('s')
+    await ssmSecrets(c).read('/bw/secret')
+    expect(send.mock.calls[0]![0].input).toEqual({ Name: '/bw/secret', WithDecryption: true })
+  })
+
+  it('refuses an empty parameter rather than signing with an empty secret', async () => {
+    const { client: c } = client('  ,  ')
+    await expect(ssmSecrets(c).read('/bw/secret')).rejects.toThrow('/bw/secret holds no secret')
+  })
+
+  it('does not cache a failure', async () => {
+    const { client: c, send } = client(undefined, new Error('ParameterNotFound'))
+    const secrets = ssmSecrets(c, { ttlMs: 1_000, now: () => 0 })
+    await expect(secrets.read('/bw/x')).rejects.toThrow()
+    await expect(secrets.read('/bw/x')).rejects.toThrow()
+    expect(send).toHaveBeenCalledTimes(2)
+  })
+})
