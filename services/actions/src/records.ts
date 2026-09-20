@@ -64,6 +64,9 @@ export type NewDelivery = Pick<
   'deliveryId' | 'subject' | 'actionId' | 'event' | 'seq' | 'channel' | 'target' | 'payload'
 >
 
+// what an SQS message carries: enough to read the item, and nothing that could be stale
+export type DeliveryRef = { subject: string; sk: string }
+
 export const DELIVERY_TTL_SECONDS = 30 * 24 * 60 * 60
 
 // A delivery holds the bytes it sends. The table's item limit is 400 KB, and a payload anywhere near this is a
