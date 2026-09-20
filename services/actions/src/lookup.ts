@@ -26,6 +26,16 @@ const DEFAULT_TTL_MS = 60_000
 
 type Entry<T> = { value: T | undefined; readAt: number }
 
+// a rule that cannot be read is skipped, the same as one that no longer compiles; polling goes on for the rest
+function parseInput(value: unknown): unknown {
+  if (typeof value !== 'string') return undefined
+  try {
+    return JSON.parse(value)
+  } catch {
+    return undefined
+  }
+}
+
 export function createLookup(
   doc: DynamoDBDocumentClient,
   tableName: string,
@@ -59,8 +69,12 @@ export function createLookup(
       read(rules, ruleId, async () => {
         const stored = await item(`RULE#${ruleId}`, 'META')
         if (!stored) return undefined
+        const input = (stored.input ?? parseInput(stored.inputJson)) as RuleInput | undefined
+        if (!input) {
+          log('rule skipped', { ruleId, error: 'the rule has no readable body' }, 'warn')
+          return undefined
+        }
         try {
-          const input = stored.input as RuleInput
           const compiled = compileRule(ruleId, input)
           return {
             ruleId,
