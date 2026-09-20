@@ -402,6 +402,15 @@ describe('processTx', () => {
         'x',
       )
 
+    const runDependentThatReverts = async () => {
+      const dependency = await create()
+      await settle(dependency, 'confirmed')
+      const tx = await create({ dependsOn: dependency.txId })
+      chain.estimateFailure = new EstimateError('reverted', 'eth_estimateGas reverted', `0x${'ab'.repeat(8_192)}`)
+      expect(await processTx(deps, tx.txId)).toBe('failed')
+      return { tx: (await store.getTx(tx.txId))! }
+    }
+
     it('waits without a nonce while its dependency is unsettled, then estimates and sends', async () => {
       const dependency = await create({ status: 'mined' })
       const tx = await create({ dependsOn: dependency.txId })
@@ -442,14 +451,18 @@ describe('processTx', () => {
     })
 
     it('stores only the start of a revert payload a node makes huge', async () => {
-      const dependency = await create()
-      await settle(dependency, 'confirmed')
-      const tx = await create({ dependsOn: dependency.txId })
-      chain.estimateFailure = new EstimateError('reverted', 'eth_estimateGas reverted', `0x${'ab'.repeat(8_192)}`)
-      expect(await processTx(deps, tx.txId)).toBe('failed')
-      const error = (await store.getTx(tx.txId))?.error
-      expect(error).toMatch(/^eth_estimateGas reverted once the dependency was confirmed: 0x(ab)+a?\.\.\.$/)
-      expect(error!.length).toBeLessThan(400)
+      const { tx } = await runDependentThatReverts()
+      expect(tx.error).toMatch(/^eth_estimateGas reverted once the dependency was confirmed: 0x(ab)+a?\.\.\.$/)
+      expect(tx.error!.length).toBeLessThan(400)
+    })
+
+    it('stores the revert payload as a field, not only inside the message', async () => {
+      const { tx } = await runDependentThatReverts()
+      expect(tx.status).toBe('failed')
+      expect(tx.error).toContain('eth_estimateGas reverted once the dependency was confirmed')
+      // NotAllowed(uint256) selector and its argument, decodable by the caller
+      expect(tx.revertData).toMatch(/^0x[0-9a-f]+$/)
+      expect(tx.revertData?.length).toBeGreaterThan(10)
     })
 
     it('fails without taking a nonce when its dependency was cancelled', async () => {
