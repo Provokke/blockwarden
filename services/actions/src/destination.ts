@@ -19,7 +19,15 @@ export type Resolved = { url: URL; host: string; address: string; family: 4 | 6;
 export type Resolver = (host: string) => Promise<{ address: string; family: number }[]>
 
 export const MAX_RESPONSE_BYTES = 2048
+// how long the socket may stay silent
 export const DEFAULT_TIMEOUT_MS = 10_000
+// how long the whole attempt may take. The socket timeout only measures silence, so a destination that writes a
+// byte every few seconds can hold the sender for hours; a tenant writes the URL, so a tenant could do that on
+// purpose. The sender Lambda has 30 seconds, and it still has to record the outcome and queue the next attempt,
+// so half of that is the attempt's share. It sits above DEFAULT_TIMEOUT_MS so the silence rule still bites
+// first, and a destination that honestly needs longer is better served by the next attempt: Task 13 gives it
+// eight of them over about an hour.
+export const DEFAULT_DEADLINE_MS = 15_000
 
 const systemResolver: Resolver = (host) => lookup(host, { all: true, verbatim: true })
 
@@ -60,11 +68,20 @@ export function postJson(
   target: Resolved,
   body: string,
   headers: Record<string, string>,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; deadlineMs?: number } = {},
 ): Promise<HttpAnswer> {
   const secure = target.url.protocol === 'https:'
   const transport = secure ? https : http
   return new Promise((resolve, reject) => {
+    let deadline: NodeJS.Timeout | undefined
+    const done = (answer: HttpAnswer) => {
+      clearTimeout(deadline)
+      resolve(answer)
+    }
+    const failed = (err: Error) => {
+      clearTimeout(deadline)
+      reject(err)
+    }
     const request = transport.request(
       {
         host: target.host,
@@ -100,7 +117,7 @@ export function postJson(
           if (read > MAX_RESPONSE_BYTES) response.destroy()
         })
         response.on('close', () =>
-          resolve({
+          done({
             statusCode: response.statusCode ?? 0,
             ...retryAfter(response.headers['retry-after']),
             body: text.slice(0, MAX_RESPONSE_BYTES),
@@ -110,8 +127,14 @@ export function postJson(
       },
     )
     request.on('timeout', () => request.destroy(new Error('the destination did not answer in time')))
-    request.on('error', reject)
+    request.on('error', failed)
     request.end(body)
+    // armed once the request is on its way, and cleared however it settles: the socket timeout above only
+    // measures silence, and a trickle of bytes is not silence
+    deadline = setTimeout(
+      () => request.destroy(new Error('the destination took longer than the deadline')),
+      options.deadlineMs ?? DEFAULT_DEADLINE_MS,
+    )
   })
 }
 
