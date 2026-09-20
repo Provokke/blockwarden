@@ -86,6 +86,21 @@ describe('classifySendError', () => {
 })
 
 describe('describeError', () => {
+  it('shortens a node answer that repeats the raw transaction, so it fits on the item', () => {
+    const raw = `0x${'ab'.repeat(8192)}`
+    const message = describeError(rpcError(`invalid transaction: ${raw}`))
+    expect(message.length).toBeLessThanOrEqual(256)
+    expect(message).toMatch(/^invalid transaction: 0xabab/)
+    expect(message.endsWith('...')).toBe(true)
+    // the same cap on a long chain of causes, which are joined rather than read from the node's answer
+    const chained = new Error('a'.repeat(400), { cause: new Error('b'.repeat(400)) })
+    expect(describeError(chained).length).toBeLessThanOrEqual(256)
+  })
+
+  it('leaves a message that already fits alone', () => {
+    expect(describeError(rpcError('replacement transaction underpriced'))).toBe('replacement transaction underpriced')
+  })
+
   it('never includes the RPC URL, which can carry a provider API key', () => {
     const err = new HttpRequestError({ url: 'http://node.example/abcSECRETKEY', status: 502, details: 'nonce too low' })
     const message = describeError(err)

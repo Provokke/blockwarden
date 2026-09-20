@@ -2,7 +2,9 @@ import { PutItemCommand } from '@aws-sdk/client-dynamodb'
 import { GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { GSI2 } from '@blockwarden/dynamo'
 import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
+import { InvalidInputRpcError, keccak256, RpcRequestError, toHex, type Hex } from 'viem'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { describeError } from '../../src/chain.js'
 import { keys } from '../../src/keys.js'
 import { RelayerStore, TxConflictError } from '../../src/store.js'
 import { CHAIN_ID, queuedTx, signerRecord } from '../helpers/fixtures.js'
@@ -139,6 +141,44 @@ describe('RelayerStore', () => {
       expect(await pendingIds()).toEqual([tx.txId])
       await store.saveTx({ ...mined, status: 'confirmed' }, 'x')
       expect(await pendingIds()).toEqual([])
+    })
+
+    it('saves a transaction at every limit, with the longest refusal a node can give', async () => {
+      // the reviewer's worst case: 8 KB of calldata, 64 attempts, 512 dropped hashes, 4 abandoned attempts, and a
+      // node that answers by echoing the raw transaction back
+      const data = `0x${'ab'.repeat(8_192)}` as Hex
+      const raw = `0x${'cd'.repeat(8_600)}` as Hex
+      const rejected = describeError(
+        new InvalidInputRpcError(
+          new RpcRequestError({ body: {}, url: 'http://node', error: { code: -32000, message: `refused: ${raw}` } }),
+        ),
+      )
+      const attempt = (i: number, bytes: Hex) => ({
+        hash: keccak256(toHex(i)),
+        raw: bytes,
+        maxFeePerGas: '100000000000',
+        maxPriorityFeePerGas: '10000000000',
+        signedAt: NOW,
+        broadcastAt: NOW,
+        acceptedAt: NOW,
+        rejected,
+      })
+      const tx = queuedTx(FROM, {
+        status: 'submitted',
+        nonce: 3,
+        data,
+        attempts: Array.from({ length: 64 }, (_, i) => attempt(i, i < 48 ? '0x' : raw)),
+        abandonedAttempts: Array.from({ length: 4 }, (_, i) => ({ ...attempt(1_000 + i, '0x'), nonce: 2 })),
+        retiredHashes: Array.from({ length: 512 }, (_, i) => keccak256(toHex(2_000 + i))),
+        error: rejected,
+      })
+      expect(await store.createTx(tx, spend(1), NOW)).toEqual({ created: true })
+
+      const saved = await store.saveTx(tx, '2026-09-17T12:00:00.000Z')
+      expect(saved.version).toBe(2)
+      expect((await store.getTx(tx.txId))?.attempts).toHaveLength(64)
+      // DynamoDB refuses an item over 400 KB, and after that the transaction cannot even be marked failed
+      expect(Buffer.byteLength(JSON.stringify(saved))).toBeLessThan(400 * 1024)
     })
 
     it('drops fields that were removed from the record', async () => {
