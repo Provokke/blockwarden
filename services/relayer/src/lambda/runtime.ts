@@ -32,7 +32,7 @@ const API_TIMEOUT_MS = 15_000
 // API: every URL hanging in turn fits in its timeout with 3 seconds spare.
 // Signer: the worst message's calls against every URL have to fit in its share of the function timeout, so that a
 // message started with only the batch margin left still ends with time for DynamoDB and KMS. At the 3 URLs the
-// config allows that is 1,333 ms, above the floor; the floor only binds past the allowed maximum.
+// config allows that is 1,285 ms, above the floor; the floor only binds past the allowed maximum.
 // Sweeper: 20 seconds a call at worst still leaves room for failover on several calls before its hard stop.
 export function chainOptionsFor(kind: FunctionKind, urlCount: number): RelayerChainOptions {
   const clamp = (ms: number, max: number) => Math.max(1_000, Math.min(max, Math.floor(ms)))
