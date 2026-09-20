@@ -216,6 +216,64 @@ importers:
 
   packages/relayer-client: {}
 
+  services/actions:
+    dependencies:
+      '@aws-lambda-powertools/logger':
+        specifier: 2.35.0
+        version: 2.35.0
+      '@aws-lambda-powertools/metrics':
+        specifier: 2.35.0
+        version: 2.35.0
+      '@aws-sdk/client-dynamodb':
+        specifier: 3.1131.0
+        version: 3.1131.0
+      '@aws-sdk/client-lambda':
+        specifier: 3.1131.0
+        version: 3.1131.0
+      '@aws-sdk/client-sesv2':
+        specifier: 3.1131.0
+        version: 3.1131.0
+      '@aws-sdk/client-sqs':
+        specifier: 3.1131.0
+        version: 3.1131.0
+      '@aws-sdk/client-ssm':
+        specifier: 3.1131.0
+        version: 3.1131.0
+      '@aws-sdk/lib-dynamodb':
+        specifier: 3.1131.0
+        version: 3.1131.0(@aws-sdk/client-dynamodb@3.1131.0)
+      '@aws-sdk/util-dynamodb':
+        specifier: 3.996.9
+        version: 3.996.9(@aws-sdk/client-dynamodb@3.1131.0)
+      '@blockwarden/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@blockwarden/dynamo':
+        specifier: workspace:*
+        version: link:../../packages/dynamo
+      '@blockwarden/relayer-client':
+        specifier: workspace:*
+        version: link:../../packages/relayer-client
+      viem:
+        specifier: 2.56.3
+        version: 2.56.3(typescript@7.0.2)(zod@4.6.2)
+      zod:
+        specifier: 4.6.2
+        version: 4.6.2
+    devDependencies:
+      '@types/aws-lambda':
+        specifier: 8.10.163
+        version: 8.10.163
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      testcontainers:
+        specifier: 12.1.0
+        version: 12.1.0
+      tsx:
+        specifier: 4.23.13
+        version: 4.23.13
+
   services/monitor:
     dependencies:
       '@aws-lambda-powertools/logger':
@@ -344,6 +402,14 @@ packages:
 
   '@aws-sdk/client-kms@3.1131.0':
     resolution: {integrity: sha512-IQ5pG+aY5bM+1tyduaVa0m2AmPa/G9IZKbtAgtBP0pcM6wRkOlM3QyQEmi2UOoGd6L+ma738yOa6MmH6V3OLxw==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-lambda@3.1131.0':
+    resolution: {integrity: sha512-EJ9FMnKzig4L+EBBqhu+FE+9PbebeimayKRRINN++cFbzDBn6xJzYKLW10hrQBTB22Hm30mFQesct8rE0Z/EmQ==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-sesv2@3.1131.0':
+    resolution: {integrity: sha512-QSAsbzEoF5fEwXWM5AfcuFQsN8C0lDZkiIHHmKVmTWR+tCZDpOh9qtmW9heKVj2KQ6f4WwyM1ZLvUZTR0P3ujQ==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-sqs@3.1131.0':
@@ -1884,6 +1950,29 @@ snapshots:
     dependencies:
       '@aws-sdk/core': 3.978.0
       '@aws-sdk/credential-provider-node': 3.972.83
+      '@aws-sdk/types': 3.974.5
+      '@smithy/core': 3.34.1
+      '@smithy/fetch-http-handler': 5.8.0
+      '@smithy/node-http-handler': 4.12.1
+      '@smithy/types': 4.18.0
+      tslib: 2.8.1
+
+  '@aws-sdk/client-lambda@3.1131.0':
+    dependencies:
+      '@aws-sdk/core': 3.978.0
+      '@aws-sdk/credential-provider-node': 3.972.83
+      '@aws-sdk/types': 3.974.5
+      '@smithy/core': 3.34.1
+      '@smithy/fetch-http-handler': 5.8.0
+      '@smithy/node-http-handler': 4.12.1
+      '@smithy/types': 4.18.0
+      tslib: 2.8.1
+
+  '@aws-sdk/client-sesv2@3.1131.0':
+    dependencies:
+      '@aws-sdk/core': 3.978.0
+      '@aws-sdk/credential-provider-node': 3.972.83
+      '@aws-sdk/signature-v4-multi-region': 3.996.46
       '@aws-sdk/types': 3.974.5
       '@smithy/core': 3.34.1
       '@smithy/fetch-http-handler': 5.8.0
