@@ -21,7 +21,7 @@
     "@blockwarden/dynamo": "workspace:*",
     "@blockwarden/kms-signer": "workspace:*",
     "@blockwarden/relayer-client": "workspace:*",
-    "viem": "2.56.3",
+    "viem": "2.56.6",
     "zod": "4.6.2"
   },
   "devDependencies": {

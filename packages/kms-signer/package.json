@@ -46,6 +46,6 @@
     "viem": "^2.56.3"
   },
   "devDependencies": {
-    "viem": "2.56.3"
+    "viem": "2.56.6"
   }
 }
