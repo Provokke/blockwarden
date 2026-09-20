@@ -74,5 +74,10 @@ export const MAX_PAYLOAD_BYTES = 64 * 1024
 export const MAX_ERROR_CHARACTERS = 256
 
 export function truncate(text: string, max = MAX_ERROR_CHARACTERS): string {
-  return text.length <= max ? text : `${text.slice(0, max)}...`
+  if (text.length <= max) return text
+  let end = max
+  // slice() counts UTF-16 code units; back off one so we don't split a surrogate pair and leave a lone
+  // surrogate, which DynamoDB stores as a replacement character
+  if (end > 0 && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff) end -= 1
+  return `${text.slice(0, end)}...`
 }

@@ -28,6 +28,13 @@ describe('keys', () => {
     expect(keys.deliveriesByStatus('dead')).toBe('DELIVERY#DEAD')
     expect(keys.deliveriesByStatus('delivered')).toBe('DELIVERY#DELIVERED')
   })
+
+  it('refuses a seq that would not fit or sort in four digits', () => {
+    const subject = keys.txSubject('t1')
+    expect(() => keys.delivery(subject, 'a_00112233aabbccdd', 'tx.mined', 10000)).toThrow(/seq/)
+    expect(() => keys.delivery(subject, 'a_00112233aabbccdd', 'tx.mined', -1)).toThrow(/seq/)
+    expect(() => keys.delivery(subject, 'a_00112233aabbccdd', 'tx.mined', 1.5)).toThrow(/seq/)
+  })
 })
 
 describe('truncate', () => {
@@ -43,6 +50,14 @@ describe('truncate', () => {
 
   it('takes its own limit', () => {
     expect(truncate('abcdef', 3)).toBe('abc...')
+  })
+
+  it('cuts a whole code point instead of splitting a surrogate pair', () => {
+    // the emoji is two UTF-16 code units; a plain slice(0, 5) would land on the high surrogate
+    const text = `aaaa${String.fromCodePoint(0x1f600)}bbbb`
+    const cut = truncate(text, 5)
+    expect(cut).toBe('aaaa...')
+    expect(cut).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
   })
 })
 
