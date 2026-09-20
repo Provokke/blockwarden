@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { actionId, canonicalJson, deliveryId } from '../../src/ids.js'
+import { keys } from '../../src/keys.js'
 
 describe('canonicalJson', () => {
   it('orders object keys so a reordered action hashes the same', () => {
@@ -86,5 +87,14 @@ describe('deliveryId', () => {
 
   it('cannot be confused between a subject ending in # and a sort key starting with one', () => {
     expect(deliveryId('TX#a', 'b#c')).not.toBe(deliveryId('TX#a\nb', 'c'))
+  })
+
+  // an outbound request id is the caller's own string, so a subject can carry a newline; what keeps the pair
+  // unambiguous is that the sort key's shape has nowhere for one to get in, so the last newline is the join
+  it('stays unambiguous because a sort key can never carry the separator', () => {
+    const sk = keys.delivery('OUTBOUND#a\nb', 'a_0123456789abcdef', 'outbound', 0).SK
+    expect(sk).not.toContain('\n')
+    // and that is the whole of the argument: a sort key with one in it would collide with a subject ending in it
+    expect(deliveryId('A\nB', sk)).toBe(deliveryId('A', `B\n${sk}`))
   })
 })
