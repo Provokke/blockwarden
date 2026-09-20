@@ -167,6 +167,12 @@ describe('sendWebhook', () => {
     expect(headers[SIGNATURE_HEADER]).toBeUndefined()
   })
 
+  it('sends the event id the request chose, when it has one', async () => {
+    const d = deps({ statusCode: 200, body: '' })
+    await sendWebhook(d.deps, delivery({ eventId: 'evt_123' }))
+    expect(d.post.mock.calls[0]![2][DELIVERY_HEADER]).toBe('evt_123')
+  })
+
   it('calls a 2xx delivered and a 3xx permanent, because a redirect is never followed', async () => {
     expect((await sendWebhook(deps({ statusCode: 201, body: '' }).deps, delivery())).kind).toBe('delivered')
     const redirect = await sendWebhook(deps({ statusCode: 302, body: '' }).deps, delivery())
