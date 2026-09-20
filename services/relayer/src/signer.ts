@@ -1,5 +1,5 @@
 import { clampFees } from '@blockwarden/core'
-import type { LocalAccount } from 'viem'
+import type { Hex, LocalAccount } from 'viem'
 import { DEADLINE_MARGIN_MS } from './batch.js'
 import { describeError, EstimateError, short, type RelayerChain } from './chain.js'
 import { feeCap } from './policy.js'
@@ -60,13 +60,20 @@ export async function processTx(deps: SignerDeps, txId: string, remainingMs?: ()
     const state = dependencyState(await store.getTx(tx.dependsOn))
     // the sweeper requeues this transaction once its dependency settles
     if (state === 'waiting') return 'waiting'
-    const reason =
+    const failure: DependencyFailure | undefined =
       state === 'unsuccessful'
-        ? 'the transaction this one depends on did not succeed'
+        ? { reason: 'the transaction this one depends on did not succeed' }
         : await revertsNow(deps, chain, account.address, tx)
-    if (reason) {
+    if (failure) {
       // no nonce was taken, so no filler is needed
-      await store.saveTx({ ...withStatus(tx, 'failed', stamp()), error: reason }, stamp())
+      await store.saveTx(
+        {
+          ...withStatus(tx, 'failed', stamp()),
+          error: failure.reason,
+          ...(failure.revertData === undefined ? {} : { revertData: failure.revertData }),
+        },
+        stamp(),
+      )
       return 'failed'
     }
   }
@@ -151,13 +158,15 @@ export async function processTx(deps: SignerDeps, txId: string, remainingMs?: ()
   }
 }
 
+type DependencyFailure = { reason: string; revertData?: Hex }
+
 // the estimate the API skipped for a dependent transaction, run once its dependency is confirmed
 async function revertsNow(
   deps: SignerDeps,
   chain: RelayerChain,
   from: TxRecord['from'],
   tx: TxRecord,
-): Promise<string | undefined> {
+): Promise<DependencyFailure | undefined> {
   try {
     const estimate = await chain.estimateGas({ from, to: tx.to, data: tx.data, value: BigInt(tx.value) })
     // the caller fixed gasLimit before this estimate existed; still send it, just flag that it may run short
@@ -172,12 +181,16 @@ async function revertsNow(
   } catch (err) {
     if (!(err instanceof EstimateError)) throw err
     if (err.kind === 'reverted') {
-      // the node chooses how long this is, and it goes on the item; the API still answers with the whole of it
-      return `eth_estimateGas reverted once the dependency was confirmed: ${short(err.revertData ?? '0x')}`
+      // the message keeps a short copy for an operator; the field keeps the whole payload for a caller to decode
+      const revertData = err.revertData ?? '0x'
+      return {
+        reason: `eth_estimateGas reverted once the dependency was confirmed: ${short(revertData)}`,
+        revertData,
+      }
     }
     // a definitive refusal that isn't a revert (insufficient balance, gas above the block limit, ...): retrying
     // the estimate will not clear it either, so this is the same dead end as a revert
-    if (err.kind === 'failed') return describeError(err)
+    if (err.kind === 'failed') return { reason: describeError(err) }
     throw err
   }
 }

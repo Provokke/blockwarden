@@ -79,6 +79,9 @@ export type TxRecord = {
   requestHash?: string
   enqueuedAt: number
   enqueues: number
+  // how many status changes were dropped off the front of history; a delivery's seq counts from here, so the
+  // second tx.mined after a reorg is never the same delivery as the first
+  historyBase?: number
   history: { status: TxStatus; at: string }[]
   createdAt: string
   updatedAt: string
@@ -139,7 +142,25 @@ export function dependencyState(dependency: TxRecord | undefined): DependencySta
   return 'waiting'
 }
 
+// A reorg can flip a transaction between mined and submitted any number of times. 64 entries is more history
+// than an operator reads and keeps the array from growing without bound.
+export const MAX_HISTORY = 64
+
+export function historyCount(tx: Pick<TxRecord, 'history' | 'historyBase'>): number {
+  return (tx.historyBase ?? 0) + tx.history.length
+}
+
+export function historyEntries(
+  tx: Pick<TxRecord, 'history' | 'historyBase'>,
+): { seq: number; status: TxStatus; at: string }[] {
+  const base = tx.historyBase ?? 0
+  return tx.history.map((entry, i) => ({ seq: base + i, ...entry }))
+}
+
 export function withStatus(tx: TxRecord, status: TxRecord['status'], at: string): TxRecord {
   if (tx.status === status) return tx
-  return { ...tx, status, history: [...tx.history, { status, at }] }
+  const history = [...tx.history, { status, at }]
+  if (history.length <= MAX_HISTORY) return { ...tx, status, history }
+  const dropped = history.length - MAX_HISTORY
+  return { ...tx, status, history: history.slice(dropped), historyBase: (tx.historyBase ?? 0) + dropped }
 }
