@@ -1,4 +1,4 @@
-import type { DeliveryStatus } from './records.js'
+import type { DeliveryRecord, DeliveryRef, DeliveryStatus } from './records.js'
 
 // four digits order the history entries of a transaction as numbers. MAX_HISTORY (relayer/src/records.ts) caps
 // the stored array at 64, but historyBase keeps counting every entry ever dropped off the front, so seq is the
@@ -53,4 +53,13 @@ export const keys = {
     return Number.isNaN(digit) ? 0 : digit % DUE_SHARDS
   },
   deliveriesByStatus: (status: DeliveryStatus) => `DELIVERY#${status.toUpperCase()}`,
+}
+
+// The table key a delivery lives under, as a ref. The dispatcher, the reaper, the sender and Task 14's scripts
+// all have to name a delivery to a queue; building the sort key in each of them is how they drift apart.
+export function refOf(delivery: Pick<DeliveryRecord, 'subject' | 'actionId' | 'event' | 'seq'>): DeliveryRef {
+  return {
+    subject: delivery.subject,
+    sk: keys.delivery(delivery.subject, delivery.actionId, delivery.event, delivery.seq).SK,
+  }
 }
