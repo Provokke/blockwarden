@@ -3,23 +3,68 @@ import { SendMessageCommand } from '@aws-sdk/client-sqs'
 import { truncate } from '../records.js'
 import type { Sender, SendOutcome } from './types.js'
 
-// AWS answers these the same way however often it is asked
+// AWS answers these the same way however often it is asked. Sourced against the installed SDKs rather than
+// guessed AWS vocabulary:
+//   - AccessDeniedException, UnrecognizedClientException: not modeled by either service - they come from the
+//     shared authentication/authorization front door every AWS API sits behind (a bad signature or a denied
+//     IAM policy), so no @aws-sdk/client-* package exports a class for them
+//   - ResourceNotFoundException, QueueDoesNotExist, InvalidMessageContents, InvalidAddress, InvalidSecurity,
+//     UnsupportedOperation, and the Kms* family: @aws-sdk/client-sqs@3.1131.0, dist-types/models/errors.d.ts
+//   - InvalidParameterValueException, RequestTooLargeException, and the KMS* family: @aws-sdk/client-lambda@
+//     3.1131.0, dist-types/models/errors.d.ts (note the different capitalisation of "KMS" from SQS's "Kms")
 const PERMANENT = new Set([
   'AccessDeniedException',
-  'AccessDenied',
+  'UnrecognizedClientException',
   'ResourceNotFoundException',
   'QueueDoesNotExist',
-  'InvalidParameterValueException',
-  'InvalidParameterValue',
-  'RequestEntityTooLargeException',
   'InvalidMessageContents',
-  'UnrecognizedClientException',
+  'InvalidAddress',
+  'InvalidSecurity',
+  'UnsupportedOperation',
+  'InvalidParameterValueException',
+  'RequestTooLargeException',
+  'KmsAccessDenied',
+  'KmsDisabled',
+  'KmsInvalidKeyUsage',
+  'KmsInvalidState',
+  'KmsNotFound',
+  'KmsOptInRequired',
+  'KMSAccessDeniedException',
+  'KMSDisabledException',
+  'KMSInvalidStateException',
+  'KMSNotFoundException',
 ])
 
+// the host each partition's queues answer on; an ARN naming any other partition is refused rather than
+// guessed at
+const PARTITION_HOSTS: Record<string, string> = {
+  aws: 'amazonaws.com',
+  'aws-us-gov': 'amazonaws.com',
+  'aws-cn': 'amazonaws.com.cn',
+}
+
+// checked by both queueUrlFromArn and sendLambda: an ARN naming a service, region or partition other than
+// the one this function is deployed for is a fault in the allowlist entry, not something a retry fixes
+function checkArn(arn: string, service: string, region: string): { partition: string; accountId: string } {
+  const [prefix, partition, arnService, arnRegion, accountId] = arn.split(':')
+  if (prefix !== 'arn' || arnService !== service || !accountId) {
+    throw new Error(`${arn} is not a recognisable ${service} ARN`)
+  }
+  if (!partition || !PARTITION_HOSTS[partition]) {
+    throw new Error(`${arn} names a partition this sender does not recognise`)
+  }
+  if (arnRegion !== region) throw new Error(`${arn} is in another region than this function`)
+  return { partition, accountId }
+}
+
 export function queueUrlFromArn(arn: string, region: string): string {
-  const [, , , arnRegion, accountId, name] = arn.split(':')
-  if (arnRegion !== region) throw new Error(`queue ${arn} is in another region than this function`)
-  return `https://sqs.${arnRegion}.amazonaws.com/${accountId}/${name}`
+  const parts = arn.split(':')
+  const { partition, accountId } = checkArn(arn, 'sqs', region)
+  // a queue name never contains a colon, so anything past the account id must be exactly one segment - an
+  // extra segment here would otherwise silently address a different queue
+  const name = parts[5]
+  if (parts.length !== 6 || !name) throw new Error(`${arn} is not a queue ARN`)
+  return `https://sqs.${parts[3]}.${PARTITION_HOSTS[partition]}/${accountId}/${name}`
 }
 
 function allowed(deps: { allowedTargetArns?: readonly string[] }, arn: string): boolean {
@@ -42,10 +87,19 @@ export const sendSqs: Sender = async (deps, delivery) => {
   const { queueArn } = delivery.target
   if (!deps.sqs || !deps.region) return { kind: 'permanent', error: 'no SQS client is configured' }
   if (!allowed(deps, queueArn)) return refuse(queueArn)
+
+  let queueUrl: string
+  try {
+    queueUrl = queueUrlFromArn(queueArn, deps.region)
+  } catch (err) {
+    // a malformed or cross-region allowlist entry is a configuration fault, not a delivery AWS ever attempted
+    return { kind: 'permanent', error: truncate((err as Error).message) }
+  }
+
   try {
     await deps.sqs.send(
       new SendMessageCommand({
-        QueueUrl: queueUrlFromArn(queueArn, deps.region),
+        QueueUrl: queueUrl,
         MessageBody: delivery.payload,
         MessageAttributes: {
           deliveryId: { DataType: 'String', StringValue: delivery.deliveryId },
@@ -66,8 +120,17 @@ export const sendSqs: Sender = async (deps, delivery) => {
 export const sendLambda: Sender = async (deps, delivery) => {
   if (delivery.target.channel !== 'lambda') throw new Error(`delivery ${delivery.deliveryId} is not a Lambda delivery`)
   const { functionArn } = delivery.target
-  if (!deps.lambda) return { kind: 'permanent', error: 'no Lambda client is configured' }
+  if (!deps.lambda || !deps.region) return { kind: 'permanent', error: 'no Lambda client is configured' }
   if (!allowed(deps, functionArn)) return refuse(functionArn)
+
+  try {
+    // the mirror of queueUrlFromArn's check: sendSqs builds a URL from the region and partition, sendLambda
+    // invokes the ARN directly, but a wrong region or partition is the same configuration fault either way
+    checkArn(functionArn, 'lambda', deps.region)
+  } catch (err) {
+    return { kind: 'permanent', error: truncate((err as Error).message) }
+  }
+
   try {
     const answer = await deps.lambda.send(
       new InvokeCommand({
