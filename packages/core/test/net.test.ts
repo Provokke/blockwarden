@@ -28,6 +28,14 @@ describe('classifyAddress', () => {
     expect(refused('240.0.0.1')).toContain('240.0.0.0/4')
   })
 
+  it('masks a range that does not end on a byte, at both of its edges', () => {
+    expect(refused('100.127.255.255')).toContain('100.64.0.0/10')
+    expect(classifyAddress('100.128.0.0')).toEqual({ allowed: true })
+    expect(refused('172.31.255.255')).toContain('172.16.0.0/12')
+    expect(refused('198.19.255.255')).toContain('198.18.0.0/15')
+    expect(classifyAddress('198.20.0.0')).toEqual({ allowed: true })
+  })
+
   it('does not refuse an address just outside a range', () => {
     for (const address of ['100.128.0.1', '169.253.0.1', '172.15.0.1', '172.32.0.1', '198.17.0.1', '198.20.0.1']) {
       expect(classifyAddress(address), address).toEqual({ allowed: true })

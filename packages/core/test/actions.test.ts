@@ -39,6 +39,24 @@ describe('webhook actions', () => {
     expect(reason({ type: 'webhook', url: 'https://e.com/h', secretParameter: 'no-slash' })).toContain('/')
   })
 
+  it('holds the secret parameter to what SSM accepts as a name', () => {
+    const url = 'https://e.com/h'
+    for (const secretParameter of ['/s', '/blockwarden/webhook-secret', `/${Array(15).fill('a').join('/')}`]) {
+      expect(parse({ type: 'webhook', url, secretParameter }).success, secretParameter).toBe(true)
+    }
+    // a bare slash, an empty level, a trailing slash, a space, a sixteenth level and an over-long name
+    for (const secretParameter of [
+      '/',
+      '/a//b',
+      '/a/b/',
+      '/a b',
+      `/${Array(16).fill('a').join('/')}`,
+      `/${'a'.repeat(1011)}`,
+    ]) {
+      expect(reason({ type: 'webhook', url, secretParameter }), secretParameter).toBeTruthy()
+    }
+  })
+
   it('refuses an unknown key, so a misspelt option is not silently ignored', () => {
     expect(reason({ type: 'webhook', url: 'https://e.com/h', secrets: 'x' })).toContain('Unrecognized key')
   })
@@ -100,6 +118,25 @@ describe('same-account actions', () => {
     expect(
       parse({ type: 'lambda', functionArn: 'arn:aws:lambda:us-east-1:111122223333:function:ingest' }).success,
     ).toBe(true)
+  })
+
+  it('takes a qualified function ARN, which is a legitimate invoke target', () => {
+    const fn = 'arn:aws:lambda:us-east-1:111122223333:function:ingest'
+    for (const arn of [`${fn}:PROD`, `${fn}:1`, `${fn}:$LATEST`]) {
+      expect(parse({ type: 'lambda', functionArn: arn }).success, arn).toBe(true)
+    }
+  })
+
+  it('holds a function name to the 64 characters Lambda really allows', () => {
+    const arn = (name: string) => `arn:aws:lambda:us-east-1:111122223333:function:${name}`
+    expect(parse({ type: 'lambda', functionArn: arn('n'.repeat(64)) }).success).toBe(true)
+    expect(reason({ type: 'lambda', functionArn: arn('n'.repeat(65)) })).toContain('Lambda function ARN')
+  })
+
+  it('refuses a qualifier that is not an alias or a version', () => {
+    expect(
+      reason({ type: 'lambda', functionArn: 'arn:aws:lambda:us-east-1:111122223333:function:ingest:a/b' }),
+    ).toContain('Lambda function ARN')
   })
 
   it('refuses an ARN of the wrong service', () => {

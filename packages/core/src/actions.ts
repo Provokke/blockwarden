@@ -6,7 +6,11 @@ const hex = z.string().regex(/^0x([0-9a-fA-F]{2})*$/, 'expected 0x followed by w
 const decimal = z.string().regex(/^(0|[1-9][0-9]*)$/, 'expected a decimal string')
 // RFC 7230 token, which is what a header name is
 const headerName = z.string().regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a header name')
-const parameterName = z.string().startsWith('/', 'expected an SSM parameter name starting with /').max(1011)
+// SSM: a hierarchy of at most fifteen non-empty levels, each of a-zA-Z0-9_.-, and at most 1011 characters
+const parameterName = z
+  .string()
+  .max(1011)
+  .regex(/^(\/[A-Za-z0-9_.-]+){1,15}$/, 'expected an SSM parameter name starting with / and at most 15 levels deep')
 
 const destination = z.string().superRefine((raw, ctx) => {
   const checked = checkDestinationUrl(raw)
@@ -53,9 +57,15 @@ export const sqsActionSchema = z.strictObject({
 
 export const lambdaActionSchema = z.strictObject({
   type: z.literal('lambda'),
-  functionArn: z.string().regex(/^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9_-]{1,140}$/, {
-    message: 'expected a Lambda function ARN',
-  }),
+  // a function name is at most 64 characters, and the ARN may carry an alias or a version to invoke
+  functionArn: z
+    .string()
+    .regex(
+      /^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9_-]{1,64}(:(\$LATEST|[A-Za-z0-9_-]{1,128}))?$/,
+      {
+        message: 'expected a Lambda function ARN',
+      },
+    ),
 })
 
 export const actionSchema = z.discriminatedUnion('type', [
