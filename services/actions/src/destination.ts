@@ -1,7 +1,8 @@
 import { lookup } from 'node:dns/promises'
 import http from 'node:http'
 import https from 'node:https'
-import { isIP } from 'node:net'
+import { isIP, type LookupFunction } from 'node:net'
+import { StringDecoder } from 'node:string_decoder'
 import { checkDestinationUrl, classifyAddress } from '@blockwarden/core'
 
 export class DestinationError extends Error {
@@ -72,8 +73,20 @@ export function postJson(
 ): Promise<HttpAnswer> {
   const secure = target.url.protocol === 'https:'
   const transport = secure ? https : http
+  // Node calls this instead of DNS, so the connection goes to the address the guard judged. A second resolution
+  // — the rebinding window — never happens. Node 24 calls it with { all: true }.
+  const pinned: LookupFunction = (_host, lookupOptions, cb) =>
+    lookupOptions && lookupOptions.all
+      ? cb(null, [{ address: target.address, family: target.family }])
+      : cb(null, target.address, target.family)
   return new Promise((resolve, reject) => {
     let deadline: NodeJS.Timeout | undefined
+    // set when a timer ends the attempt, so the half-read response does not get to explain it instead
+    let givenUp = false
+    const giveUp = (err: Error) => {
+      givenUp = true
+      request.destroy(err)
+    }
     const done = (answer: HttpAnswer) => {
       clearTimeout(deadline)
       resolve(answer)
@@ -92,12 +105,7 @@ export function postJson(
         agent: false,
         // the certificate is checked against the name, not the pinned address
         ...(secure ? { servername: target.host } : {}),
-        // Node calls this instead of DNS, so the connection goes to the address the guard judged. A second
-        // resolution — the rebinding window — never happens. Node 24 calls it with { all: true }.
-        lookup: ((_host: string, opts: { all?: boolean }, cb: (...args: unknown[]) => void) =>
-          opts && opts.all
-            ? cb(null, [{ address: target.address, family: target.family }])
-            : cb(null, target.address, target.family)) as unknown as typeof import('node:dns').lookup,
+        lookup: pinned,
         // the computed headers come last, and Host is named rather than left to Node, so a caller-supplied
         // header cannot displace any of them
         headers: {
@@ -112,30 +120,48 @@ export function postJson(
       (response) => {
         // a redirect is never followed: its status is the answer
         let read = 0
-        let text = ''
+        let capped = false
+        let kept = 0
+        const chunks: Buffer[] = []
         response.on('data', (chunk: Buffer) => {
           read += chunk.length
-          if (text.length < MAX_RESPONSE_BYTES) text += chunk.toString('utf8')
+          // bytes, not characters: two-byte characters would otherwise buy twice the cap
+          if (kept < MAX_RESPONSE_BYTES) {
+            const slice = chunk.subarray(0, MAX_RESPONSE_BYTES - kept)
+            chunks.push(slice)
+            kept += slice.length
+          }
           // the first chunk can already be 64 KB, so this caps what is kept, not what arrives
-          if (read > MAX_RESPONSE_BYTES) response.destroy()
+          if (read > MAX_RESPONSE_BYTES) {
+            capped = true
+            response.destroy()
+          }
         })
-        response.on('close', () =>
+        response.on('close', () => {
+          // the request error carries the reason a timer ended this
+          if (givenUp) return
+          // a body that stops early is not an answer: reporting it delivered would record a success that never
+          // happened. Stopping it ourselves at the cap is not the destination's fault, so that still counts.
+          if (!capped && !response.complete) {
+            return failed(new Error('the destination closed the connection before the answer was complete'))
+          }
           done({
             statusCode: response.statusCode ?? 0,
             ...retryAfter(response.headers['retry-after']),
-            body: text.slice(0, MAX_RESPONSE_BYTES),
+            // the decoder holds back a character split across chunks, and drops one the cap cut in half
+            body: new StringDecoder('utf8').write(Buffer.concat(chunks)),
             ...(response.socket.remoteAddress ? { remoteAddress: response.socket.remoteAddress } : {}),
-          }),
-        )
+          })
+        })
       },
     )
-    request.on('timeout', () => request.destroy(new Error('the destination did not answer in time')))
+    request.on('timeout', () => giveUp(new Error('the destination did not answer in time')))
     request.on('error', failed)
     request.end(body)
     // armed once the request is on its way, and cleared however it settles: the socket timeout above only
     // measures silence, and a trickle of bytes is not silence
     deadline = setTimeout(
-      () => request.destroy(new Error('the destination took longer than the deadline')),
+      () => giveUp(new Error('the destination took longer than the deadline')),
       options.deadlineMs ?? DEFAULT_DEADLINE_MS,
     )
   })
