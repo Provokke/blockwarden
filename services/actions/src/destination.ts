@@ -98,8 +98,11 @@ export function postJson(
           opts && opts.all
             ? cb(null, [{ address: target.address, family: target.family }])
             : cb(null, target.address, target.family)) as unknown as typeof import('node:dns').lookup,
+        // the computed headers come last, and Host is named rather than left to Node, so a caller-supplied
+        // header cannot displace any of them
         headers: {
           ...headers,
+          host: hostHeader(target, secure),
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(body),
           'user-agent': 'Blockwarden/1',
@@ -136,6 +139,13 @@ export function postJson(
       options.deadlineMs ?? DEFAULT_DEADLINE_MS,
     )
   })
+}
+
+// what Node would have written itself: the name, in brackets if it is an IPv6 literal, and the port unless it is
+// the default for the scheme
+function hostHeader(target: Resolved, secure: boolean): string {
+  const name = isIP(target.host) === 6 ? `[${target.host}]` : target.host
+  return target.port === (secure ? 443 : 80) ? name : `${name}:${target.port}`
 }
 
 function retryAfter(header: string | string[] | undefined): { retryAfterSeconds?: number } {

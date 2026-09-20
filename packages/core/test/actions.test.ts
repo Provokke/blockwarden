@@ -35,6 +35,30 @@ describe('webhook actions', () => {
     expect(reason({ type: 'webhook', url: 'https://e.com/h', signatureHeader: '' })).toContain('header name')
   })
 
+  it('refuses a header name the request computes for itself, or that frames the message', () => {
+    const url = 'https://e.com/h'
+    for (const name of [
+      'host',
+      'Host',
+      'content-length',
+      'content-type',
+      'user-agent',
+      'connection',
+      'keep-alive',
+      'proxy-authorization',
+      'proxy-connection',
+      'te',
+      'trailer',
+      'transfer-encoding',
+      'upgrade',
+      'expect',
+    ]) {
+      expect(reason({ type: 'webhook', url, signatureHeader: name }), name).toContain('reserved')
+      expect(reason({ type: 'webhook', url, deliveryHeader: name }), name).toContain('reserved')
+    }
+    expect(parse({ type: 'webhook', url, signatureHeader: 'X-Hostname' }).success).toBe(true)
+  })
+
   it('refuses a secret parameter that is not an SSM parameter name', () => {
     expect(reason({ type: 'webhook', url: 'https://e.com/h', secretParameter: 'no-slash' })).toContain('/')
   })

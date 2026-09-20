@@ -3,7 +3,8 @@ import { isIP } from 'node:net'
 export type AddressVerdict = { allowed: true } | { allowed: false; reason: string }
 
 // RFC 1918, loopback, link-local (the instance metadata endpoint lives at 169.254.169.254), carrier-grade NAT,
-// IETF protocol assignments, benchmarking, multicast and the reserved space above it
+// IETF protocol assignments, documentation, the 6to4 relay anycast prefix, benchmarking, multicast and the
+// reserved space above it
 export const PRIVATE_V4_RANGES = [
   ['0.0.0.0', 8],
   ['10.0.0.0', 8],
@@ -13,6 +14,7 @@ export const PRIVATE_V4_RANGES = [
   ['172.16.0.0', 12],
   ['192.0.0.0', 24],
   ['192.0.2.0', 24],
+  ['192.88.99.0', 24],
   ['192.168.0.0', 16],
   ['198.18.0.0', 15],
   ['198.51.100.0', 24],
@@ -102,6 +104,8 @@ export function checkDestinationUrl(raw: string): { ok: true; url: URL } | { ok:
   if (url.username !== '' || url.password !== '') {
     return { ok: false, reason: 'the URL must not carry a username or a password' }
   }
+  // a client turns port 0 back into 443 without saying so, so the URL would not name the port it reaches
+  if (url.port === '0') return { ok: false, reason: 'the URL must not use port 0' }
   // URL normalises 0x7f.1, 127.1 and 2130706433 to 127.0.0.1, so one check covers every spelling
   const host = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname
   if (isIP(host) !== 0) {

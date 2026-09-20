@@ -71,6 +71,22 @@ describe('postJson', () => {
     expect(last.headers['user-agent']).toBe('Blockwarden/1')
   })
 
+  it('will not let a caller-named header displace the ones it computes', async () => {
+    const answer = await postJson(local('/hook'), '{"a":1}', {
+      host: 'evil.example.com',
+      'Content-Type': 'text/plain',
+      'content-length': '9999',
+      'User-Agent': 'curl/8',
+    })
+    expect(answer.statusCode).toBe(204)
+    const last = seen.at(-1)!
+    expect(last.headers.host).toBe(`127.0.0.1:${port}`)
+    expect(last.headers['content-type']).toBe('application/json')
+    expect(last.headers['content-length']).toBe('7')
+    expect(last.headers['user-agent']).toBe('Blockwarden/1')
+    expect(last.body).toBe('{"a":1}')
+  })
+
   it('does not follow a redirect', async () => {
     const answer = await postJson(local('/redirect'), '{}', {})
     expect(answer.statusCode).toBe(302)
