@@ -44,9 +44,6 @@ export type SenderPipelineDeps = SenderDeps & PipelineExtras
 // pipeline from real infrastructure can never set `resolve` or `post` and bypass the destination guard
 export type ProductionSenderPipelineDeps = ProductionSenderDeps & PipelineExtras
 
-// the reaper names a delivery to the dead-letter queue the same way, so the two share one builder
-export { refOf }
-
 // The design's one delivery-failure metric. It shares the reaper's name (`dispatcher.ts`'s sweepDue emits it
 // too) so this adds no new billed custom metric: CloudWatch merges data points under the same namespace, name
 // and dimension set regardless of which Lambda published them. No per-channel dimension, for the reason
