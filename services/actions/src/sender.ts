@@ -44,7 +44,13 @@ export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef
     // markDead lands before the copy does, so a transient SQS error leaves a dead delivery the alarm cannot see;
     // the redelivery arrives here and copies it. Nothing consumes the dead-letter queue - it is watched for its
     // depth - so a second pointer for a copy that did land costs nothing, and a missing one costs the alarm.
-    if (delivery.status === 'dead') await deps.deadLetters.send(ref, 0)
+    if (delivery.status === 'dead') {
+      await deps.deadLetters.send(ref, 0)
+      // the first pass may have died before it logged anything (that's the whole reason this copy is needed),
+      // so this line is the only trace of it; Task 14's metrics need to count this branch as dead too, not only
+      // the pass that called markDead
+      deps.log('re-sent a dead-letter copy for a delivery already marked dead', { deliveryId: delivery.deliveryId })
+    }
     return 'skipped'
   }
 
@@ -149,8 +155,9 @@ async function recordOutcome(
 export async function processMessages(
   deps: SenderPipelineDeps,
   records: SQSRecord[],
-  // remaining time on the Lambda invocation; omitted in tests that don't care about the deadline
-  remainingMs?: () => number,
+  // remaining time on the Lambda invocation; required so a caller that forgets it fails to compile rather than
+  // silently running with no deadline margin at all
+  remainingMs: () => number,
 ): Promise<SQSBatchResponse> {
   const batchItemFailures: SQSBatchResponse['batchItemFailures'] = []
   for (const record of records) {
@@ -170,7 +177,7 @@ export async function processMessages(
     }
     // checked after the parse: an unparseable body is poison however much time is left, and handing it back
     // would only send it round the queue again
-    if (remainingMs && remainingMs() < DEADLINE_MARGIN_MS) {
+    if (remainingMs() < DEADLINE_MARGIN_MS) {
       deps.log('message not attempted; too little time remains before the Lambda timeout', {
         messageId: record.messageId,
       })

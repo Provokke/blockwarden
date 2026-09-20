@@ -143,6 +143,11 @@ describe('processDelivery', () => {
     expect(await processDelivery(d.deps, ref)).toBe('skipped')
     expect(d.deadLetters.send).toHaveBeenCalledTimes(2)
     expect(d.deadLetters.send).toHaveBeenLastCalledWith(ref, 0)
+    // the first pass died inside recordOutcome before it logged anything, so this line is the only trace
+    // that the delivery is dead - without it, nothing ever classifies this invocation as having seen a dead one
+    expect(d.deps.log).toHaveBeenCalledWith('re-sent a dead-letter copy for a delivery already marked dead', {
+      deliveryId: 'dlv_1',
+    })
   })
 
   it('treats a sender that threw as a retry rather than losing the delivery', async () => {
@@ -218,6 +223,16 @@ describe('processDelivery', () => {
   })
 })
 
+describe('fakeStore', () => {
+  it('conflicts on a write to an item that is no longer there, the same as the real store', async () => {
+    // the real store's ConditionExpression names a version attribute that an absent item doesn't have, so the
+    // condition fails exactly as it would for a version mismatch; a fake that only checks the mismatch case
+    // would let a write like this through and hide a bug the real store would catch
+    const { store } = fakeStore()
+    await expect(store.markDelivered(record(), 1_000)).rejects.toThrow(DeliveryConflictError)
+  })
+})
+
 describe('processMessages', () => {
   it('handles every message and reports only the ones that threw', async () => {
     const d = deps({ kind: 'delivered' })
@@ -234,7 +249,7 @@ describe('processMessages', () => {
       { messageId: 'm1', body: JSON.stringify(ref) },
       { messageId: 'm2', body: 'not json' },
     ] as never
-    const response = await processMessages(broken, records)
+    const response = await processMessages(broken, records, () => DEADLINE_MARGIN_MS)
     // m1 could not be read and will be tried again; m2 can never be read and is not worth a retry
     expect(response.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }])
   })
@@ -242,7 +257,7 @@ describe('processMessages', () => {
   it('reports nothing when every message is handled', async () => {
     const d = deps({ kind: 'delivered' })
     const records = [{ messageId: 'm1', body: JSON.stringify(ref) }] as never
-    expect(await processMessages(d.deps, records)).toEqual({ batchItemFailures: [] })
+    expect(await processMessages(d.deps, records, () => DEADLINE_MARGIN_MS)).toEqual({ batchItemFailures: [] })
   })
 
   it('hands back the messages it has no time left to attempt', async () => {
