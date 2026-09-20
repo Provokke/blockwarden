@@ -1,6 +1,6 @@
 import http from 'node:http'
 import { once } from 'node:events'
-import { verifyWebhook } from '@blockwarden/relayer-client'
+import { SIGNATURE_HEADER, verifyWebhook } from '@blockwarden/relayer-client'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { sendWebhook } from '../../src/senders/webhook.js'
 import type { DeliveryRecord } from '../../src/records.js'
@@ -26,14 +26,17 @@ beforeAll(async () => {
 
 afterAll(() => server.close())
 
-const delivery = (url: string): DeliveryRecord => ({
+const delivery = (
+  url: string,
+  target: Partial<Extract<DeliveryRecord['target'], { channel: 'webhook' }>> = {},
+): DeliveryRecord => ({
   deliveryId: 'dlv_real',
   subject: 'MATCH#0x1',
   actionId: 'a_1111111111111111',
   event: 'match.final',
   seq: 0,
   channel: 'webhook',
-  target: { channel: 'webhook', url, secretParameter: '/bw/secret' },
+  target: { channel: 'webhook', url, secretParameter: '/bw/secret', ...target },
   payload: JSON.stringify({ id: 'dlv_real', type: 'match.final', createdAt: 'now', specVersion: 1, data: {} }),
   status: 'delivering',
   attempts: 1,
@@ -43,7 +46,18 @@ const delivery = (url: string): DeliveryRecord => ({
   expiresAt: 0,
 })
 
-const deps = { secrets: { read: async () => ['s1', 's2'] }, now: () => Date.now(), log: () => {} }
+// the fake records the parameter it was asked for, so the tests below prove which name the sender read
+const asked: string[] = []
+const deps = {
+  secrets: {
+    read: async (name: string) => {
+      asked.push(name)
+      return ['s1', 's2']
+    },
+  },
+  now: () => Date.now(),
+  log: () => {},
+}
 
 describe('the real sender', () => {
   it('refuses a loopback URL through the guard it uses in production', async () => {
@@ -74,5 +88,26 @@ describe('the real sender', () => {
       })
     }
     expect(received!.headers['x-blockwarden-delivery']).toBe('dlv_real')
+    // the name the action carries, not the action id and not some default
+    expect(asked).toContain('/bw/secret')
+  })
+
+  it('sends nothing at all when a stored rule names both headers the same header', async () => {
+    received = undefined
+    const target = {
+      url: new URL(`http://127.0.0.1:${port}/hook`),
+      host: '127.0.0.1',
+      address: '127.0.0.1',
+      family: 4 as const,
+      port,
+    }
+    const outcome = await sendWebhook(
+      { ...deps, resolve: async () => target },
+      // the shape the rule schema now refuses, as a rule stored before it could still hold it
+      delivery('https://example.com/hook', { deliveryHeader: SIGNATURE_HEADER }),
+    )
+    expect(outcome).toMatchObject({ kind: 'permanent' })
+    expect(outcome.kind === 'permanent' && outcome.error).toContain('same header')
+    expect(received).toBeUndefined()
   })
 })

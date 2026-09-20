@@ -1,4 +1,5 @@
-import { verifyWebhook } from '@blockwarden/relayer-client'
+import { DEFAULT_DELIVERY_HEADER, DEFAULT_SIGNATURE_HEADER } from '@blockwarden/core'
+import { DELIVERY_HEADER, SIGNATURE_HEADER, verifyWebhook } from '@blockwarden/relayer-client'
 import { describe, expect, it, vi } from 'vitest'
 import { DestinationError, type HttpAnswer, type Resolved } from '../../src/destination.js'
 import { sendWebhook, signatureFor } from '../../src/senders/webhook.js'
@@ -43,15 +44,28 @@ const deps = (answer: HttpAnswer | Error, secrets = ['s1']) => {
       return answer
     },
   )
+  // both fakes record what they were asked for, so a test can prove which parameter and which URL the sender
+  // actually passed rather than only that it passed something
+  const asked: string[] = []
+  const resolve = vi.fn(async (_raw: string) => resolved)
+  const log = vi.fn()
   return {
     deps: {
-      secrets: { read: async () => secrets },
+      secrets: {
+        read: async (name: string) => {
+          asked.push(name)
+          return secrets
+        },
+      },
       now: () => 1_789_000_000_000,
-      log: vi.fn(),
-      resolve: async () => resolved,
+      log,
+      resolve,
       post,
     },
     post,
+    resolve,
+    asked,
+    log,
   }
 }
 
@@ -74,8 +88,71 @@ describe('sendWebhook', () => {
     expect(await sendWebhook(d.deps, delivery())).toEqual({ kind: 'delivered', statusCode: 200 })
     const [, body, headers] = d.post.mock.calls[0]!
     expect(body).toBe(payload)
-    expect(headers['X-Blockwarden-Delivery']).toBe('dlv_1')
-    expect(headers['X-Blockwarden-Signature']).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/)
+    expect(Object.keys(headers)).toHaveLength(2)
+    expect(headers[DELIVERY_HEADER]).toBe('dlv_1')
+    expect(headers[SIGNATURE_HEADER]).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/)
+  })
+
+  it('names the two headers what the published client and the rule schema name them', () => {
+    expect(DEFAULT_SIGNATURE_HEADER).toBe(SIGNATURE_HEADER)
+    expect(DEFAULT_DELIVERY_HEADER).toBe(DELIVERY_HEADER)
+  })
+
+  it('refuses to send when both header names are the same header, rather than sending unsigned', async () => {
+    for (const target of [
+      { signatureHeader: 'X-Sig', deliveryHeader: 'X-Sig' },
+      // a case-differing pair is the same header to a receiver
+      { signatureHeader: 'X-Sig', deliveryHeader: 'x-sig' },
+      // the shape a stored rule can already have: the signature left at its default, the delivery id on top of it
+      { deliveryHeader: SIGNATURE_HEADER },
+      { deliveryHeader: 'X-Blockwarden-Signature' },
+      { signatureHeader: DELIVERY_HEADER },
+    ]) {
+      const d = deps({ statusCode: 200, body: '' })
+      const outcome = await sendWebhook(d.deps, delivery(target))
+      expect(outcome, JSON.stringify(target)).toMatchObject({ kind: 'permanent' })
+      expect(outcome.kind === 'permanent' && outcome.error).toContain('same header')
+      expect(d.post).not.toHaveBeenCalled()
+      // an operator has to hear about a rule that cannot be delivered at all
+      expect(d.log).toHaveBeenCalledWith(expect.stringContaining('header'), expect.anything(), 'warn')
+    }
+  })
+
+  it('reads the parameter the action names, and the default only when the action names none', async () => {
+    const named = deps({ statusCode: 200, body: '' })
+    await sendWebhook({ ...named.deps, defaultWebhookSecretParameter: '/bw/default' }, delivery())
+    expect(named.asked).toEqual(['/bw/secret'])
+    const unnamed = deps({ statusCode: 200, body: '' })
+    await sendWebhook(
+      { ...unnamed.deps, defaultWebhookSecretParameter: '/bw/default' },
+      delivery({ secretParameter: undefined }),
+    )
+    expect(unnamed.asked).toEqual(['/bw/default'])
+  })
+
+  it("falls back to the default when the action's parameter is empty, rather than dead-lettering", async () => {
+    const d = deps({ statusCode: 200, body: '' })
+    const outcome = await sendWebhook(
+      { ...d.deps, defaultWebhookSecretParameter: '/bw/default' },
+      delivery({ secretParameter: '' }),
+    )
+    expect(outcome.kind).toBe('delivered')
+    expect(d.asked).toEqual(['/bw/default'])
+  })
+
+  it("resolves the delivery's own URL, which is the string the guard judges", async () => {
+    const d = deps({ statusCode: 200, body: '' })
+    await sendWebhook(d.deps, delivery({ url: 'https://elsewhere.example/other-hook' }))
+    expect(d.resolve).toHaveBeenCalledWith('https://elsewhere.example/other-hook')
+  })
+
+  it('calls a parameter that holds no secret a configuration fault, not an unreachable destination', async () => {
+    const d = deps({ statusCode: 200, body: '' }, [])
+    const outcome = await sendWebhook(d.deps, delivery())
+    expect(outcome).toMatchObject({ kind: 'permanent' })
+    expect(outcome.kind === 'permanent' && outcome.error).not.toContain('could not be reached')
+    expect(outcome.kind === 'permanent' && outcome.error).toContain('without a secret')
+    expect(d.post).not.toHaveBeenCalled()
   })
 
   it('uses the header names the action chose', async () => {
@@ -87,7 +164,7 @@ describe('sendWebhook', () => {
     const [, , headers] = d.post.mock.calls[0]!
     expect(headers['Billwarden-Signature']).toBeDefined()
     expect(headers['Billwarden-Delivery']).toBe('dlv_1')
-    expect(headers['X-Blockwarden-Signature']).toBeUndefined()
+    expect(headers[SIGNATURE_HEADER]).toBeUndefined()
   })
 
   it('calls a 2xx delivered and a 3xx permanent, because a redirect is never followed', async () => {

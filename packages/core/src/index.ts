@@ -18,6 +18,8 @@ export {
 export type { RawLog } from './types.js'
 export {
   actionSchema,
+  DEFAULT_DELIVERY_HEADER,
+  DEFAULT_SIGNATURE_HEADER,
   emailActionSchema,
   lambdaActionSchema,
   relayActionSchema,
