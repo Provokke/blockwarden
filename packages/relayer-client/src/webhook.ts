@@ -1,19 +1,42 @@
-import { TX_STATUSES, type RelayerTx, type RelayerTxBody, type TxStatus } from './types.js'
-import { isTxBody } from './validate.js'
+import {
+  MATCH_STATUSES,
+  TX_STATUSES,
+  type MatchEventData,
+  type MatchStatus,
+  type RelayerTx,
+  type RelayerTxBody,
+  type TxStatus,
+} from './types.js'
+import { isMatchBody, isTxBody } from './validate.js'
 
 export const SIGNATURE_HEADER = 'x-blockwarden-signature'
 export const DELIVERY_HEADER = 'x-blockwarden-delivery'
 export const DEFAULT_TOLERANCE_SECONDS = 300
+
+// The schema published at docs/webhooks/v1.md. A body's shape changes only with this number, which is why a
+// reader should branch on it rather than on the presence of a field.
+export const WEBHOOK_SPEC_VERSION = 1
+
+// The timestamp is not a header of its own: it is the t= part of X-Blockwarden-Signature, in unix seconds.
+export const TIMESTAMP_TOLERANCE_SECONDS = DEFAULT_TOLERANCE_SECONDS
 
 export type WebhookEvent = {
   // the delivery id, also sent as X-Blockwarden-Delivery, for receiver-side idempotency
   id: string
   type: string
   createdAt: string
+  // the schema version of data; 1 today, absent on a body from a sender older than this field
+  specVersion?: number
   data: unknown
 }
 
 export type TxEvent = WebhookEvent & { type: `tx.${TxStatus}`; data: RelayerTxBody }
+
+export type MatchEvent = WebhookEvent & { type: `match.${MatchStatus}`; data: MatchEventData }
+
+export function isMatchEvent(event: WebhookEvent): event is MatchEvent {
+  return (MATCH_STATUSES as readonly string[]).some((s) => event.type === `match.${s}`) && isMatchBody(event.data)
+}
 
 export class WebhookVerificationError extends Error {
   constructor(message: string) {

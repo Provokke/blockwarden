@@ -28,6 +28,7 @@ const TX: RelayerTxBody = {
   blockHash: null,
   receiptStatus: null,
   error: null,
+  revertData: null,
   fillerTxId: null,
   idempotencyKey: 'charge-1',
   reference: 'sub_1:period_3',

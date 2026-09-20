@@ -68,6 +68,8 @@ export type TxRecord = {
   nonceUsedAtBlock?: number
   nonceUsedAt?: string
   error?: string
+  // the raw revert data a node returned for a call that reverts; set by the signer in Task 4
+  revertData?: Hex
   fillerTxId?: string
   fillsTxId?: string
   dependsOn?: string
@@ -117,6 +119,7 @@ export function toTxBody(tx: TxRecord): RelayerTxBody {
     blockHash: tx.mined?.blockHash ?? null,
     receiptStatus: tx.mined?.status ?? null,
     error: tx.error ?? null,
+    revertData: tx.revertData ?? null,
     fillerTxId: tx.fillerTxId ?? null,
     idempotencyKey: tx.idempotencyKey ?? null,
     reference: tx.reference ?? null,
