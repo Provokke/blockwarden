@@ -320,7 +320,7 @@ describe('the reaper', () => {
     d.sent.length = 0
     expect(await sweepDue({ ...d.deps, store }, 121_500, 10)).toEqual({ requeued: 0, dead: 0 })
     expect(d.sent).toHaveLength(0)
-    expect(d.log).toHaveBeenCalledWith('could not requeue a delivery', expect.anything(), 'warn')
+    expect(d.log).toHaveBeenCalledWith('could not process a due delivery', expect.anything(), 'warn')
   })
 
   it('walks the backlog with the cursor rather than reading the first page again', async () => {
@@ -377,5 +377,25 @@ describe('the reaper', () => {
     // dead has to mean the same on both paths, or a delivery exhausted by crashes dies where the alarm that
     // watches the dead-letter queue's depth cannot see it
     expect(d.dead).toEqual([{ ref: refOf(item), delaySeconds: 0 }])
+  })
+
+  it('leaves a dead delivery due when its dead-letter copy fails, so the next sweep finishes it', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized') })
+    const row = matchRow({ status: 'final' })
+    await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
+    for (const item of d.items.values()) item.attempts = MAX_ATTEMPTS
+    d.sent.length = 0
+    const flaky = { send: vi.fn().mockRejectedValueOnce(new Error('SQS is unavailable')).mockResolvedValue(undefined) }
+
+    // the copy fails on the first sweep; if markDead had already committed, the delivery would have left the
+    // due index with no pointer in the dead-letter queue, and no later sweep would ever see it again
+    expect(await sweepDue({ ...d.deps, deadLetters: flaky }, 121_500, 10)).toEqual({ requeued: 0, dead: 0 })
+    expect([...d.items.values()][0]!.status).not.toBe('dead')
+    expect(d.log).toHaveBeenCalledWith('could not process a due delivery', expect.anything(), 'warn')
+
+    // still due, so the next sweep tries both steps again and this time the copy lands
+    expect(await sweepDue({ ...d.deps, deadLetters: flaky }, 121_500, 10)).toEqual({ requeued: 0, dead: 1 })
+    expect([...d.items.values()][0]!.status).toBe('dead')
+    expect(flaky.send).toHaveBeenCalledTimes(2)
   })
 })
