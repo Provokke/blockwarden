@@ -1,3 +1,4 @@
+import type { SESv2Client } from '@aws-sdk/client-sesv2'
 import type { SecretReader } from '../secrets.js'
 import type { HttpAnswer, Resolved, Resolver } from '../destination.js'
 import type { DeliveryRecord, Log } from '../records.js'
@@ -23,6 +24,12 @@ export type SenderDeps = {
   defaultWebhookSecretParameter?: string
   timeoutMs?: number
   deadlineMs?: number
+  ses?: Pick<SESv2Client, 'send'>
+  fromAddress?: string
+  configurationSet?: string
+  telegramTokenParameter?: string
+  // pointed at a local server in a test; the real one is api.telegram.org
+  telegramApiBase?: string
 }
 
 export type Sender = (deps: SenderDeps, delivery: DeliveryRecord) => Promise<SendOutcome>
