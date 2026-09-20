@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { actionSchema } from './actions.js'
 
 export const conditionOps = ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'contains'] as const
 export type ConditionOp = (typeof conditionOps)[number]
@@ -34,10 +35,7 @@ export const ruleInputSchema = z.object({
   event: z.string().min(1),
   conditions: conditionSchema.optional(),
   confirmation: confirmationSchema,
-  actions: z
-    .array(z.looseObject({ type: z.string().min(1) }))
-    .max(5)
-    .default([]),
+  actions: z.array(actionSchema).max(5).default([]),
 })
 
 export type RuleInput = z.infer<typeof ruleInputSchema>

@@ -22,11 +22,11 @@ export function compileRule(ruleId: string, input: RuleInput): CompiledRule {
     const unnamed = abiEvent.inputs.findIndex((i) => !i.name)
     if (unnamed !== -1) issues.push({ path: 'event', message: `input ${unnamed} has no name` })
 
-    const names = new Set(abiEvent.inputs.map((i) => i.name))
     for (const { path, field } of leafFields(input.conditions, 'conditions')) {
-      const [head, arg] = field.split('.')
+      const [head, ...rest] = field.split('.')
       if (head === 'args') {
-        if (!arg || !names.has(arg)) issues.push({ path, message: `event has no input named "${arg ?? ''}"` })
+        const message = resolveAbiPath(abiEvent.inputs, rest)
+        if (message) issues.push({ path, message })
       } else if (!CONTEXT_FIELDS.has(field)) {
         issues.push({ path, message: `unknown field "${field}"` })
       }
@@ -61,4 +61,22 @@ function* leafFields(condition: Condition | undefined, path: string): Generator<
   } else {
     yield { path: `${path}.field`, field: condition.field }
   }
+}
+
+type AbiParameter = AbiEvent['inputs'][number]
+
+// viem decodes a tuple as an object, so args.permission.spender is a real path; validating only the first
+// segment let a typo past and the rule then matched nothing, silently
+function resolveAbiPath(inputs: readonly AbiParameter[], segments: string[]): string | undefined {
+  const [head, ...rest] = segments
+  if (!head) return 'event has no input named ""'
+  const found = inputs.find((i) => i.name === head)
+  if (!found) return `event has no input named "${head}"`
+  if (rest.length === 0) return undefined
+  const components = (found as { components?: readonly AbiParameter[] }).components
+  if (!components) return `field "${head}" is a ${found.type} and has no components`
+  const [next] = rest
+  const child = components.find((c) => c.name === next)
+  if (!child) return `tuple "${head}" has no component named "${next ?? ''}"`
+  return resolveAbiPath(components, rest)
 }
