@@ -13,6 +13,15 @@ export const DUE_SHARDS = 4
 const MATCH_PREFIX = 'MATCH#'
 const TX_PREFIX = 'TX#'
 
+// A seq this high is a property of the record, so every retry of it throws again. Named so a caller can tell
+// that apart from a failure that might pass next time.
+export class DeliverySeqRangeError extends RangeError {
+  constructor(readonly seq: number) {
+    super(`keys.delivery: seq must be an integer between 0 and 9999, got ${seq}`)
+    this.name = 'DeliverySeqRangeError'
+  }
+}
+
 export const keys = {
   matchSubject: (matchKey: string) => `${MATCH_PREFIX}${matchKey}`,
   txSubject: (txId: string) => `${TX_PREFIX}${txId}`,
@@ -27,7 +36,7 @@ export const keys = {
     // thousands of times before it settles, which does not happen. Kept as a hard refusal rather than widened,
     // since the width is baked into every stored sort key and widening it later needs a migration.
     if (!Number.isInteger(seq) || seq < 0 || seq > 9999) {
-      throw new RangeError(`keys.delivery: seq must be an integer between 0 and 9999, got ${seq}`)
+      throw new DeliverySeqRangeError(seq)
     }
     return {
       PK: subject,

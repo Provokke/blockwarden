@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { dispatchRecords, MAX_ATTEMPTS, sweepDue } from '../../src/dispatcher.js'
 import type { CompiledRuleView } from '../../src/lookup.js'
 import { keys } from '../../src/keys.js'
+import { MAX_PAYLOAD_BYTES } from '../../src/records.js'
 import { matchRow, streamRecord, txRow } from '../helpers/images.js'
 import { fakeLookup, fakeQueue, fakeStore } from './fakes.js'
 
@@ -200,12 +201,66 @@ describe('failures', () => {
     expect(response.batchItemFailures).toEqual([{ itemIdentifier: first.dynamodb!.SequenceNumber }])
   })
 
+  it('fails the whole batch when the record it must report has no sequence number', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized') })
+    const failing = {
+      ...d.deps,
+      store: {
+        ...d.deps.store,
+        create: async () => {
+          throw new Error('ProvisionedThroughputExceededException')
+        },
+      },
+    }
+    const row = matchRow({ status: 'final' })
+    const record = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
+    delete record.dynamodb!.SequenceNumber
+    // an empty identifier is a response Lambda refuses outright, so it must never be one of the shapes we emit
+    await expect(dispatchRecords(failing, [record])).rejects.toThrow('ProvisionedThroughputExceededException')
+  })
+
   it('does not report a record it simply could not read', async () => {
     const d = deps({})
     const response = await dispatchRecords(d.deps, [
       streamRecord('INSERT', { PK: 'CHAIN#1', SK: 'CURSOR' }, { newImage: { PK: 'CHAIN#1', SK: 'CURSOR' } }),
     ])
     expect(response.batchItemFailures).toEqual([])
+  })
+})
+
+describe('a record no retry can fix', () => {
+  const signers = { demo: { signerId: 'demo', webhooks: ['https://example.com/tx'] } }
+  const good = () => {
+    const row = matchRow({ status: 'final' })
+    return streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
+  }
+
+  it('skips a transaction whose sequence number is past the width of the key', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized') }, signers)
+    const poison = streamRecord(
+      'INSERT',
+      { PK: 'TX#tx-1', SK: 'META' },
+      { newImage: txRow({ signerId: 'demo', historyBase: 10_000 }) },
+    )
+    const response = await dispatchRecords(d.deps, [poison, good()])
+    expect(response.batchItemFailures).toEqual([])
+    expect(d.log).toHaveBeenCalledWith('record skipped; nothing about it can succeed', expect.anything(), 'error')
+    // the record behind the poison one still went through, which is the whole point
+    expect(d.items.size).toBe(1)
+  })
+
+  it('skips a match whose payload is over the size cap', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized') }, signers)
+    const row = matchRow({ status: 'final', args: { from: 'x'.repeat(MAX_PAYLOAD_BYTES) } })
+    const poison = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
+    const response = await dispatchRecords(d.deps, [
+      poison,
+      streamRecord('INSERT', { PK: 'TX#tx-1', SK: 'META' }, { newImage: txRow({ signerId: 'demo' }) }),
+    ])
+    expect(response.batchItemFailures).toEqual([])
+    expect(d.log).toHaveBeenCalledWith('record skipped; nothing about it can succeed', expect.anything(), 'error')
+    expect(d.items.size).toBe(1)
+    expect([...d.items.values()][0]!.event).toBe('tx.queued')
   })
 })
 
