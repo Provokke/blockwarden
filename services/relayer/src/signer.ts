@@ -37,6 +37,19 @@ const MAX_NONCE_RESETS = 2
 // never sent again, so their bytes are dropped
 export const MAX_ABANDONED_ATTEMPTS = 4
 
+// A node picks the length of a revert payload, and the whole of it would land on the item, on every RelayerTxBody,
+// and in every webhook, where the dispatcher refuses a payload over 64 KB. 256 bytes is a selector plus several
+// 32-byte arguments, comfortably inside that and the item's 400 KB budget - milestone 2 capped the operator
+// message this data also feeds at the same number of characters.
+const MAX_REVERT_DATA_BYTES = 256
+
+// truncates on a byte boundary so the stored value is still decodable hex; a payload at exactly the cap may have
+// been cut short, anything shorter is complete
+function capRevertData(data: Hex): Hex {
+  const hexChars = MAX_REVERT_DATA_BYTES * 2
+  return (data.length <= hexChars + 2 ? data : data.slice(0, hexChars + 2)) as Hex
+}
+
 // remainingMs is the Lambda's time left, when there is one
 export async function processTx(deps: SignerDeps, txId: string, remainingMs?: () => number): Promise<ProcessOutcome> {
   const { store } = deps
@@ -181,8 +194,8 @@ async function revertsNow(
   } catch (err) {
     if (!(err instanceof EstimateError)) throw err
     if (err.kind === 'reverted') {
-      // the message keeps a short copy for an operator; the field keeps the whole payload for a caller to decode
-      const revertData = err.revertData ?? '0x'
+      // the message keeps a short copy for an operator; the field keeps as much of the payload as the item can spare
+      const revertData = capRevertData(err.revertData ?? '0x')
       return {
         reason: `eth_estimateGas reverted once the dependency was confirmed: ${short(revertData)}`,
         revertData,
