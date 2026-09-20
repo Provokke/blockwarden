@@ -28,7 +28,8 @@ export type SenderDeps = {
   fromAddress?: string
   configurationSet?: string
   telegramTokenParameter?: string
-  // pointed at a local server in a test; the real one is api.telegram.org
+  // the real one is api.telegram.org. An override is operator configuration and still goes through the
+  // destination guard, so a test that points it at a local server injects `resolve` as well
   telegramApiBase?: string
 }
 
