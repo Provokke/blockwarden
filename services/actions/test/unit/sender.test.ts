@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DeliveryConflictError } from '../../src/store.js'
+import { CLAIM_LEASE_MS } from '../../src/dispatcher.js'
 import { keys } from '../../src/keys.js'
-import { processDelivery, processMessages } from '../../src/sender.js'
+import { DEADLINE_MARGIN_MS, processDelivery, processMessages, type SenderStore } from '../../src/sender.js'
 import type { DeliveryRecord, DeliveryRef } from '../../src/records.js'
 import type { SendOutcome } from '../../src/senders/types.js'
+import { fakeQueue, fakeStore } from './fakes.js'
 
 const ref: DeliveryRef = { subject: 'MATCH#0x1', sk: keys.delivery('MATCH#0x1', 'a_1', 'match.final', 0).SK }
+const itemKey = `${ref.subject}|${ref.sk}`
 
 const record = (overrides: Partial<DeliveryRecord> = {}): DeliveryRecord => ({
   deliveryId: 'dlv_1',
@@ -25,37 +28,43 @@ const record = (overrides: Partial<DeliveryRecord> = {}): DeliveryRecord => ({
   ...overrides,
 })
 
+// what the store hands back from claim(), which is the record every later write has to be conditioned on
+const claimed = (stored: DeliveryRecord = record()): DeliveryRecord => ({
+  ...stored,
+  status: 'delivering',
+  attempts: stored.attempts + 1,
+  firstAttemptAt: 1_000,
+  lastAttemptAt: 1_000,
+  nextAttemptAt: 1_000 + CLAIM_LEASE_MS,
+  version: stored.version + 1,
+  updatedAt: new Date(1_000).toISOString(),
+})
+
 // a default parameter substitutes whenever the argument is undefined, not only when it is omitted, so it
 // cannot tell "use the default record" apart from "the delivery is gone" (also undefined); a rest parameter,
 // read by its length, can
 const deps = (outcome: SendOutcome | Error, ...storedArgs: [DeliveryRecord | undefined] | []) => {
-  const state = { current: storedArgs.length > 0 ? storedArgs[0] : record() }
+  const stored = storedArgs.length > 0 ? storedArgs[0] : record()
+  // the same version-conditioned in-memory store the dispatcher's tests use, spied on: a hand-rolled mock that
+  // never bumped a version would pass calls the real store refuses
+  const { store: fake, items } = fakeStore()
+  if (stored) items.set(itemKey, stored)
   const store = {
-    get: vi.fn(async () => state.current),
-    claim: vi.fn(async (d: DeliveryRecord, nowMs: number) => {
-      const next = {
-        ...d,
-        status: 'delivering' as const,
-        attempts: d.attempts + 1,
-        lastAttemptAt: nowMs,
-        version: d.version + 1,
-      }
-      state.current = next
-      return next
-    }),
-    markDelivered: vi.fn(async (d: DeliveryRecord) => ({ ...d, status: 'delivered' as const })),
-    scheduleRetry: vi.fn(async (d: DeliveryRecord) => ({ ...d, status: 'failed' as const })),
-    markDead: vi.fn(async (d: DeliveryRecord) => ({ ...d, status: 'dead' as const })),
-  }
-  const queue = { send: vi.fn(async () => {}) }
-  const deadLetters = { send: vi.fn(async () => {}) }
+    get: vi.fn(fake.get),
+    claim: vi.fn(fake.claim),
+    markDelivered: vi.fn(fake.markDelivered),
+    scheduleRetry: vi.fn(fake.scheduleRetry),
+    markDead: vi.fn(fake.markDead),
+  } satisfies SenderStore
+  const queue = { send: vi.fn(fakeQueue().queue.send) }
+  const deadLetters = { send: vi.fn(fakeQueue().queue.send) }
   const send = vi.fn(async () => {
     if (outcome instanceof Error) throw outcome
     return outcome
   })
   return {
     deps: {
-      store: store as never,
+      store,
       queue,
       deadLetters,
       senders: { webhook: send, email: send, telegram: send, relay: send, sqs: send, lambda: send },
@@ -68,7 +77,7 @@ const deps = (outcome: SendOutcome | Error, ...storedArgs: [DeliveryRecord | und
     queue,
     deadLetters,
     send,
-    state,
+    items,
   }
 }
 
@@ -76,9 +85,10 @@ describe('processDelivery', () => {
   it('claims, sends and marks delivered', async () => {
     const d = deps({ kind: 'delivered', statusCode: 204 })
     expect(await processDelivery(d.deps, ref)).toBe('delivered')
-    expect(d.store.claim).toHaveBeenCalledOnce()
+    expect(d.store.get).toHaveBeenCalledWith(ref)
+    expect(d.store.claim).toHaveBeenCalledWith(record(), 1_000, CLAIM_LEASE_MS)
     expect(d.send).toHaveBeenCalledOnce()
-    expect(d.store.markDelivered).toHaveBeenCalledWith(expect.objectContaining({ attempts: 1 }), 1_000, 204)
+    expect(d.store.markDelivered).toHaveBeenCalledWith(claimed(), 1_000, 204)
     expect(d.queue.send).not.toHaveBeenCalled()
     expect(d.deadLetters.send).not.toHaveBeenCalled()
   })
@@ -87,7 +97,7 @@ describe('processDelivery', () => {
     const d = deps({ kind: 'retry', error: 'the destination answered 503', statusCode: 503 })
     expect(await processDelivery(d.deps, ref)).toBe('retrying')
     expect(d.store.scheduleRetry).toHaveBeenCalledWith(
-      expect.anything(),
+      claimed(),
       1_000,
       1_000 + 10_000,
       'the destination answered 503',
@@ -96,10 +106,23 @@ describe('processDelivery', () => {
     expect(d.queue.send).toHaveBeenCalledWith(ref, 10)
   })
 
+  it('lets a destination ask for a longer wait than the backoff', async () => {
+    const d = deps({ kind: 'retry', error: 'the destination answered 429', statusCode: 429, afterSeconds: 120 })
+    expect(await processDelivery(d.deps, ref)).toBe('retrying')
+    expect(d.store.scheduleRetry).toHaveBeenCalledWith(claimed(), 1_000, 1_000 + 120_000, expect.any(String), 429)
+    expect(d.queue.send).toHaveBeenCalledWith(ref, 120)
+  })
+
+  it("caps a destination's ask at what the queue can hold", async () => {
+    const d = deps({ kind: 'retry', error: 'come back tomorrow', statusCode: 429, afterSeconds: 86_400 })
+    expect(await processDelivery(d.deps, ref)).toBe('retrying')
+    expect(d.queue.send).toHaveBeenCalledWith(ref, 900)
+  })
+
   it('kills a permanent failure on the first attempt and copies it to the dead-letter queue', async () => {
     const d = deps({ kind: 'permanent', error: 'the destination answered 410', statusCode: 410 })
     expect(await processDelivery(d.deps, ref)).toBe('dead')
-    expect(d.store.markDead).toHaveBeenCalledWith(expect.anything(), 1_000, 'the destination answered 410', 410)
+    expect(d.store.markDead).toHaveBeenCalledWith(claimed(), 1_000, 'the destination answered 410', 410)
     expect(d.deadLetters.send).toHaveBeenCalledWith(ref, 0)
     expect(d.queue.send).not.toHaveBeenCalled()
   })
@@ -107,14 +130,46 @@ describe('processDelivery', () => {
   it('kills a delivery whose last attempt failed', async () => {
     const d = deps({ kind: 'retry', error: 'still 503' }, record({ attempts: 7 }))
     expect(await processDelivery(d.deps, ref)).toBe('dead')
-    expect(d.store.markDead).toHaveBeenCalled()
-    expect(d.deadLetters.send).toHaveBeenCalled()
+    expect(d.store.markDead).toHaveBeenCalledWith(claimed(record({ attempts: 7 })), 1_000, 'still 503', undefined)
+    expect(d.deadLetters.send).toHaveBeenCalledWith(ref, 0)
+  })
+
+  it('copies a dead delivery on a later pass when the first copy never landed', async () => {
+    const d = deps({ kind: 'permanent', error: 'the destination answered 410', statusCode: 410 })
+    d.deadLetters.send.mockRejectedValueOnce(new Error('SQS is unavailable'))
+    await expect(processDelivery(d.deps, ref)).rejects.toThrow('SQS is unavailable')
+    // the item is dead now, so the redelivered message meets the terminal skip; without a copy made there the
+    // dead-letter depth alarm would never see this delivery at all
+    expect(await processDelivery(d.deps, ref)).toBe('skipped')
+    expect(d.deadLetters.send).toHaveBeenCalledTimes(2)
+    expect(d.deadLetters.send).toHaveBeenLastCalledWith(ref, 0)
   })
 
   it('treats a sender that threw as a retry rather than losing the delivery', async () => {
     const d = deps(new Error('unexpected'))
     expect(await processDelivery(d.deps, ref)).toBe('retrying')
     expect(d.store.scheduleRetry).toHaveBeenCalled()
+  })
+
+  it('leaves the outcome to whoever holds the delivery now rather than sending it twice', async () => {
+    const outcomes: SendOutcome[] = [
+      { kind: 'delivered' },
+      { kind: 'retry', error: 'still 503' },
+      { kind: 'permanent', error: 'the destination answered 410' },
+    ]
+    for (const outcome of outcomes) {
+      const d = deps(outcome)
+      // another sender's lease lands while this attempt is in flight, so the record step conflicts
+      d.send.mockImplementationOnce(async () => {
+        const held = d.items.get(itemKey)!
+        d.items.set(itemKey, { ...held, version: held.version + 1 })
+        return outcome
+      })
+      expect(await processDelivery(d.deps, ref)).toBe('skipped')
+      expect(d.send).toHaveBeenCalledOnce()
+      expect(d.queue.send).not.toHaveBeenCalled()
+      expect(d.deadLetters.send).not.toHaveBeenCalled()
+    }
   })
 
   it('skips a delivery that is already delivered or dead', async () => {
@@ -144,17 +199,22 @@ describe('processDelivery', () => {
       record({ channel: 'telegram', target: { channel: 'telegram', chatId: '-100' } }),
     )
     const telegram = vi.fn(async () => ({ kind: 'delivered' }) as SendOutcome)
-    await processDelivery({ ...d.deps, senders: { ...d.deps.senders, telegram } } as never, ref)
+    await processDelivery({ ...d.deps, senders: { ...d.deps.senders, telegram } }, ref)
     expect(telegram).toHaveBeenCalledOnce()
   })
 
   it('kills a delivery whose channel has no sender rather than looping', async () => {
-    const d = deps(
-      { kind: 'delivered' },
-      record({ channel: 'sqs', target: { channel: 'sqs', queueArn: 'arn:aws:sqs:us-east-1:111122223333:q' } }),
-    )
-    const outcome = await processDelivery({ ...d.deps, senders: {} } as never, ref)
-    expect(outcome).toBe('dead')
+    const stored = record({
+      channel: 'sqs',
+      target: { channel: 'sqs', queueArn: 'arn:aws:sqs:us-east-1:111122223333:q' },
+    })
+    const d = deps({ kind: 'delivered' }, stored)
+    expect(await processDelivery({ ...d.deps, senders: {} }, ref)).toBe('dead')
+    // the item has to leave the due index and the copy has to reach the queue, or the reaper picks this
+    // delivery up again for an hour and the alarm never hears about it
+    expect(d.store.markDead).toHaveBeenCalledWith(claimed(stored), 1_000, 'no sender for channel sqs')
+    expect(d.deadLetters.send).toHaveBeenCalledWith(ref, 0)
+    expect(d.items.get(itemKey)?.status).toBe('dead')
   })
 })
 
@@ -174,7 +234,7 @@ describe('processMessages', () => {
       { messageId: 'm1', body: JSON.stringify(ref) },
       { messageId: 'm2', body: 'not json' },
     ] as never
-    const response = await processMessages(broken as never, records)
+    const response = await processMessages(broken, records)
     // m1 could not be read and will be tried again; m2 can never be read and is not worth a retry
     expect(response.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }])
   })
@@ -183,5 +243,24 @@ describe('processMessages', () => {
     const d = deps({ kind: 'delivered' })
     const records = [{ messageId: 'm1', body: JSON.stringify(ref) }] as never
     expect(await processMessages(d.deps, records)).toEqual({ batchItemFailures: [] })
+  })
+
+  it('hands back the messages it has no time left to attempt', async () => {
+    const d = deps({ kind: 'delivered' })
+    const records = [
+      { messageId: 'm1', body: JSON.stringify(ref) },
+      { messageId: 'm2', body: 'not json' },
+    ] as never
+    const response = await processMessages(d.deps, records, () => DEADLINE_MARGIN_MS - 1)
+    // m1 is untouched and comes back; m2 still parses into nothing, and no amount of time would change that
+    expect(response.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }])
+    expect(d.send).not.toHaveBeenCalled()
+  })
+
+  it('takes a message when a whole attempt still fits', async () => {
+    const d = deps({ kind: 'delivered' })
+    const records = [{ messageId: 'm1', body: JSON.stringify(ref) }] as never
+    expect(await processMessages(d.deps, records, () => DEADLINE_MARGIN_MS)).toEqual({ batchItemFailures: [] })
+    expect(d.send).toHaveBeenCalledOnce()
   })
 })

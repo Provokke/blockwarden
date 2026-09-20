@@ -1,16 +1,30 @@
 import type { SQSBatchResponse, SQSRecord } from 'aws-lambda'
 import { nextDelaySeconds } from './backoff.js'
+import { DEFAULT_DEADLINE_MS } from './destination.js'
 import { CLAIM_LEASE_MS, MAX_ATTEMPTS } from './dispatcher.js'
-import { keys } from './keys.js'
+import { refOf } from './keys.js'
 import type { DeliveryQueue } from './queue.js'
 import { TERMINAL, truncate, type DeliveryChannel, type DeliveryRecord, type DeliveryRef, type Log } from './records.js'
 import { DeliveryConflictError, type DeliveryStore } from './store.js'
-import type { Sender, SenderDeps } from './senders/types.js'
+import type { Sender, SendOutcome, SenderDeps } from './senders/types.js'
 
 export type Outcome = 'delivered' | 'retrying' | 'dead' | 'skipped'
 
+// The DynamoDB and SQS round trips around one attempt: the get, the claim, the record write and the queue send,
+// with enough slack for one throttled write the SDK retries.
+const ATTEMPT_AWS_MS = 5_000
+
+// Stop taking messages once less than one whole attempt's time remains. A send runs to its own absolute deadline
+// before it gives up, so a batch started with less than that left times out mid-attempt, and Lambda throws the
+// partial-batch response away: every message in it comes back, including the ones whose sends already happened.
+export const DEADLINE_MARGIN_MS = DEFAULT_DEADLINE_MS + ATTEMPT_AWS_MS
+
+// only the store methods the pipeline uses, as the dispatcher does it: the real DeliveryStore still satisfies
+// it, and a test fake is a plain object whose drift from the store is a compile error rather than a silence
+export type SenderStore = Pick<DeliveryStore, 'get' | 'claim' | 'markDelivered' | 'scheduleRetry' | 'markDead'>
+
 export type SenderPipelineDeps = SenderDeps & {
-  store: DeliveryStore
+  store: SenderStore
   queue: DeliveryQueue
   deadLetters: DeliveryQueue
   senders: Partial<Record<DeliveryChannel, Sender>>
@@ -18,17 +32,21 @@ export type SenderPipelineDeps = SenderDeps & {
   log: Log
 }
 
-export function refOf(delivery: DeliveryRecord): DeliveryRef {
-  return {
-    subject: delivery.subject,
-    sk: keys.delivery(delivery.subject, delivery.actionId, delivery.event, delivery.seq).SK,
-  }
-}
+// the reaper names a delivery to the dead-letter queue the same way, so the two share one builder
+export { refOf }
 
 export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef): Promise<Outcome> {
   const delivery = await deps.store.get(ref)
-  // the message outlived its delivery, or another sender finished it first
-  if (!delivery || TERMINAL.has(delivery.status)) return 'skipped'
+  // the message outlived its delivery
+  if (!delivery) return 'skipped'
+  // another sender finished it first, or this one did and only the copy failed
+  if (TERMINAL.has(delivery.status)) {
+    // markDead lands before the copy does, so a transient SQS error leaves a dead delivery the alarm cannot see;
+    // the redelivery arrives here and copies it. Nothing consumes the dead-letter queue - it is watched for its
+    // depth - so a second pointer for a copy that did land costs nothing, and a missing one costs the alarm.
+    if (delivery.status === 'dead') await deps.deadLetters.send(ref, 0)
+    return 'skipped'
+  }
 
   let claimed: DeliveryRecord
   try {
@@ -59,6 +77,27 @@ export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef
     outcome = { kind: 'retry' as const, error: truncate(`the sender failed: ${(err as Error).message}`) }
   }
 
+  try {
+    return await recordOutcome(deps, ref, claimed, outcome)
+  } catch (err) {
+    // The send already happened. A conflict here means the lease moved on - the reaper requeued this delivery and
+    // another invocation claimed it - so that invocation owns the outcome now. Reporting an infrastructure
+    // failure instead would run claim and send again and the receiver would see the same body twice.
+    if (err instanceof DeliveryConflictError) {
+      deps.log('another invocation owns this delivery now', { deliveryId: claimed.deliveryId }, 'warn')
+      return 'skipped'
+    }
+    throw err
+  }
+}
+
+// write the attempt's ending down and enqueue whatever follows from it
+async function recordOutcome(
+  deps: SenderPipelineDeps,
+  ref: DeliveryRef,
+  claimed: DeliveryRecord,
+  outcome: SendOutcome,
+): Promise<Outcome> {
   if (outcome.kind === 'delivered') {
     await deps.store.markDelivered(claimed, deps.now(), outcome.statusCode)
     deps.log('delivered', { deliveryId: claimed.deliveryId, channel: claimed.channel, attempts: claimed.attempts })
@@ -107,7 +146,12 @@ export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef
   return 'retrying'
 }
 
-export async function processMessages(deps: SenderPipelineDeps, records: SQSRecord[]): Promise<SQSBatchResponse> {
+export async function processMessages(
+  deps: SenderPipelineDeps,
+  records: SQSRecord[],
+  // remaining time on the Lambda invocation; omitted in tests that don't care about the deadline
+  remainingMs?: () => number,
+): Promise<SQSBatchResponse> {
   const batchItemFailures: SQSBatchResponse['batchItemFailures'] = []
   for (const record of records) {
     let ref: DeliveryRef
@@ -122,6 +166,15 @@ export async function processMessages(deps: SenderPipelineDeps, records: SQSReco
         { messageId: record.messageId, error: (err as Error).message },
         'error',
       )
+      continue
+    }
+    // checked after the parse: an unparseable body is poison however much time is left, and handing it back
+    // would only send it round the queue again
+    if (remainingMs && remainingMs() < DEADLINE_MARGIN_MS) {
+      deps.log('message not attempted; too little time remains before the Lambda timeout', {
+        messageId: record.messageId,
+      })
+      batchItemFailures.push({ itemIdentifier: record.messageId })
       continue
     }
     try {
