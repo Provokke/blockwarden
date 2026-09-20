@@ -446,7 +446,10 @@ describe('processTx', () => {
       const tx = await create({ dependsOn: dependency.txId })
       chain.estimateFailure = new EstimateError('reverted', 'eth_estimateGas reverted', '0xdeadbeef')
       expect(await processTx(deps, tx.txId)).toBe('failed')
-      expect((await store.getTx(tx.txId))?.error).toContain('0xdeadbeef')
+      const stored = await store.getTx(tx.txId)
+      expect(stored?.error).toContain('0xdeadbeef')
+      // a short payload is stored whole and unchanged, not just present
+      expect(stored?.revertData).toBe('0xdeadbeef')
       expect(await store.getNextNonce('billing', CHAIN_ID)).toBeUndefined()
     })
 
@@ -456,13 +459,29 @@ describe('processTx', () => {
       expect(tx.error!.length).toBeLessThan(400)
     })
 
-    it('stores the revert payload as a field, not only inside the message', async () => {
+    it('stores the revert payload as a field, capped to a decodable prefix', async () => {
       const { tx } = await runDependentThatReverts()
       expect(tx.status).toBe('failed')
       expect(tx.error).toContain('eth_estimateGas reverted once the dependency was confirmed')
-      // NotAllowed(uint256) selector and its argument, decodable by the caller
-      expect(tx.revertData).toMatch(/^0x[0-9a-f]+$/)
-      expect(tx.revertData?.length).toBeGreaterThan(10)
+      // whole bytes only: '0x' plus an even number of hex characters
+      expect(tx.revertData).toMatch(/^0x([0-9a-f]{2})*$/)
+      expect(tx.revertData).toHaveLength(514)
+    })
+
+    it('leaves revertData undefined for a non-revert failure, distinct from 0x for a revert with no payload', async () => {
+      const noData = await create()
+      await settle(noData, 'confirmed')
+      const emptyRevert = await create({ dependsOn: noData.txId })
+      chain.estimateFailure = new EstimateError('reverted', 'eth_estimateGas reverted')
+      expect(await processTx(deps, emptyRevert.txId)).toBe('failed')
+      expect((await store.getTx(emptyRevert.txId))?.revertData).toBe('0x')
+
+      const notReverted = await create()
+      await settle(notReverted, 'confirmed')
+      const notRevertedFailure = await create({ dependsOn: notReverted.txId })
+      chain.estimateFailure = new EstimateError('failed', 'gas required exceeds allowance')
+      expect(await processTx(deps, notRevertedFailure.txId)).toBe('failed')
+      expect((await store.getTx(notRevertedFailure.txId))?.revertData).toBeUndefined()
     })
 
     it('fails without taking a nonce when its dependency was cancelled', async () => {
