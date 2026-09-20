@@ -24,6 +24,24 @@ describe('withStatus', () => {
     expect(tx.historyBase).toBe(11)
     expect(tx.history[0]).toEqual({ status: 'submitted', at: 't11' })
   })
+
+  it('trims an already-oversized history in one pass, keeping the original indices as sequence numbers', () => {
+    // an item from before history was bounded: no historyBase, and already past MAX_HISTORY
+    const history: TxRecord['history'] = Array.from({ length: MAX_HISTORY + 20 }, (_, i) => ({
+      status: i % 2 === 0 ? 'submitted' : 'mined',
+      at: `t${i}`,
+    }))
+    let tx = txRecord({ status: 'mined', history })
+    tx = withStatus(tx, 'confirmed', 'tFinal')
+
+    expect(tx.history).toHaveLength(MAX_HISTORY)
+    expect(tx.historyBase).toBe(21)
+    const entries = historyEntries(tx)
+    expect(entries.map((e) => e.seq)).toEqual(Array.from({ length: MAX_HISTORY }, (_, i) => i + 21))
+    // the kept entries are exactly the tail of the original array, still carrying their original indices
+    expect(entries.slice(0, -1)).toEqual(history.slice(21).map((entry, i) => ({ seq: i + 21, ...entry })))
+    expect(entries.at(-1)).toEqual({ seq: 84, status: 'confirmed', at: 'tFinal' })
+  })
 })
 
 describe('historyEntries', () => {
