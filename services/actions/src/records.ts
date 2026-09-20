@@ -73,6 +73,18 @@ export const DELIVERY_TTL_SECONDS = 30 * 24 * 60 * 60
 // rule matching something it should not; the dispatcher fails the delivery rather than storing it.
 export const MAX_PAYLOAD_BYTES = 64 * 1024
 
+// The cap is a property of the payload, not a passing condition: the same bytes are refused every time, so a
+// caller can tell this apart from a throttle and stop retrying instead of stalling its shard on it.
+export class PayloadTooLargeError extends Error {
+  constructor(
+    readonly deliveryId: string,
+    readonly bytes: number,
+  ) {
+    super(`delivery ${deliveryId} payload is larger than ${MAX_PAYLOAD_BYTES} bytes`)
+    this.name = 'PayloadTooLargeError'
+  }
+}
+
 // the same rule as a node's refusal in the relayer: a receiver can answer with a whole HTML page
 export const MAX_ERROR_CHARACTERS = 256
 
