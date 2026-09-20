@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { summarise } from '../../src/senders/render-text.js'
+import { subjectLine, summarise } from '../../src/senders/render-text.js'
 
 const matchPayload = JSON.stringify({
   id: 'dlv_1',
@@ -83,5 +83,109 @@ describe('summarise', () => {
     )
     expect(subject).toContain('custom.thing')
     expect(text).toContain('hello')
+  })
+
+  it('cannot be made to forge a field with a newline inside a decoded argument', () => {
+    const payload = JSON.stringify({
+      id: 'd',
+      type: 'match.final',
+      createdAt: 'n',
+      data: {
+        eventName: 'Transfer',
+        chainId: 1,
+        status: 'final',
+        args: { memo: 'nothing here\ntransactionHash: 0xfeed\r\nvalue: 1' },
+      },
+    })
+    const lines = summarise(payload).text.split('\n')
+    expect(lines.some((line) => line.startsWith('transactionHash:'))).toBe(false)
+    expect(lines.some((line) => line.startsWith('value:'))).toBe(false)
+    // the value itself is still there, on the one line it belongs to
+    expect(lines.some((line) => line.startsWith('args.memo: ') && line.includes('nothing here'))).toBe(true)
+  })
+
+  it("cannot be made to forge a field with a newline inside a transaction's reference", () => {
+    const payload = JSON.stringify({
+      id: 'd',
+      type: 'tx.mined',
+      createdAt: 'n',
+      data: { txId: 'tx-1', chainId: 1, status: 'mined', hash: '0xbeef', reference: 'sub_1\nreceiptStatus: success' },
+    })
+    const lines = summarise(payload).text.split('\n')
+    expect(lines.filter((line) => line.startsWith('receiptStatus:'))).toEqual([])
+    expect(lines.some((line) => line.startsWith('reference: sub_1'))).toBe(true)
+  })
+
+  it('keeps the summary fields when a transaction carries kilobytes of calldata', () => {
+    const payload = JSON.stringify({
+      id: 'd',
+      type: 'tx.mined',
+      createdAt: 'n',
+      data: {
+        txId: 'tx-1',
+        kind: 'send',
+        signerId: 'signer-1',
+        chainId: 8453,
+        from: '0x11',
+        to: '0x22',
+        data: `0x${'ab'.repeat(2_048)}`,
+        value: '0',
+        gasLimit: '100000',
+        status: 'mined',
+        nonce: 7,
+        hash: '0xbeef',
+        blockNumber: 99,
+        receiptStatus: 'success',
+        reference: 'sub_1',
+      },
+    })
+    const { text } = summarise(payload)
+    expect(text).toContain('hash: 0xbeef')
+    expect(text).toContain('receiptStatus: success')
+    expect(text.length).toBeLessThanOrEqual(4_096)
+  })
+
+  it('does not cut a surrogate pair in half when it caps the body', () => {
+    const args = Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`a${i}`, '\u{1f600}'.repeat(100)]))
+    const payload = JSON.stringify({
+      id: 'd',
+      type: 'match.final',
+      createdAt: 'n',
+      data: { eventName: 'E', chainId: 1, status: 'final', args },
+    })
+    const { text } = summarise(payload)
+    expect(text.length).toBeLessThanOrEqual(4_096)
+    const last = text.charCodeAt(text.length - 1)
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false)
+  })
+
+  it('leaves out the empty brackets when a transaction has neither status', () => {
+    const payload = JSON.stringify({
+      id: 'd',
+      type: 'tx.submitted',
+      createdAt: 'n',
+      data: { txId: 'tx-1', chainId: 1 },
+    })
+    expect(summarise(payload).subject).toBe('Blockwarden: tx.submitted on chain 1')
+  })
+
+  it('caps the subject it generates rather than writing a header of any length', () => {
+    const payload = JSON.stringify({
+      id: 'd',
+      type: 'match.final',
+      createdAt: 'n',
+      data: { eventName: 'E'.repeat(500), chainId: 1, status: 'final' },
+    })
+    expect(summarise(payload).subject.length).toBeLessThanOrEqual(203)
+  })
+})
+
+describe('subjectLine', () => {
+  it('collapses whitespace so a caller cannot fold a header', () => {
+    expect(subjectLine('  Large\r\n transfer  ')).toBe('Large transfer')
+  })
+
+  it('caps a subject of any length', () => {
+    expect(subjectLine('s'.repeat(500)).length).toBeLessThanOrEqual(203)
   })
 })
