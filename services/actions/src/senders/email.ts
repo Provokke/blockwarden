@@ -1,15 +1,16 @@
 import { SendEmailCommand, type SESv2Client } from '@aws-sdk/client-sesv2'
 import { truncate } from '../records.js'
-import { summarise } from './render-text.js'
+import { subjectLine, summarise } from './render-text.js'
 import type { Sender } from './types.js'
 
-// SES refuses these for good, so a retry only burns attempts
+// SES refuses these for good, so a retry only burns attempts. NotFoundException is deliberately not here: the
+// only resource SendEmail names is the configuration set, and one that Terraform has not created yet is a
+// deploy window, not a dead message.
 const PERMANENT = new Set([
   'MessageRejected',
   'MailFromDomainNotVerifiedException',
   'AccountSuspendedException',
   'BadRequestException',
-  'NotFoundException',
 ])
 
 export const sendEmail: Sender = async (deps, delivery) => {
@@ -19,19 +20,25 @@ export const sendEmail: Sender = async (deps, delivery) => {
   }
   const { subject, text, html } = summarise(delivery.payload)
   try {
-    await deps.ses.send(
+    const answer = await deps.ses.send(
       new SendEmailCommand({
         FromEmailAddress: deps.fromAddress,
         Destination: { ToAddresses: delivery.target.to },
         Content: {
           Simple: {
-            Subject: { Data: delivery.target.subject ?? subject, Charset: 'UTF-8' },
+            // a caller writes this one, so it is folded onto one line like the generated one
+            Subject: {
+              Data: delivery.target.subject ? subjectLine(delivery.target.subject) : subject,
+              Charset: 'UTF-8',
+            },
             Body: { Text: { Data: text, Charset: 'UTF-8' }, Html: { Data: html, Charset: 'UTF-8' } },
           },
         },
         ...(deps.configurationSet ? { ConfigurationSetName: deps.configurationSet } : {}),
       }),
     )
+    // SES's own id is the only handle on the message once it has left us, so it goes in the log
+    deps.log('SES accepted an email', { deliveryId: delivery.deliveryId, messageId: answer.MessageId })
     return { kind: 'delivered' }
   } catch (err) {
     const name = (err as Error).name
