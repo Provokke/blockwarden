@@ -1,6 +1,6 @@
 import type { SQSRecord } from 'aws-lambda'
 import { describe, expect, it } from 'vitest'
-import { processRecords } from '../../src/batch.js'
+import { DEADLINE_MARGIN_MS, processRecords } from '../../src/batch.js'
 
 const record = (messageId: string, group: string, txId: string) =>
   ({ messageId, body: JSON.stringify({ txId }), attributes: { MessageGroupId: group } }) as unknown as SQSRecord
@@ -46,7 +46,7 @@ describe('processRecords', () => {
   it('stops before starting a record once too little time remains, and hands back every later record too', async () => {
     const seen: string[] = []
     const logs: string[] = []
-    const remaining = [20_000, 5_000, 5_000]
+    const remaining = [DEADLINE_MARGIN_MS + 1, DEADLINE_MARGIN_MS - 1, DEADLINE_MARGIN_MS - 1]
     let call = 0
     const result = await processRecords(
       [record('m1', 'a', 't1'), record('m2', 'b', 't2'), record('m3', 'c', 't3')],

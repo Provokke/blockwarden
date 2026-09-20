@@ -5,6 +5,7 @@ import { SSMClient } from '@aws-sdk/client-ssm'
 import { createDocumentClient } from '@blockwarden/dynamo'
 import { toKmsAccount } from '@blockwarden/kms-signer'
 import type { LocalAccount } from 'viem'
+import { SIGNER_CALLS_PER_MESSAGE, SIGNER_RPC_BUDGET_MS } from '../batch.js'
 import { createRelayerChain, type RelayerChain, type RelayerChainOptions } from '../chain.js'
 import { loadConfig, type RelayerConfig } from '../config.js'
 import { sqsTxQueue, type TxQueue } from '../queue.js'
@@ -29,16 +30,16 @@ const API_TIMEOUT_MS = 15_000
 // A hung URL holds a call for its whole timeout before the fallback moves on, and viem applies any positive timeout,
 // so the 1 second floor is about real RPC latency, not the library.
 // API: every URL hanging in turn fits in its timeout with 3 seconds spare.
-// Signer: a cold first send makes four calls (nonce, block, tip, send), which must fit in 9 seconds so a message
-// started with the batch's 12 second margin ends with time left for DynamoDB and KMS. That holds for 1 or 2 URLs
-// only: the floor binds at 3, where four calls against three hung URLs take 12 seconds, and a dependsOn
-// transaction's extra estimate takes it to 15. Sizing for those would mean a 600 ms timeout, which honest providers
-// miss, so the limitation stands and the design doc records it.
+// Signer: the worst message's calls against every URL have to fit in its share of the function timeout, so that a
+// message started with only the batch margin left still ends with time for DynamoDB and KMS. At the 3 URLs the
+// config allows that is 1,333 ms, above the floor; the floor only binds past the allowed maximum.
 // Sweeper: 20 seconds a call at worst still leaves room for failover on several calls before its hard stop.
 export function chainOptionsFor(kind: FunctionKind, urlCount: number): RelayerChainOptions {
   const clamp = (ms: number, max: number) => Math.max(1_000, Math.min(max, Math.floor(ms)))
   if (kind === 'api') return { timeoutMs: clamp((API_TIMEOUT_MS - 3_000) / urlCount, 4_000), retryCount: 0 }
-  if (kind === 'signer') return { timeoutMs: clamp(9_000 / (4 * urlCount), 2_500), retryCount: 0 }
+  if (kind === 'signer') {
+    return { timeoutMs: clamp(SIGNER_RPC_BUDGET_MS / (SIGNER_CALLS_PER_MESSAGE * urlCount), 2_500), retryCount: 0 }
+  }
   return { timeoutMs: clamp(20_000 / urlCount, 4_000), retryCount: 0 }
 }
 

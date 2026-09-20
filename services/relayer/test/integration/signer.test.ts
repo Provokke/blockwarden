@@ -1,6 +1,7 @@
 import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import { keccak256, parseTransaction, type LocalAccount } from 'viem'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { DEADLINE_MARGIN_MS } from '../../src/batch.js'
 import { EstimateError } from '../../src/chain.js'
 import { MAX_ABANDONED_ATTEMPTS, processTx, type SignerDeps } from '../../src/signer.js'
 import { RelayerStore } from '../../src/store.js'
@@ -194,7 +195,7 @@ describe('processTx', () => {
   it('gives the message back instead of sending at a fresh nonce when the batch deadline is near', async () => {
     const tx = await create()
     chain.sendOutcomes = [{ kind: 'nonce-too-low', message: 'nonce too low' }]
-    await expect(processTx(deps, tx.txId, () => 11_999)).rejects.toThrow(/too little time/)
+    await expect(processTx(deps, tx.txId, () => DEADLINE_MARGIN_MS - 1)).rejects.toThrow(/too little time/)
     const stored = (await store.getTx(tx.txId))!
     // given up and saved first, so the next delivery takes a fresh nonce
     expect(stored).toMatchObject({ status: 'queued', attempts: [] })
@@ -203,7 +204,7 @@ describe('processTx', () => {
     expect(chain.sent).toHaveLength(1)
 
     chain.nonces.pending = 1
-    expect(await processTx(deps, tx.txId, () => 12_000)).toBe('submitted')
+    expect(await processTx(deps, tx.txId, () => DEADLINE_MARGIN_MS)).toBe('submitted')
     expect(chain.sent).toHaveLength(2)
   })
 

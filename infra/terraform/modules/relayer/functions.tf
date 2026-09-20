@@ -1,7 +1,8 @@
 locals {
+  # the signer splits its timeout between one worst-case message's RPC calls and the batch margin (src/batch.ts)
   functions = {
     api     = { timeout = 15, memory = 256 }
-    signer  = { timeout = 30, memory = 256 }
+    signer  = { timeout = 60, memory = 256 }
     sweeper = { timeout = 60, memory = 256 }
   }
 

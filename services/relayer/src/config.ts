@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 const rpcUrl = z.string().url()
 
-// at the signer's 1 second timeout floor, a cold send failing over 3 hung URLs of 4 takes 12 seconds, past its 9
+// past 3 the signer's per-call timeout would hit its 1 second floor, and the worst message would outgrow its budget
 export const MAX_RPC_URLS = 3
 
 const chainSchema = z

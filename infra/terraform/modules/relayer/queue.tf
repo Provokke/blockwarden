@@ -11,7 +11,7 @@ resource "aws_sqs_queue" "txs" {
   # the API sets a deduplication id per enqueue, so a body-hash id would drop the sweeper's requeues
   content_based_deduplication = false
   # six times the signer timeout, as Lambda recommends for an SQS event source
-  visibility_timeout_seconds = 180
+  visibility_timeout_seconds = 360
   message_retention_seconds  = 345600
   sqs_managed_sse_enabled    = true
 
