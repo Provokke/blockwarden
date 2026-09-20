@@ -63,4 +63,47 @@ describe('loadConfig', () => {
     expect(loadConfig(base).reaperLimit).toBe(100)
     expect(() => loadConfig({ ...base, REAPER_LIMIT: '0' })).toThrow('REAPER_LIMIT')
   })
+
+  it('refuses a queue URL that is not a URL, at load rather than at the first delivery', () => {
+    expect(() => loadConfig({ ...base, DELIVERY_QUEUE_URL: 'deliveries' })).toThrow('DELIVERY_QUEUE_URL')
+    expect(() => loadConfig({ ...base, DELIVERY_DLQ_URL: 'sqs.us-east-1.amazonaws.com/1/dlq' })).toThrow(
+      'DELIVERY_DLQ_URL',
+    )
+  })
+
+  it('refuses a target ARN that is not an SQS queue or a Lambda function', () => {
+    for (const arn of ['not-an-arn', 'arn:aws:sns:us-east-1:111122223333:topic', 'arn:aws:sqs:us-east-1:1112:a:b']) {
+      expect(() => loadConfig({ ...base, ALLOWED_TARGET_ARNS: arn }), arn).toThrow('ALLOWED_TARGET_ARNS')
+    }
+  })
+
+  it('refuses a secret parameter that SSM would not accept', () => {
+    expect(() => loadConfig({ ...base, WEBHOOK_SECRET_PARAMETER: 'bw/webhook' })).toThrow('WEBHOOK_SECRET_PARAMETER')
+    expect(() => loadConfig({ ...base, TELEGRAM_TOKEN_PARAMETER: '/bw/telegram token' })).toThrow(
+      'TELEGRAM_TOKEN_PARAMETER',
+    )
+    expect(() =>
+      loadConfig({ ...base, RELAYER_API_URL: 'https://api.example.com', RELAYER_API_KEY_PARAMETER: 'bw/key' }),
+    ).toThrow('RELAYER_API_KEY_PARAMETER')
+  })
+
+  it('refuses a relayer URL that is not a URL', () => {
+    expect(() =>
+      loadConfig({ ...base, RELAYER_API_URL: 'api.example.com', RELAYER_API_KEY_PARAMETER: '/bw/key' }),
+    ).toThrow('RELAYER_API_URL')
+  })
+
+  it('refuses a secret prefix that names no level, so a lone slash cannot open every parameter', () => {
+    for (const prefixes of ['/', '//', '/ ']) {
+      expect(() => loadConfig({ ...base, OUTBOUND_SECRET_PREFIXES: prefixes }), prefixes).toThrow(
+        'OUTBOUND_SECRET_PREFIXES',
+      )
+    }
+  })
+
+  it('takes a secret prefix with or without its trailing slash', () => {
+    expect(
+      loadConfig({ ...base, OUTBOUND_SECRET_PREFIXES: '/billwarden/, /gaswarden' }).outboundSecretPrefixes,
+    ).toEqual(['/billwarden/', '/gaswarden'])
+  })
 })
