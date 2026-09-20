@@ -20,8 +20,8 @@ function run(label, args) {
 }
 
 run('terraform fmt', [...asCaller, '-w', '/tf', terraform, 'fmt', '-check', '-recursive'])
-// the demo stack uses both modules; the example deploys the relayer module alone, with its defaults
-for (const root of ['envs/demo', 'examples/relayer-only']) {
+// the demo stack uses every module; each example deploys one slice alone, with its defaults
+for (const root of ['envs/demo', 'examples/relayer-only', 'examples/monitor-actions-only']) {
   run(`terraform init ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'init', '-backend=false', '-input=false'])
   run(`terraform validate ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'validate'])
 }
