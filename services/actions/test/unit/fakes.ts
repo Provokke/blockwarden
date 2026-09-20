@@ -33,7 +33,10 @@ export function fakeLookup(rules: Record<string, CompiledRuleView>, signers: Rec
 
 // the store methods the fake stands in for; taking them off DeliveryStore is what makes the fake diverging from
 // the real store a compile error rather than something a test quietly proves nothing about
-export type FakeDeliveryStore = Pick<DeliveryStore, 'create' | 'markQueued' | 'markDead' | 'listDue' | 'listDuePage'>
+export type FakeDeliveryStore = Pick<
+  DeliveryStore,
+  'create' | 'get' | 'markQueued' | 'markDead' | 'listDue' | 'listDuePage'
+>
 
 // where a page of the fake's due index stopped: the real store keeps the last item's keys per shard, and the
 // fake keeps the same thing for its one list, so requeuing an item does not shift the position of the next page
@@ -80,6 +83,11 @@ export function fakeStore(): { store: FakeDeliveryStore; items: Map<string, Deli
       }
       items.set(key, record)
       return record
+    },
+    // the real store reads by the table's own key, so the fake looks the item up by the same pair rather than
+    // searching its map for something that merely resembles it
+    async get(ref) {
+      return items.get(`${ref.subject}|${ref.sk}`)
     },
     // mirrors store.ts: queuing moves the due time out by the reaper's grace, or every sweep would queue this
     // delivery again the moment it looked at it
