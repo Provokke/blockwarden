@@ -1,6 +1,7 @@
 import {
   MATCH_STATUSES,
   TX_STATUSES,
+  type DecodedValue,
   type MatchEventData,
   type MatchStatus,
   type RelayerTx,
@@ -109,7 +110,26 @@ export function isTxEvent(event: WebhookEvent): event is TxEvent {
 }
 
 export function parseTx(body: RelayerTxBody): RelayerTx {
-  return { ...body, value: BigInt(body.value), gasLimit: BigInt(body.gasLimit) }
+  // a 0.1.x sender leaves revertData out altogether, and the type promises one either way
+  return { ...body, value: BigInt(body.value), gasLimit: BigInt(body.gasLimit), revertData: body.revertData ?? null }
+}
+
+// The sending half of the wire form, where parseTx is the receiving half. viem decodes an ABI integer of 48
+// bits or fewer as a JS number and anything wider as a bigint, but the schema publishes every integer as a
+// decimal string, so a sender converts here and the guard stays strict for everyone reading a payload.
+export function toDecodedValue(value: unknown): DecodedValue {
+  if (typeof value === 'bigint') return value.toString()
+  if (typeof value === 'number') {
+    // no ABI integer decodes to a fraction, so this is a bug in whatever built the value, not a value to round
+    if (!Number.isSafeInteger(value)) throw new TypeError(`${value} is not an integer, so it is not a decoded value`)
+    return value.toString()
+  }
+  if (Array.isArray(value)) return value.map(toDecodedValue)
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, toDecodedValue(v)]))
+  }
+  // a string, a hex string and a boolean are already the wire form
+  return value as DecodedValue
 }
 
 function parseHeader(header: string | null | undefined): { timestamp: number; signatures: string[] } {

@@ -11,6 +11,14 @@ const integer: Check = (v) => Number.isSafeInteger(v)
 // BigInt('') is 0n, so an empty or non-decimal amount must be refused before it gets there
 const decimal: Check = (v) => typeof v === 'string' && /^\d+$/.test(v)
 const hex: Check = (v) => typeof v === 'string' && /^0x[0-9a-fA-F]*$/.test(v)
+// calldata and revert data are any length, but a hash and an address are not: a short one is a truncated
+// value, not a small one, so the fields the schema publishes as fixed width are checked for their width
+const hexOf = (bytes: number): Check => {
+  const pattern = new RegExp(`^0x[0-9a-fA-F]{${bytes * 2}}$`)
+  return (v) => typeof v === 'string' && pattern.test(v)
+}
+const hash = hexOf(32)
+const address = hexOf(20)
 const oneOf =
   (...values: readonly unknown[]): Check =>
   (v) =>
@@ -64,14 +72,14 @@ export function isTxBody(value: unknown): value is RelayerTxBody {
 }
 
 const MATCH_BODY: Record<keyof MatchEventData, Check> = {
-  matchKey: hex,
+  matchKey: hash,
   ruleId: string,
   status: oneOf(...MATCH_STATUSES),
   chainId: integer,
-  address: hex,
-  transactionHash: hex,
+  address: address,
+  transactionHash: hash,
   blockNumber: integer,
-  blockHash: hex,
+  blockHash: hash,
   logIndex: integer,
   ordinal: integer,
   event: string,

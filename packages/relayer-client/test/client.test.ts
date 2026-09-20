@@ -131,6 +131,12 @@ describe('relayer client', () => {
     expect(tx.receiptStatus).toBe('reverted')
   })
 
+  it('reports revertData as null when a 0.1.x relayer leaves the field out', async () => {
+    const { revertData: _absent, ...old } = TX
+    answer = { status: 200, body: JSON.stringify(old) }
+    expect((await getTx({ baseUrl, apiKey: 'k' }, 'tx-1')).revertData).toBeNull()
+  })
+
   it('lists signers', async () => {
     const signers = [{ signerId: 'billing', address: TX.from, chainIds: [84532] }]
     answer = { status: 200, body: JSON.stringify({ signers }) }
