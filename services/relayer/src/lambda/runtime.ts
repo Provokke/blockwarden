@@ -30,7 +30,10 @@ const API_TIMEOUT_MS = 15_000
 // so the 1 second floor is about real RPC latency, not the library.
 // API: every URL hanging in turn fits in its timeout with 3 seconds spare.
 // Signer: a cold first send makes four calls (nonce, block, tip, send), which must fit in 9 seconds so a message
-// started with the batch's 12 second margin ends with time left for DynamoDB and KMS.
+// started with the batch's 12 second margin ends with time left for DynamoDB and KMS. That holds for 1 or 2 URLs
+// only: the floor binds at 3, where four calls against three hung URLs take 12 seconds, and a dependsOn
+// transaction's extra estimate takes it to 15. Sizing for those would mean a 600 ms timeout, which honest providers
+// miss, so the limitation stands and the design doc records it.
 // Sweeper: 20 seconds a call at worst still leaves room for failover on several calls before its hard stop.
 export function chainOptionsFor(kind: FunctionKind, urlCount: number): RelayerChainOptions {
   const clamp = (ms: number, max: number) => Math.max(1_000, Math.min(max, Math.floor(ms)))
