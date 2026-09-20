@@ -1,12 +1,6 @@
-import {
-  type DynamoDBDocumentClient,
-  GetCommand,
-  PutCommand,
-  QueryCommand,
-  type QueryCommandInput,
-} from '@aws-sdk/lib-dynamodb'
+import { type DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { GSI1, GSI2, isConditionFailure } from '@blockwarden/dynamo'
-import { keys } from './keys.js'
+import { DUE_SHARDS, keys } from './keys.js'
 import {
   DELIVERY_TTL_SECONDS,
   MAX_PAYLOAD_BYTES,
@@ -16,6 +10,19 @@ import {
   type DeliveryRef,
   type NewDelivery,
 } from './records.js'
+
+// The reaper leaves a delivery alone until its due time is this far past, so a sweep never races a message
+// already on the queue: it asks for what was due a grace ago.
+export const REAPER_GRACE_MS = 60_000
+
+// one page of the due index, and where the next page starts: one start key per shard
+export type DueCursor = Record<string, Record<string, unknown>>
+
+export type DuePage = { deliveries: DeliveryRecord[]; cursor?: DueCursor }
+
+export type DeadCursor = Record<string, unknown>
+
+export type DeadPage = { deliveries: DeliveryRecord[]; cursor?: DeadCursor }
 
 export class DeliveryConflictError extends Error {
   constructor(deliveryId: string) {
@@ -29,7 +36,7 @@ function item(delivery: DeliveryRecord): Record<string, unknown> {
   const indexes: Record<string, unknown> = {}
   // sparse: a delivery with nothing outstanding is in neither index, so neither is ever scanned
   if (!TERMINAL.has(delivery.status)) {
-    indexes.GSI2PK = keys.dueDeliveries()
+    indexes.GSI2PK = keys.dueDeliveries(keys.dueShard(delivery.deliveryId))
     indexes.GSI2SK = delivery.nextAttemptAt ?? 0
   }
   if (delivery.status === 'dead') {
@@ -37,6 +44,11 @@ function item(delivery: DeliveryRecord): Record<string, unknown> {
     indexes.GSI1SK = `${delivery.createdAt}#${delivery.deliveryId}`
   }
   return { PK, SK, ...delivery, ...indexes }
+}
+
+// what a GSI query needs to carry on where it stopped: the table's own key and the index's
+function startKey(raw: Record<string, unknown>): Record<string, unknown> {
+  return { PK: raw.PK, SK: raw.SK, GSI2PK: raw.GSI2PK, GSI2SK: raw.GSI2SK }
 }
 
 function read(raw: Record<string, unknown>): DeliveryRecord {
@@ -89,8 +101,10 @@ export class DeliveryStore {
     return Item ? read(Item) : undefined
   }
 
+  // queuing moves the due time out by the reaper's grace, or every sweep would queue this delivery again and
+  // the version-conditioned claim would throw all but one of the messages away
   markQueued(delivery: DeliveryRecord, nowMs: number): Promise<DeliveryRecord> {
-    return this.save({ ...delivery, status: 'queued' }, nowMs)
+    return this.save({ ...delivery, status: 'queued', nextAttemptAt: nowMs + REAPER_GRACE_MS }, nowMs)
   }
 
   // the claim is the lease: nextAttemptAt moves out by the lease, so the reaper leaves an attempt in flight alone
@@ -131,33 +145,75 @@ export class DeliveryStore {
     return this.save({ ...rest, status: 'dead', lastError: truncate(error), ...codeOf(statusCode) }, nowMs)
   }
 
+  // a redrive is a new life: the old first attempt would make any latency measured on it wrong for ever
   reset(delivery: DeliveryRecord, nowMs: number): Promise<DeliveryRecord> {
-    const { lastError: _cleared, lastStatusCode: _code, ...rest } = delivery
+    const { lastError: _cleared, lastStatusCode: _code, firstAttemptAt: _first, ...rest } = delivery
     return this.save({ ...rest, status: 'pending', attempts: 0, nextAttemptAt: nowMs }, nowMs)
   }
 
   async listDue(nowMs: number, limit: number): Promise<DeliveryRecord[]> {
-    return this.query(
-      {
-        IndexName: GSI2,
-        KeyConditionExpression: 'GSI2PK = :pk AND GSI2SK <= :now',
-        ExpressionAttributeValues: { ':pk': keys.dueDeliveries(), ':now': nowMs },
-      },
-      limit,
+    return (await this.listDuePage(nowMs, limit)).deliveries
+  }
+
+  // One page of the deliveries due by nowMs, oldest first; pass the cursor back for the next one, or a backlog
+  // longer than the limit hands back the same oldest page for ever and hides everything behind it.
+  async listDuePage(nowMs: number, limit: number, cursor?: DueCursor): Promise<DuePage> {
+    const shards = await Promise.all(
+      Array.from({ length: DUE_SHARDS }, async (_, shard) => {
+        const from = cursor?.[shard]
+        const page = await this.doc.send(
+          new QueryCommand({
+            TableName: this.tableName,
+            IndexName: GSI2,
+            KeyConditionExpression: 'GSI2PK = :pk AND GSI2SK <= :now',
+            ExpressionAttributeValues: { ':pk': keys.dueDeliveries(shard), ':now': nowMs },
+            Limit: limit,
+            ...(from ? { ExclusiveStartKey: from } : {}),
+          }),
+        )
+        return { shard, from, items: page.Items ?? [], more: page.LastEvaluatedKey !== undefined }
+      }),
     )
+    // each shard comes back oldest first, so merging on the due time is what makes the whole index oldest first
+    const merged = shards
+      .flatMap(({ shard, items }) => items.map((item) => ({ shard, item })))
+      .sort((a, b) => Number(a.item.GSI2SK) - Number(b.item.GSI2SK))
+    const page = merged.slice(0, limit)
+    const next: DueCursor = {}
+    for (const { shard, from } of shards) {
+      const taken = page.filter((entry) => entry.shard === shard)
+      const last = taken[taken.length - 1]
+      if (last) next[shard] = startKey(last.item)
+      // nothing of this shard made the page, so the next one starts it exactly where this one did; dropping the
+      // start key here would send an exhausted shard back to its oldest item and read it all again
+      else if (from) next[shard] = from
+    }
+    const drained = page.length === merged.length && shards.every(({ more }) => !more)
+    return { deliveries: page.map(({ item }) => read(item)), ...(drained ? {} : { cursor: next }) }
   }
 
   async listDead(limit: number): Promise<DeliveryRecord[]> {
-    return this.query(
-      {
+    return (await this.listDeadPage(limit)).deliveries
+  }
+
+  // one page of the dead letters, oldest first; the redrive script walks the whole list with the cursor
+  async listDeadPage(limit: number, cursor?: DeadCursor): Promise<DeadPage> {
+    const { Items, LastEvaluatedKey } = await this.doc.send(
+      new QueryCommand({
+        TableName: this.tableName,
         IndexName: GSI1,
         KeyConditionExpression: 'GSI1PK = :pk',
         ExpressionAttributeValues: { ':pk': keys.deliveriesByStatus('dead') },
-      },
-      limit,
+        Limit: limit,
+        ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+      }),
     )
+    return { deliveries: (Items ?? []).map(read), ...(LastEvaluatedKey ? { cursor: LastEvaluatedKey } : {}) }
   }
 
+  // Nothing writes a delivery item inside a DynamoDB transaction, so a raw TransactionConflictException cannot
+  // reach a caller and the version condition below is the only failure to map. A transactional writer on these
+  // items would need the relayer's retry treatment here too.
   private async save(next: DeliveryRecord, nowMs: number): Promise<DeliveryRecord> {
     const saved = { ...next, version: next.version + 1, updatedAt: new Date(nowMs).toISOString() }
     try {
@@ -175,11 +231,6 @@ export class DeliveryStore {
       throw err
     }
     return saved
-  }
-
-  private async query(input: Omit<QueryCommandInput, 'TableName'>, limit: number): Promise<DeliveryRecord[]> {
-    const page = await this.doc.send(new QueryCommand({ ...input, TableName: this.tableName, Limit: limit }))
-    return (page.Items ?? []).map(read)
   }
 }
 
