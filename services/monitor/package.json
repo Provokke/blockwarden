@@ -17,6 +17,7 @@
     "@aws-sdk/client-ssm": "3.1131.0",
     "@aws-sdk/lib-dynamodb": "3.1131.0",
     "@blockwarden/core": "workspace:*",
+    "@blockwarden/dynamo": "workspace:*",
     "viem": "2.56.3"
   },
   "devDependencies": {

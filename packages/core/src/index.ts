@@ -17,3 +17,12 @@ export {
 } from './rule.js'
 export type { RawLog } from './types.js'
 export { DeadlineError, fetchLogsAdaptive, type FetchLogsOptions, type FetchRange } from './fetch-logs.js'
+export {
+  bumpFees,
+  clampFees,
+  DEFAULT_PRICE_BUMP_PERCENT,
+  isAcceptedReplacement,
+  minReplacementFees,
+  type BumpResult,
+  type Fees,
+} from './fees.js'

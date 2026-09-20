@@ -1,0 +1,28 @@
+import { randomUUID } from 'node:crypto'
+import type { Context, SQSBatchResponse, SQSEvent } from 'aws-lambda'
+import { processRecords } from '../batch.js'
+import { processTx, type SignerDeps } from '../signer.js'
+import { createLogger, createRuntime, once } from './runtime.js'
+
+const logger = createLogger('blockwarden-relayer-signer')
+
+const deps = once<SignerDeps>(async () => {
+  const runtime = await createRuntime(logger, 'signer')
+  return {
+    store: runtime.store,
+    chainFor: (chainId) => runtime.chains.get(chainId),
+    accountFor: runtime.accountFor,
+    queue: runtime.queue,
+    now: () => new Date(),
+    newTxId: randomUUID,
+    // per container, so a cold start reconciles each signer's nonce with the chain before its first send
+    reconciled: new Set(),
+    log: runtime.log,
+  }
+})
+
+export async function handler(event: SQSEvent, context: Context): Promise<SQSBatchResponse> {
+  const signerDeps = await deps()
+  const remainingMs = () => context.getRemainingTimeInMillis()
+  return processRecords(event.Records, (txId) => processTx(signerDeps, txId, remainingMs), signerDeps.log, remainingMs)
+}

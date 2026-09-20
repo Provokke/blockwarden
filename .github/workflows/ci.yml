@@ -22,8 +22,15 @@ jobs:
       - run: pnpm run format:check
       - run: pnpm run typecheck
       - run: pnpm run test
+      # pulled up front so the downloads do not count against the tests' container start timeouts
+      - run: |
+          docker pull ghcr.io/foundry-rs/foundry:v1.8.1
+          docker pull amazon/dynamodb-local:3.3.1
+          docker pull motoserver/moto:5.2.3
       - run: pnpm run test:integration
       - run: pnpm --filter @blockwarden/monitor run build
+      - run: pnpm --filter @blockwarden/relayer run build
+      - run: node scripts/pack-check.mjs
 
   terraform:
     runs-on: ubuntu-latest

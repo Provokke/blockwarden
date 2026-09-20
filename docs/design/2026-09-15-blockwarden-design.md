@@ -68,7 +68,7 @@ pnpm workspaces. `packages/core` has no AWS or network dependencies so it can be
 
 **Monitor.** EventBridge Scheduler invokes one poller per chain every minute, and a DynamoDB lease keeps a single poller active per chain. Each run does two scans. The durable scan reads logs from its cursor up to the chain's `finalized` block, so every match it writes is final and never needs retracting. The fast scan reads the unfinalized tail up to the head for rules in `fast` mode and writes provisional matches, which the durable scan later marks `final` or `dropped`. Final records trail the head by the chain's finality. Measured on 2026-09-15 through the official RPCs, that was about 19 minutes on Base and on Arbitrum. On Ethereum it is about 13 minutes by protocol design.
 
-**Relayer.** `POST /v1/relayer/txs` validates the request against the signer's policy and enqueues it on an SQS FIFO queue with the signer id as the message group. The signer Lambda consumes the queue, so transactions for one signer are processed strictly in order. A sweeper Lambda runs every minute to track receipts, replace stuck transactions and fill nonce gaps.
+**Relayer.** `POST /v1/relayer/txs` validates the request against the signer's policy and enqueues it on an SQS FIFO queue with the signer id as the message group. The signer Lambda consumes the queue, so transactions for one signer are processed strictly in order. A sweeper Lambda runs every minute to track receipts, replace stuck transactions, requeue transactions that waited too long and resume paused signers. A transaction the node refuses after its nonce was reserved, when no node ever took any of its signatures, gets a filler transaction at that nonce, so later nonces are not blocked.
 
 **Actions.** A dispatcher Lambda reads the DynamoDB stream for match status changes and enqueues deliveries on SQS with a dead-letter queue. Channel senders handle webhook, SES email, Telegram and relayer calls.
 
@@ -92,11 +92,13 @@ One DynamoDB table in on-demand mode, with TTL enabled and streams on (new and o
 | Rule | `RULE#<ruleId>` | `META` | GSI1: `CHAIN#<chainId>#RULES` / `RULE#<ruleId>`, set only while active |
 | Match | `MATCH#<matchKey>` | `META` | status `provisional`, `final` or `dropped`; block number, block hash and log index where first recorded; a final record updates them; TTL 30 days; GSI1: `RULE#<ruleId>` / `<blockNumber>#<logIndex>`; GSI2 while provisional: `CHAIN#<chainId>#PROVISIONAL` / `<blockNumber>` |
 | Delivery | `MATCH#<matchId>` | `DELIVERY#<actionId>#<event>` | attempts, last error, status |
-| Signer | `SIGNER#<signerId>` | `META` | address, KMS key id, policy, `webhooks` (URLs subscribed to this signer's `tx.*` events) |
-| Signer nonce | `SIGNER#<signerId>` | `NONCE#<chainId>` | atomic counter |
-| Transaction | `TX#<txId>` | `META` | status, nonce, raw signed tx, hash, fee history; GSI2 while unsettled: `TXPENDING#<chainId>` / `<submittedAt>` |
-| Idempotency | `IDEMP#<apiKeyHash>#<key>` | `META` | maps to `txId`, TTL 24 hours |
-| API key | `APIKEY#<sha256>` | `META` | signer allowlist, policy overrides |
+| Signer | `SIGNER#<signerId>` | `META` | KMS key id, chain ids, policy, `webhooks` (URLs subscribed to this signer's `tx.*` events) and the SSM name of their secret; written by Terraform and never changed at runtime. The address is derived from the key's public key, because Terraform has no keccak256 |
+| Signer nonce | `SIGNER#<signerId>` | `NONCE#<chainId>` | `nextNonce`, taken in one DynamoDB transaction with the write that puts the nonce on the transaction |
+| Signer pause | `SIGNER#<signerId>` | `PAUSE#<chainId>` | the balance the paused transaction needs and when the pause began; present only while paused |
+| Spend counter | `SIGNER#<signerId>` | `SPEND#<chainId>#<yyyy-mm-dd>` | `spentGwei`, the worst-case cost reserved today (value plus gas limit at the policy fee cap), TTL 2 days |
+| Transaction | `TX#<txId>` | `META` | kind (`relay` or `filler`), status, nonce, every signed attempt with its raw bytes and fees, the mined receipt, status history, `reference`, `dependsOn`, `version` for optimistic writes; GSI2 while unsettled: `TXPENDING#<chainId>` / `<createdAt epoch ms>` |
+| Idempotency | `IDEMP#<apiKeyHash>#<key>` | `META` | maps to `txId`, TTL 24 hours; DynamoDB deletes up to about a day late, so a key can stay a duplicate for about 48 hours |
+| API key | `APIKEY#<sha256>` | `META` | signer allowlist, label |
 | SIWE nonce | `SIWE#<nonce>` | `META` | TTL 5 minutes |
 
 `matchKey` is defined under "Match keys" below. Matches are created with `attribute_not_exists(PK)` and upgraded with a condition on their current status, which makes replays harmless.
@@ -147,7 +149,7 @@ Each run takes the chain's lease, runs both scans inside a 50-second budget, and
 
 ### Match keys
 
-`matchKey` is `keccak256(chainId, transactionHash, ordinal, ruleId)`. `ordinal` is the log's position among the logs in the same transaction that match the same rule. A transaction's logs all sit in one block, so both scans compute the same key for the same event. The key leaves out the block, so a provisional record and its final record stay one item even when a shallow reorg re-includes the transaction in a different block.
+`matchKey` is `keccak256(chainId, transactionHash, ordinal, ruleId)`. `ordinal` is the log's position among the logs in the same transaction and block that match the same rule. A transaction's logs all sit in one block, so both scans compute the same key for the same event. The block is counted too because one fast-scan read can be several `eth_getLogs` responses (a halved range), and a reorg between them can return the same transaction in an orphaned block and in its new block; counted per transaction alone, the second copy would take ordinal 1 and become a provisional record for an event that never happened. The key leaves out the block, so a provisional record and its final record stay one item even when a shallow reorg re-includes the transaction in a different block.
 
 Known limit: if a reorg changes which of a transaction's logs match (for example, it now emits a different number of them), the fast alert ends `dropped` and the final record arrives as a separate event.
 
@@ -162,30 +164,47 @@ The dispatcher reads stream records and enqueues a delivery when:
 
 Each delivery is keyed by `matchKey`, `actionId` and event, and written with a conditional put, so stream redelivery does not cause duplicate sends.
 
-Webhooks are POSTed with `X-Blockwarden-Signature` (HMAC-SHA256 of timestamp and body) and `X-Blockwarden-Delivery` (the delivery id, for receiver-side idempotency).
+Webhooks are POSTed with `X-Blockwarden-Signature` and `X-Blockwarden-Delivery` (the delivery id, for receiver-side idempotency). The signature header is `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw body>">`, and may carry several `v1` values while a secret rotates. The body is `{ id, type, createdAt, data }`, where `id` is the delivery id; for a `tx.*` event, `data` is the transaction as `GET /relayer/txs/{txId}` returns it. `verifyWebhook()` in `@blockwarden/relayer-client` checks the signature and a 300-second tolerance on `t`. A delivery id must be unique per status-history entry, not per transaction and status, so receivers do not drop the second `tx.mined` after a reorg as a duplicate.
 
 ### Relayer
 
-1. `POST /v1/relayer/txs` takes `{ signerId, chainId, to, data, value?, gasLimit?, idempotencyKey }`.
-2. The API checks the signer's policy (allowed `to` addresses, maximum gas, daily spend cap), then runs `eth_estimateGas`. A call that would revert is rejected here, before any nonce is reserved.
-3. It writes the transaction as `queued`, writes the idempotency record, and sends it to SQS FIFO with group id `signerId` and deduplication id `idempotencyKey`. A repeated `idempotencyKey` returns the original `txId`.
+1. `POST /v1/relayer/txs` takes `{ signerId, chainId, to, data, value?, gasLimit?, idempotencyKey, reference?, dependsOn? }`. `value` and `gasLimit` are decimal strings. `reference` is up to 128 characters of the caller's own, returned with the transaction.
+2. The API checks the signer's policy, then runs `eth_estimateGas` from the signer's address. A call that would revert is rejected with 422 `estimate_reverted` and its raw revert data, before any nonce is reserved. Any other estimate refusal, geth's "gas required exceeds allowance" included, is 422 `estimate_failed`, and an RPC that is unreachable or rate-limits the call is 503 `rpc_unavailable`. These answers carry fixed messages, never the node's text, which can include the RPC URL. The policy has:
+   - `allowedTo`: the contracts the signer may call, each with an optional function selector allowlist (`0x` allows a plain transfer) and, for an ERC-20, an optional list of the only recipients a `transfer` may send to, so a leaked API key cannot move collected tokens elsewhere. An entry with recipients must have exactly the `transfer` selector (`0xa9059cbb`) as its selector list, because `approve` or `transferFrom` would move the tokens anywhere. On an entry with selectors, calldata of 1 to 3 bytes is refused, since a contract's fallback would still run it. A `transfer` must re-encode byte for byte to be checked against the recipients, so dirty address padding or trailing bytes cannot pass as the transfer they look like,
+   - a maximum gas limit and calldata of at most 8 KiB,
+   - a fee cap (`maxFeePerGas`, `maxPriorityFeePerGas`) that every signature, replacements included, stays under,
+   - a daily spend cap per chain. Each request reserves its worst case, value plus gas limit at the fee cap, so no number of replacements can exceed it.
+3. It writes the transaction as `queued`, the idempotency record and the spend reservation in one DynamoDB transaction, then sends the transaction to SQS FIFO with group id `signerId` and deduplication id `<txId>-<enqueue count>`. A repeated `idempotencyKey` from the same API key returns the original transaction, and one with a different body is refused with 409. The comparison normalises decimal amounts, so `"00"`, `"0"` and an omitted `value` are the same request. A DynamoDB transaction conflict is retried with jitter; when the retries run out, the API answers 503 `busy`, which is safe to retry with the same idempotency key. The deduplication id is not the caller's key, because two API keys may pick the same key, and because the sweeper must be able to requeue inside SQS's five-minute window.
 4. The signer Lambda:
-   - reserves the next nonce with an atomic update on `NONCE#<chainId>`, reconciling with `eth_getTransactionCount(address, "pending")` on cold start,
-   - builds an EIP-1559 transaction from current fee estimates,
+   - reserves the next nonce and writes it onto the transaction in one DynamoDB transaction, after raising the counter to `eth_getTransactionCount(address, "pending")` on the first transaction for that signer and chain in each container,
+   - builds an EIP-1559 transaction from current fee estimates, clamped to the policy fee cap,
    - asks KMS to sign the digest with `ECDSA_SHA_256`,
    - parses the DER signature into `r` and `s`, normalises `s` to the lower half of the curve order (EIP-2), and finds `v` by recovering against the signer's known address,
-   - stores the raw signed transaction, sends it with `eth_sendRawTransaction`, and sets status `submitted`.
+   - stores the raw signed transaction before sending it, so a crash after the send rebroadcasts the same bytes, then sends it with `eth_sendRawTransaction` and sets status `submitted`, recording on the attempt that a node took it (`acceptedAt`), which an unclassified answer or a timeout also counts as,
+   - for a node that refuses the transaction outright (for example intrinsic gas too low), sets it `failed` and queues a filler, since a first send was never taken by a node: a 0-value transfer to itself at the same nonce, estimated like any transaction. A filler that is refused gets no filler of its own,
+   - stops taking messages from a batch when less than one worst-case message's time remains before the Lambda timeout (`DEADLINE_MARGIN_MS`, 33 seconds of its 60), and hands the rest back to SQS. For the same reason, after giving up a nonce on `nonce too low` it hands the message back instead of signing at a fresh nonce when less than that remains; the reset is already saved, so the next delivery takes the fresh nonce. A malformed message, one that is not JSON or has no `txId`, fails every delivery, so it reaches the dead-letter queue instead of vanishing.
 5. The sweeper queries GSI2 `TXPENDING#<chainId>` every minute:
-   - A receipt is found: set `mined`, then `confirmed` after the chain's confirmation count (default 5 blocks on Base Sepolia and Arbitrum Sepolia). Drop out of GSI2.
-   - No receipt after the chain's stuck threshold (default 90 seconds since the last send): re-sign the same nonce with fees raised by the greater of 12.5% and the current estimate, capped at the policy's maximum fee, and resend.
-   - A receipt disappears after a reorg: set back to `submitted` and rebroadcast the stored raw transaction.
-   - A transaction fails permanently after its nonce was reserved: send a 0-value self-transfer at that nonce so later transactions are not blocked.
+   - A receipt for any signed attempt, or for a hash dropped to make room (see below), is found: set `mined` with the hash, block and whether it succeeded or reverted, then `confirmed` once the block is the chain's confirmation count deep (default 5, counting its own block). Confirmed transactions leave GSI2.
+   - No receipt after the chain's stuck threshold (default 90 seconds since the last signature, or since the first send of it a node acknowledged, which covers a refused attempt taken on a rebroadcast and bytes saved before a crash), and this is the next nonce to be mined: re-sign the same nonce with each fee field raised to the greater of 12.5% over the newest attempt the node did not refuse, the current estimate and geth's replacement minimum (both fields at least 10% higher and strictly higher), capped at the policy fee cap. If the newest attempt is a refused replacement that already carried fees at least that high, the raise starts from it instead. A later nonce is not replaced while a lower one is outstanding.
+   - Every attempt was refused, so none is in a mempool: sign a fresh attempt at the estimate clamped to the cap, with no replacement rule. An estimate whose `maxFeePerGas` is over the cap flags `feeCapReached` and is clamped the same way, since bytes at the cap can still be taken when the base fee dips. It is not signed when a refused attempt already carried fees at least as high in both fields, unless that refusal was at the cap and the new fees are under it, which is how a transaction refused during a spike recovers. Instead the highest such attempt that still has its raw bytes is rebroadcast, since the base fee may have fallen below it; one the node takes counts as live again, and its stuck clock starts over. If none has its bytes, one attempt is signed at the highest refused fees. A fresh attempt refused outright is handled as a refused rebroadcast, below. An accepted replacement or fresh attempt clears `feeCapReached`.
+   - The cap is below the replacement minimum, or 10 attempts the node did not refuse have been signed: no replacement is possible. A refused attempt never reached a mempool, so it does not count. The transaction is flagged `feeCapReached`, logged once, and its newest unrefused attempt is rebroadcast when the node no longer has it. The pending-age alarm fires if it never mines.
+   - A node that forgot a transaction, or a crash between saving an attempt and sending it: the newest attempt the node did not refuse is rebroadcast.
+   - A receipt disappears or moves to another block after a reorg: set back to `submitted` and rebroadcast the stored raw transaction.
+   - Every send, rebroadcast and receipt marks the attempt as taken by a node (`acceptedAt`), and a dropped attempt that was taken sets `retiredAccepted`. A rebroadcast, replacement or fresh attempt refused outright fails the transaction and queues a filler only when no signature at the nonce, stored or dropped, was ever taken and none is still unanswered, the same rule as the signer's first send. Otherwise a taken signature may still be mined, and a filler would hit nonce too low while a retry ran the payload twice, so the attempt is only marked refused and the transaction stays `submitted`: a receipt for any hash marks it mined, a nonce used by none of our hashes fails it as below, and while the nonce stays unused the fresh-attempt rule above signs or rebroadcasts again once it is stuck. Insufficient funds pauses the signer; underpriced marks it for replacement on the next sweep.
+   - The nonce is used but no receipt matches any of our hashes: set `failed` once the confirmation count of blocks and at least 10 minutes have passed since the nonce first read as used, and a receipt lookup against every RPC URL finds none of our hashes with no URL erroring. A lagging node can show a used nonce for a while, so the marker clears if the nonce reads as unused again. No filler is sent. A key used outside the relayer does this, and a filler says so differently, because a filler's nonce is normally taken by the transaction it fills. Once that wait is over the all-URL lookups are the only ones a sweep makes, since they cover every hash the per-sweep lookups do.
+   - A replacement refused for insufficient funds pauses the signer, as a refused first send does.
+   - At most 16 attempts keep their raw bytes on the item, which DynamoDB caps at 400 KB. Past that, the oldest refused attempts keep only their hash, which is all a receipt lookup needs. At 64 stored attempts, a new signature takes the place of the oldest refused attempt, preferring one already without its bytes; an attempt the node did not refuse is never dropped. Stored bytes are still rebroadcast at the limit. A dropped attempt's hash moves to `retiredHashes`, because a node may have taken it before refusing it: its receipt is looked up on every sweep once the nonce reads as used, and before a used nonce fails the transaction. At about 70 bytes each, the 512 retired hashes kept at most add about 36 KB, so 16 signed attempts with calldata (about 290 KB), 48 hash-only attempts (about 22 KB), 4 abandoned attempts (about 2 KB), a full `retiredHashes` and 68 refusal messages (about 18 KB) stay near 355 KB. A node's answer is stored and logged as at most 256 characters with a trailing `...`, since some echo the whole raw transaction back: a 16 KB answer on every attempt would put the item past 1.3 MB, which DynamoDB refuses, and after that the transaction could not even be marked failed. Once it is full, no retired hash is dropped: a signature that needs room is not made, the transaction is flagged `retiredHashesFull` and logged once, and stored bytes are still rebroadcast as fees fall. The pending-age alarm fires if it never mines.
+   - **Receipt lookups per sweep.** A transaction at those limits holds 576 hashes, so each transaction gets an equal share of what is left of the sweep deadline for its lookups: a page of two splits what remains in half. Hashes are walked newest first, stored ones before dropped ones, and a walk that runs out of its share stops without deciding anything and saves how far it got in `lookupFrom`, so the next sweep carries on from there instead of starting over. The two walks, the per-sweep one and the all-URL one before failing, count separately, and a finished walk clears the marker so the next one starts at the newest hash again. Without that share one transaction with hundreds of hashes would use a whole sweep and starve the rest of the page; without the resume point it would never reach the end of its own hashes. Before an all-URL walk that resumed from a marker fails the transaction, it asks every URL again for the stored attempts, newest first: a node that lagged when those hashes were walked may have caught up since, and only a walk done in one sweep saw them all at one moment. Those at most 64 calls continue the same marker, so a re-check cut short carries on next sweep and decides nothing.
+   - A queued transaction sat for 10 minutes: send it to the queue again. A paused signer's transactions wait instead, and once its balance covers the transaction that paused it, the pause is cleared and its queued transactions are requeued, lowest nonce first.
 
-Status values: `queued`, `submitted`, `mined`, `confirmed`, `failed`, `cancelled`. Every status change emits a `tx.*` event through the actions pipeline, so relayer users can subscribe by webhook instead of polling.
+   The sweeper pages through every pending transaction, so one signer's backlog does not hide another's. An error on one transaction is logged and counted, and the sweep moves on. Chains are swept in parallel against a hard stop 3 seconds before the Lambda timeout. The invocation fails if any chain failed or did not finish, or any transaction errored, so the function's Errors alarm fires.
+6. A transaction with `dependsOn` names an earlier `txId` of a signer the same API key may use, on the same chain, and must carry `gasLimit`. It is not estimated when submitted. The signer leaves it queued, without a nonce, until the dependency is `confirmed`. Then it runs the estimate: a revert, or any other refusal (an unreachable RPC is retried instead), fails it without taking a nonce. The revert payload is stored in the error the same 256 characters at a time as a node's answer, since the node chooses how long it is; a 422 from the API still carries the whole of it. A dependency that fails, or is confirmed as reverted, fails the dependent transaction too. The sweeper requeues it once when the dependency settles.
+
+Status values: `queued`, `submitted`, `mined`, `confirmed`, `failed`, `cancelled`. `cancelled` is reserved for a cancel operation that no route offers yet. Every status change is appended to the transaction's history and arrives on the table stream. Milestone 3 turns those changes into `tx.*` events through the actions pipeline, so relayer users can subscribe by webhook instead of polling.
 
 ## HTTP API
 
-All routes are under `/v1`. Dashboard routes need a SIWE session. Relayer routes accept a session or an API key in `Authorization: Bearer <key>`.
+All routes are under `/v1`. Dashboard routes need a SIWE session. Relayer routes accept a session or an API key in `Authorization: Bearer <key>`. Milestone 2 ships the three relayer routes below that say so, with API keys only, on their own API Gateway HTTP API in `modules/relayer`; milestone 4 adds sessions and the rest.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -197,9 +216,9 @@ All routes are under `/v1`. Dashboard routes need a SIWE session. Relayer routes
 | GET | `/matches?ruleId=&cursor=` | match history |
 | GET | `/deliveries?status=&cursor=` | delivery history |
 | POST | `/deliveries/{deliveryId}/redrive` | resend from the dead-letter queue |
-| GET | `/relayer/signers` | signers (defined in Terraform, read-only through the API) |
-| POST | `/relayer/txs` | submit |
-| GET | `/relayer/txs/{txId}` | status |
+| GET | `/relayer/signers` | signers the key may use, with their addresses (milestone 2) |
+| POST | `/relayer/txs` | submit (milestone 2) |
+| GET | `/relayer/txs/{txId}` | status (milestone 2) |
 | GET | `/relayer/txs?status=&cursor=` | list |
 | GET | `/health` | per-chain cursor lag, queue depth |
 
@@ -209,14 +228,16 @@ Sessions are HS256 JWTs in an `HttpOnly; Secure; SameSite=Strict` cookie, 12-hou
 
 Two follow-up projects depend on this one, so these interfaces are treated as public and versioned with semver from the first release:
 
-- **`@blockwarden/kms-signer`** exports `toKmsAccount({ keyId, region })`, returning a viem `LocalAccount` that implements `signTransaction`, `signMessage` and `signTypedData`. The gas-sponsorship project uses `signTypedData` for paymaster approvals.
-- **`@blockwarden/relayer-client`** exports `relay()`, `getTx()` and `verifyWebhook()`. The subscriptions project uses it to call `charge()` each billing period.
-- **`modules/relayer`** is a Terraform module that deploys only the relayer, signer keys and sweeper, so a downstream project does not have to deploy the monitor.
+- **`@blockwarden/kms-signer`** exports `toKmsAccount({ keyId, region?, client? })`, resolving to a viem `LocalAccount` that implements `sign`, `signTransaction`, `signMessage` and `signTypedData`. It reads the public key once and keeps the address, and accepts an existing KMS client. It refuses blob transactions, including an untyped transaction viem infers as one from its blob fields, and a digest that is not 32 bytes. `@blockwarden/kms-signer/testing` exports `createLocalDigestSigner(privateKey)`, an in-memory key behind the same interface, which returns DER with high `s` about half the time as KMS does, for downstream integration tests. The gas-sponsorship project uses `signTypedData` for paymaster approvals.
+- **`@blockwarden/relayer-client`** exports `relay()`, `getTx()`, `listSigners()`, `verifyWebhook()`, `signWebhook()`, `isTxEvent()` and `parseTx()`. A transaction reports `receiptStatus` (`success` or `reverted`), `hash` and `blockNumber`, and a 422 from a reverting estimate carries `revertData`. `verifyWebhook()` refuses an empty or non-string secret and a tolerance that is not a finite, non-negative number. `relay()`, `getTx()` and `listSigners()` reject only with `RelayerApiError`, whose codes include `network_error` (status 0), `invalid_response` and `throttled`. Every API key allowed a signer can read that signer's transactions. The subscriptions project uses it to call `charge()` each billing period.
+- **`modules/relayer`** is a Terraform module that deploys only the relayer, signer keys and sweeper, so a downstream project does not have to deploy the monitor. It creates its own table and alarm topic unless given the full stack's. Its variable validations mirror the relayer's runtime schemas, so a policy the relayer would refuse fails at plan. It takes signers with their policies, webhook URLs and webhook secret parameter, and optional API keys, which it stores in SSM. It outputs the API URL, the signer key ARNs and the API key parameter names; signer addresses come from `GET /relayer/signers`.
 
 ## Error handling
 
 **RPC**
-- Each chain has an ordered list of RPC URLs with failover.
+- Each chain has an ordered list of RPC URLs with failover. The relayer refuses more than 3 per chain at startup, since past 3 the signer's per-call timeout would hit its 1 second floor and the worst message would outgrow its budget.
+- The relayer tries each URL once per call, with a timeout sized so a hung URL cannot use up the function: the API splits 12 seconds over its URLs (1 to 4 seconds each), and the sweeper splits 20 seconds (1 to 4 seconds each).
+- The signer's timeout is derived from its own Lambda timeout rather than a fixed budget. Of its 60 seconds, 6 are kept for the ten or so AWS round trips a message makes and the rest splits in two: 27 seconds of RPC for one message, and a 33 second batch margin, which has to hold a whole message because a message may start with only the margin left. The worst message makes 7 calls (a `dependsOn` estimate, the cold nonce read, three for the fee estimate, the send, and the receipt check a `nonce too low` answer costs), so each call gets `clamp(27000 / (7 × urls), 1000, 2500)`: 2,500 / 1,928 / 1,285 ms for 1 / 2 / 3 URLs. At 3 URLs all hung that is 26,985 ms, inside the 27 seconds, and the 1 second floor no longer binds. The RPC calls fill that budget at 2 URLs, so the 6 seconds is the only slack: at about 600 ms a round trip it absorbs a throttled write the SDK retries. viem has no minimum of its own: it arms the timer for any positive timeout. The queue's visibility timeout is six times the function timeout, 360 seconds.
 - The durable log read sends `eth_blockNumber` and `eth_getLogs` as one batch to one node and fails over the pair together, so a head and its logs always come from the same node.
 - A failed cycle never advances the cursor past blocks that were not fully read and written; the next invocation resumes.
 - An alarm fires when the durable scan falls more than a per-chain threshold behind the finalized block (default: 50 blocks on Ethereum, 300 on Base and Arbitrum).
@@ -234,25 +255,29 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 
 | Condition | Handling |
 |---|---|
-| estimate reverts | reject with 422 before reserving a nonce |
-| `nonce too low` | reconcile nonce from chain, check whether the tx was already mined, resend if not |
-| `replacement transaction underpriced` | raise fees to the replacement minimum, resend |
-| `insufficient funds` | pause the signer, alarm, leave queued transactions queued |
-| KMS throttling | retry with jitter; FIFO ordering holds because the message is not deleted |
-| RPC timeout after send | treat as possibly sent; the sweeper resolves it by hash |
+| estimate reverts | reject with 422 and the revert data before reserving a nonce |
+| `nonce too low` | if a receipt exists for one of the transaction's hashes, it was mined. Otherwise, if this run reserved the refused nonce, nothing was sent at it before: give it up, keep the newest 4 abandoned signatures as evidence (hash, fees, nonce and the refusal, without the raw bytes), reconcile from chain and sign at a fresh nonce, at most twice before SQS retries the message. If an earlier run held the nonce, its bytes may be mined where the receipt read missed them, so set `submitted` and leave it to the sweeper instead of signing the payload again at a new nonce |
+| `replacement transaction underpriced`, or a fee below the base fee | mark the attempt refused and let the sweeper replace it on its next run |
+| `insufficient funds` | pause the signer on that chain and leave its transactions queued; the pending-age alarm fires, and the sweeper resumes the signer once its balance covers the transaction |
+| refused for any other known reason (intrinsic gas, block gas limit, chain id, fee cap) | fail the transaction and queue a filler at its nonce, unless a node took one of its signatures (the sweeper's rule; a first send has none) |
+| KMS throttling | the SDK retries with backoff; then the message is handed back, and the failed message and every later message in its group return to SQS, so FIFO order holds |
+| a node gives no definitive answer to a send or an estimate: a transport failure, a rate limit, or an internal, unsupported-method or unrecognised error | try the next RPC URL; a refusal the relayer recognises, or a revert, is final for that call |
+| RPC timeout or an unclassified answer after send | treat as possibly sent; the sweeper resolves it by hash |
+| DynamoDB transaction conflict | retry with jitter; when the retries run out, the API answers 503 `busy` and the signer hands the message back to SQS |
+| a message fails 5 times | it moves to the dead-letter queue, which alarms; the transaction stays queued in the table and the sweeper requeues it |
 
 ## Security
 
-- **KMS.** The key policy allows `kms:Sign` and `kms:GetPublicKey` only to the signer and sweeper Lambda roles. Keys are non-exportable. CloudTrail records every signature.
+- **KMS.** The key policy allows `kms:Sign` and `kms:GetPublicKey` only to the signer and sweeper Lambda roles, and `kms:GetPublicKey` alone to the API role, which needs each signer's address. Keys are non-exportable. CloudTrail records every signature.
 - **IAM.** One role per Lambda, scoped to the exact table, queues and keys it uses. Generated by Terraform, no wildcards on resources.
-- **API keys.** Stored as SHA-256 hashes, each carrying its own signer allowlist and policy.
+- **API keys.** Stored as SHA-256 hashes, each carrying its own signer allowlist. A key Terraform creates is also in Terraform state and in an SSM SecureString; a key the `apikey:create` script creates is printed once.
 - **SIWE.**
   - The server checks domain, URI, nonce (single use, 5-minute TTL), chain id and expiry.
   - Smart contract wallets are verified through EIP-1271 using viem's `verifyMessage`.
 - **Webhooks (SSRF).**
   - The destination hostname is resolved, and the request is refused if any resolved address is private, loopback, link-local (including `169.254.169.254`) or unique-local IPv6.
   - HTTPS only. Redirects are not followed.
-- **Secrets.** RPC URLs, the JWT secret, webhook HMAC secrets and the Telegram bot token live in SSM Parameter Store as SecureString parameters.
+- **Secrets.** RPC URLs, the JWT secret, webhook HMAC secrets and the Telegram bot token live in SSM Parameter Store as SecureString parameters. RPC URLs can hold provider API keys, so the relayer keeps them out of its logs and thrown errors.
 - **Demo abuse.**
   - API Gateway route throttling, plus per-wallet quotas in DynamoDB: 5 rules and 20 relayed transactions per day.
   - Relaying is testnet-only, and the signer's daily spend cap is enforced in policy.
@@ -268,17 +293,19 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
   - scanning: for any sequence of reorgs above finality, flaky headers, crashes and save conflicts, the final match set equals the canonical finalized match set, and every provisional match ends `final` or `dropped`,
   - condition evaluation against bigint edge cases,
   - fee bump math: every replacement satisfies the node's minimum bump,
-  - DER parsing and `v` recovery, against signatures from a local secp256k1 key.
+  - DER parsing and `v` recovery, against DER signatures OpenSSL makes with a local secp256k1 key,
+  - the KMS-backed account signs byte for byte as viem's private key account does.
 
 **Contracts (Foundry)**
 - Unit, fuzz and invariant tests.
 - Invariants include: a forwarder request cannot be replayed, and `TopUpVault` balances never exceed deposits.
 
-**Integration (Docker: Anvil + DynamoDB Local; the SQS and KMS emulator is chosen in milestone 2 because the LocalStack repository is archived)**
+**Integration (Docker: Anvil, DynamoDB Local and moto server for SQS; the LocalStack repository is archived)**
 - `anvil_reorg <depth> <txs>` produces real reorgs; the test asserts a `fast` rule's provisional match becomes `dropped` when its log is reorged away, and `final` when the log is finalized.
 - `anvil_dropTransaction` simulates a stuck transaction; the test asserts the sweeper replaces it at the same nonce.
-- DynamoDB streams, SQS FIFO ordering and dead-letter behaviour run against LocalStack.
-- KMS signing: the first milestone starts with a probe that checks whether LocalStack signs with `ECC_SECG_P256K1` keys. If it does, integration tests use it. If it does not, integration tests use an in-process secp256k1 implementation of the same signer interface, and one test signs against a real KMS key in the staging account.
+- SQS FIFO ordering and deduplication run against moto server 5.2.3, which was measured to keep FIFO order, deduplicate, and block a group while a message is in flight.
+- The relayer end-to-end test runs `@blockwarden/relayer-client` against the API handler, moto, the signer, Anvil and the sweeper: confirmation, signing order, idempotency, revert data, a reverted receipt, a dropped transaction replaced at its nonce, a reorged receipt, a filler after a refused transaction, a paused and resumed signer, nonce reconciliation and a dependent transaction.
+- KMS signing: moto 5.2.3 hashes a `DIGEST` message again before signing (0 of 20 signatures recovered against the digest, 20 of 20 against its SHA-256), so integration tests use the in-process secp256k1 signer behind the same interface. One test signs against a real KMS key and runs only when `BLOCKWARDEN_KMS_TEST_KEY_ID` is set.
 
 **Infrastructure**
 - `terraform fmt -check`, `terraform validate`, tflint and checkov on every pull request.
@@ -293,8 +320,8 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 ## Observability
 
 - **Logs.** Structured JSON logs through Powertools for AWS Lambda (TypeScript), with a correlation id carried from match to delivery and from API request to transaction.
-- **Metrics** (CloudWatch embedded metric format): durable lag and finalized block age per chain, matches per rule, delivery failures, dead-letter depth, relayer pending age, signer native balance.
-- **Alarms** go to SNS email: durable lag, finalized block older than 60 minutes, dead-letter depth above zero, signer balance below threshold, sweeper errors.
+- **Metrics** (CloudWatch embedded metric format): durable lag and finalized block age per chain, matches per rule, delivery failures, dead-letter depth, `pendingAgeSeconds` (the oldest unsettled relayed transaction) per chain, and `signerBalanceGwei` per signer and chain for signers with a balance alarm.
+- **Alarms** go to SNS email: durable lag, finalized block older than 60 minutes, dead-letter depth above zero, relayer pending age (which covers a paused signer, a fee cap below the replacement minimum and a stuck nonce), signer balance below threshold, relayer function errors, the relayer sweeper not invoked for 10 minutes, and API 5xx responses.
 
 ## Cost estimate (demo instance, idle)
 
@@ -306,12 +333,13 @@ These are estimates from published AWS pricing and have to be measured after the
 | EventBridge Scheduler | within free invocations |
 | DynamoDB on-demand, small table | under $1 |
 | SQS | within the 1M free requests |
-| KMS: 2 keys, low sign volume, from milestone 2 | about $2 |
+| KMS: $1 per signer key per month; the demo has 1 signer, from milestone 2 | about $1 |
 | API Gateway HTTP API | cents at demo traffic |
 | CloudFront, S3 | within free tier at demo traffic |
-| SSM standard parameters, 10 alarms | free |
-| CloudWatch custom metrics: up to 5 per chain. `durableLag` and `finalizedAgeSeconds` are emitted on most runs. `deadlineSkips` is emitted whenever a run stops for time, which includes normal catch-up after a start block or an outage. `busySkips` and `laggingNodeSkips` are emitted only when they occur. Across 3 chains that is up to 15 metrics | the first 10 are free, then $0.30/metric/month, so up to $1.50 |
-| **Total** | **up to about $4.50 per month:** KMS about $2 from milestone 2, DynamoDB under $1, custom metrics up to $1.50 |
+| SSM standard parameters | free |
+| CloudWatch alarms: 9 for the monitor and, from milestone 2, 10 for the relayer on 2 chains with 1 signer | the first 10 are free, then $0.10/alarm/month, so $0.90 |
+| CloudWatch custom metrics: up to 5 per monitored chain. `durableLag` and `finalizedAgeSeconds` are emitted on most runs. `deadlineSkips` is emitted whenever a run stops for time, which includes normal catch-up after a start block or an outage. `busySkips` and `laggingNodeSkips` are emitted only when they occur. Across 3 chains that is up to 15 metrics. The relayer adds `pendingAgeSeconds` per chain and `signerBalanceGwei` per signer per chain: 4 more, so 10 in a month without skips and up to 19 | the first 10 are free, then $0.30/metric/month, so nothing to $2.70 |
+| **Total** | **about $2 to $5.60 per month:** KMS about $1, DynamoDB under $1, alarms $0.90, custom metrics nothing to $2.70. The upper end is above the $5 goal and needs every occasional monitor metric in the same month |
 
 The fast scan adds one `eth_getLogs` call per run on each chain that has `fast` rules.
 
@@ -320,7 +348,7 @@ The fast scan adds one `eth_getLogs` call per run on each chain that has `fast` 
 Each milestone gets its own implementation plan.
 
 1. **Monitor.** `packages/core`, durable and fast scans with a per-chain lease, DynamoDB table, Terraform for the monitor, CI with lint, unit and Anvil integration tests.
-2. **Relayer.** LocalStack KMS probe, `packages/kms-signer`, relayer API routes, signer, sweeper, `modules/relayer`, `packages/relayer-client`.
+2. **Relayer.** `packages/kms-signer`, relayer API routes, signer, sweeper, `modules/relayer`, `packages/relayer-client`, including the subscriptions and gas-sponsorship projects' relayer requirements: receipt outcome, revert data, caller reference, calldata policy, transaction dependencies, module inputs and outputs, and a public test signer.
 3. **Actions.** Dispatcher, webhook, SES, Telegram and relayer senders, dead-letter handling, SSRF guard.
 4. **API and dashboard.** SIWE auth, rules, matches, deliveries and relayer views, CloudFront routing.
 5. **Contracts, staging and demo.** Foundry contracts and tests, nightly end-to-end workflow, public demo deploy, README and operator docs.

@@ -1,13 +1,13 @@
 import { QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { ruleInputSchema } from '@blockwarden/core'
+import { GSI1 } from '@blockwarden/dynamo'
+import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import type { Hex } from 'viem'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createChainReader } from '../../src/chain.js'
 import { keys } from '../../src/keys.js'
 import { MonitorStore, type StoredRule } from '../../src/store.js'
-import { GSI1 } from '../../src/table.js'
 import { PING_EVENT, startAnvil, type Anvil } from '../helpers/anvil.js'
-import { startDynamo, type Dynamo } from '../helpers/dynamo.js'
 
 describe('monitor handler end to end', () => {
   let anvil: Anvil
