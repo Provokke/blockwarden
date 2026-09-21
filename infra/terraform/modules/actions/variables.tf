@@ -34,9 +34,14 @@ variable "webhook_secret_parameter" {
   type        = string
   default     = null
 
+  # mirrors packages/core's parameterName: anything looser passes apply and then kills both Lambdas at cold start
   validation {
-    condition     = var.webhook_secret_parameter == null ? true : startswith(var.webhook_secret_parameter, "/")
-    error_message = "webhook_secret_parameter must be an SSM parameter name starting with /."
+    condition = var.webhook_secret_parameter == null ? true : (
+      length(var.webhook_secret_parameter) <= 1011 &&
+      can(regex("^(/[A-Za-z0-9_.-]+){1,15}$", var.webhook_secret_parameter)) &&
+      !contains(split("/", var.webhook_secret_parameter), "..")
+    )
+    error_message = "webhook_secret_parameter must be an SSM parameter name: / then 1 to 15 levels of letters, digits, _ . or -, no .. level, at most 1011 characters."
   }
 }
 
@@ -46,8 +51,12 @@ variable "telegram_token_parameter" {
   default     = null
 
   validation {
-    condition     = var.telegram_token_parameter == null ? true : startswith(var.telegram_token_parameter, "/")
-    error_message = "telegram_token_parameter must be an SSM parameter name starting with /."
+    condition = var.telegram_token_parameter == null ? true : (
+      length(var.telegram_token_parameter) <= 1011 &&
+      can(regex("^(/[A-Za-z0-9_.-]+){1,15}$", var.telegram_token_parameter)) &&
+      !contains(split("/", var.telegram_token_parameter), "..")
+    )
+    error_message = "telegram_token_parameter must be an SSM parameter name: / then 1 to 15 levels of letters, digits, _ . or -, no .. level, at most 1011 characters."
   }
 }
 
@@ -79,6 +88,28 @@ variable "relayer_api_key_parameter" {
   description = "SSM SecureString holding an API key for that relayer."
   type        = string
   default     = null
+
+  validation {
+    condition = var.relayer_api_key_parameter == null ? true : (
+      length(var.relayer_api_key_parameter) <= 1011 &&
+      can(regex("^(/[A-Za-z0-9_.-]+){1,15}$", var.relayer_api_key_parameter)) &&
+      !contains(split("/", var.relayer_api_key_parameter), "..")
+    )
+    error_message = "relayer_api_key_parameter must be an SSM parameter name: / then 1 to 15 levels of letters, digits, _ . or -, no .. level, at most 1011 characters."
+  }
+}
+
+variable "signer_webhook_secret_parameters" {
+  description = "SSM SecureStrings named by a relayer signer's webhook_secret_parameter. The sender reads the signer's own secret when it signs a relay webhook, and can read nothing that is not listed here."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([for name in var.signer_webhook_secret_parameters :
+      length(name) <= 1011 && can(regex("^(/[A-Za-z0-9_.-]+){1,15}$", name)) && !contains(split("/", name), "..")
+    ])
+    error_message = "every signer_webhook_secret_parameters entry must be an SSM parameter name: / then 1 to 15 levels of letters, digits, _ . or -, no .. level, at most 1011 characters."
+  }
 }
 
 variable "allowed_target_arns" {
@@ -86,9 +117,13 @@ variable "allowed_target_arns" {
   type        = list(string)
   default     = []
 
+  # mirrors the targetArn regex in services/actions/src/config.ts, whole ARN and all; a prefix check passes an
+  # ARN the sender then refuses at cold start
   validation {
-    condition     = alltrue([for arn in var.allowed_target_arns : can(regex("^arn:aws[a-z-]*:(sqs|lambda):", arn))])
-    error_message = "allowed_target_arns takes SQS queue and Lambda function ARNs only."
+    condition = alltrue([for arn in var.allowed_target_arns : can(regex(
+      "^arn:aws[a-z-]*:(sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,80}|lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]{1,140}(:[A-Za-z0-9_$-]+)?)$",
+    arn))])
+    error_message = "allowed_target_arns takes whole SQS queue and Lambda function ARNs only."
   }
 }
 
@@ -103,9 +138,15 @@ variable "outbound_secret_prefixes" {
   type        = list(string)
   default     = []
 
+  # same rule as secretPrefixes() in services/actions/src/config.ts: a prefix is a parameter name with an
+  # optional trailing slash. "/" alone is not one - it expands to parameter/* and grants the whole account.
   validation {
-    condition     = alltrue([for prefix in var.outbound_secret_prefixes : startswith(prefix, "/")])
-    error_message = "every outbound_secret_prefixes entry must start with /."
+    condition = alltrue([for prefix in var.outbound_secret_prefixes :
+      startswith(prefix, "/") && length(trimsuffix(prefix, "/")) <= 1011 &&
+      can(regex("^(/[A-Za-z0-9_.-]+){1,15}$", trimsuffix(prefix, "/"))) &&
+      !contains(split("/", prefix), "..")
+    ])
+    error_message = "every outbound_secret_prefixes entry must be an SSM parameter name with an optional trailing slash; \"/\" alone would grant every parameter in the account."
   }
 }
 

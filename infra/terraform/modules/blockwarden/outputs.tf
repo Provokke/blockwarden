@@ -33,6 +33,11 @@ output "delivery_dead_letter_queue_url" {
   value       = var.actions == null ? null : module.actions[0].delivery_dead_letter_queue_url
 }
 
+output "stream_failure_queue_url" {
+  description = "Queue holding stream batches the dispatcher never turned into deliveries."
+  value       = var.actions == null ? null : module.actions[0].stream_failure_queue_url
+}
+
 output "outbound_queue_url" {
   description = "Queue for signed deliveries that did not come from a match."
   value       = var.actions == null ? null : module.actions[0].outbound_queue_url

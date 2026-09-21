@@ -37,6 +37,8 @@ locals {
       var.webhook_secret_parameter == null ? [] : [var.webhook_secret_parameter],
       var.telegram_token_parameter == null ? [] : [var.telegram_token_parameter],
       var.relayer_api_key_parameter == null ? [] : [var.relayer_api_key_parameter],
+      # a relayer signer names its own webhook secret, and lookup.ts hands it to the sender per delivery
+      var.signer_webhook_secret_parameters,
     )) : "arn:${local.partition}:ssm:${local.region}:${local.account_id}:parameter${name}"
   ]
 
@@ -46,6 +48,7 @@ locals {
     "arn:${local.partition}:ssm:${local.region}:${local.account_id}:parameter${prefix}*"
   ]
 
-  target_queue_arns    = [for arn in var.allowed_target_arns : arn if can(regex(":sqs:", arn))]
-  target_function_arns = [for arn in var.allowed_target_arns : arn if can(regex(":lambda:", arn))]
+  # anchored, as the config's own regex is: an unanchored ":sqs:" also matches a queue name that contains it
+  target_queue_arns    = [for arn in var.allowed_target_arns : arn if can(regex("^arn:aws[a-z-]*:sqs:", arn))]
+  target_function_arns = [for arn in var.allowed_target_arns : arn if can(regex("^arn:aws[a-z-]*:lambda:", arn))]
 }

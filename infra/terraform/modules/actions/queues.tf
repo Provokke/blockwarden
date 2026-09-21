@@ -18,6 +18,15 @@ resource "aws_sqs_queue" "deliveries" {
   })
 }
 
+# where Lambda puts a stream batch it gave up on. Kept apart from the delivery dead-letter queue because the
+# two need different work: a dead delivery is in the table and can be redriven, a discarded batch never got
+# there and has to be read back out of the stream while it still exists.
+resource "aws_sqs_queue" "stream_failures" {
+  name                      = "${var.name}-stream-failures"
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+}
+
 resource "aws_sqs_queue" "outbound_dead_letter" {
   count                     = var.outbound_queue ? 1 : 0
   name                      = "${var.name}-outbound-dlq"

@@ -8,6 +8,11 @@ output "delivery_dead_letter_queue_url" {
   value       = aws_sqs_queue.dead_letter.url
 }
 
+output "stream_failure_queue_url" {
+  description = "Queue holding stream batches Lambda discarded. Nothing redrives these; the records have to come back out of the stream."
+  value       = aws_sqs_queue.stream_failures.url
+}
+
 output "outbound_queue_url" {
   description = "Queue that accepts signed deliveries which did not come from a match, or null when it is switched off."
   value       = var.outbound_queue ? aws_sqs_queue.outbound[0].url : null
