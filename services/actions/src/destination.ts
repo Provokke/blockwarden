@@ -119,6 +119,9 @@ export function postJson(
       },
       (response) => {
         // a redirect is never followed: its status is the answer
+        // read here rather than when the body ends: a TLS socket the destination closes is already gone by
+        // then, and the address it answered from is the evidence that the connection went where it was pinned
+        const peer = response.socket.remoteAddress
         let read = 0
         let capped = false
         let kept = 0
@@ -150,7 +153,7 @@ export function postJson(
             ...retryAfter(response.headers['retry-after']),
             // the decoder holds back a character split across chunks, and drops one the cap cut in half
             body: new StringDecoder('utf8').write(Buffer.concat(chunks)),
-            ...(response.socket.remoteAddress ? { remoteAddress: response.socket.remoteAddress } : {}),
+            ...(peer ? { remoteAddress: peer } : {}),
           })
         })
       },
