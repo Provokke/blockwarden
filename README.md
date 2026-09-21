@@ -235,19 +235,19 @@ A fee cap too low to replace a stuck transaction, or a signer paused for lack of
 
 ## Running cost
 
-The demo stack is scale-to-zero except for CloudWatch and one KMS key, so almost all of the bill is alarms and custom metrics. After milestone 3 the stack creates **23 alarms** — 9 for the monitor on 3 chains, 10 for the relayer on 2 chains with 1 signer, and 4 for actions (dead letters, stream failures, and an `Errors` alarm for each of the dispatcher and the sender) — and publishes **up to 21 custom metrics**. CloudWatch's free tier is 10 alarm metrics and 10 custom metrics a month; every alarm in this stack watches exactly one standard-resolution metric, so that is 10 alarms free in practice here, and $0.10 and $0.30 a month for the rest.
+The demo stack is scale-to-zero except for CloudWatch and one KMS key, so almost all of the bill is alarms and custom metrics. After milestone 3 the stack creates **23 alarms** — 9 for the monitor on 3 chains, 10 for the relayer on 2 chains with 1 signer, and 4 for actions (dead letters, stream failures, and an `Errors` alarm for each of the dispatcher and the sender) — and publishes **up to 27 custom metrics**. Both services tag their metrics with the chain they ran on, and CloudWatch bills a custom metric per name and dimension combination, so a metric the monitor publishes counts once per chain. CloudWatch's free tier is 10 alarm metrics and 10 custom metrics a month; every alarm in this stack watches exactly one standard-resolution metric, so that is 10 alarms free in practice here, and $0.10 and $0.30 a month for the rest.
 
 | | Quiet month | Worst month |
 |---|---|---|
 | KMS, 1 signer key | $1.00 | $1.00 |
 | DynamoDB on-demand | cents | under $1.00 |
 | CloudWatch alarms (13 billed) | $1.30 | $1.30 |
-| CloudWatch custom metrics (0 to 11 billed) | $0.00 | $3.30 |
-| **Total** | **about $2.40** | **about $6.60** |
+| CloudWatch custom metrics (0 to 17 billed) | $0.00 | $5.10 |
+| **Total** | **about $2.40** | **about $8.40** |
 
-Milestone 3 added $0.40 of that as a fixed cost — four alarms, all of them past the free ten — and up to $0.60 more in a month where deliveries die or a stream batch fails, so up to $1.00 in all. `outbound_queue = true` adds a fifth alarm and $0.10. The worst month is above the design's $5 goal, and it needs every occasional metric to appear in the same month.
+Milestone 3 added $0.40 of that as a fixed cost — four alarms, all of them past the free ten — and up to $2.40 more in a month where a delivery dies, a stream batch fails, or a rule stops compiling: `deliveriesDead` and `deliveryBatchFailures` once each, and `ruleSkips` and `ruleWarnings` once per chain, so six metrics on the demo's three chains rather than two. That is up to $2.80 in all, and `outbound_queue = true` adds a fifth alarm and $0.10. The worst month is $3.40 above the design's $5 goal, and it needs every occasional metric to appear in the same month.
 
-What would bring the worst month back under $5, if the operator wants that: the monitor's three occasional skip metrics are nine of the eleven billed ones (`deadlineSkips`, `busySkips` and `laggingNodeSkips`, one of each per chain). Without them the worst month publishes 12 metrics, 2 of them billed, and the total is about **$3.90**. Dropping the two actions metrics as well leaves 10 published metrics, all inside the free tier, and a total of about **$3.30** — the dead-letter alarm already pages on a dead delivery, and both functions log every one. Both are cuts to observability, not to behaviour, and neither touches an alarm.
+What would bring the worst month back under $5, if the operator wants that: the monitor's five occasional metrics are fifteen of the seventeen billed ones, one of each per chain. Dropping the three skip metrics — `deadlineSkips`, `busySkips` and `laggingNodeSkips` — leaves 18 published, 8 of them billed, and a total of about **$5.70**. Dropping the two actions metrics as well leaves 16 published, 6 billed, and about **$5.10**: the dead-letter alarm already pages on a dead delivery, and both functions log every one. Under $5 costs one of the two rule metrics too. Keeping `ruleWarnings` alone leaves 13 published, 3 billed, and about **$4.20**, at the price of no metric for a rule that has left the poll entirely — which is the louder of the two failures, since such a rule matches nothing at all. These are cuts to observability, not to behaviour, and none of them touches an alarm.
 
 This table is the demo instance only. The two example stacks under `infra/terraform/examples` are smaller and sit entirely inside the free tier: `monitor-actions-only`, with the outbound queue on, creates 8 alarms and no billed alarm or metric; `relayer-only` creates 7 alarms and publishes 1 custom metric, also unbilled.
 
