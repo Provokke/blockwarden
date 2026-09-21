@@ -1,5 +1,5 @@
 import { isConditionFailure } from '@blockwarden/dynamo'
-import { DeleteCommand, PutCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'
+import { DeleteCommand, GetCommand, PutCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'
 
 export const NONCE_SECONDS = 300
 
@@ -8,7 +8,11 @@ export type NonceStore = {
   consume(nonce: string, nowMs: number): Promise<boolean>
 }
 
-export type ApiStore = NonceStore
+export type ApiKeyStore = {
+  getApiKey(hash: string): Promise<{ hash: string; signerIds: string[]; label: string } | undefined>
+}
+
+export type ApiStore = NonceStore & ApiKeyStore
 
 export function createStore(deps: { doc: DynamoDBDocumentClient; table: string }): ApiStore {
   const { doc, table } = deps
@@ -45,6 +49,12 @@ export function createStore(deps: { doc: DynamoDBDocumentClient; table: string }
       // here may be long past its window. The stored time is what decides, and the delete has already run
       const expiresAt = deleted?.expiresAt
       return typeof expiresAt === 'number' && nowMs < expiresAt
+    },
+    async getApiKey(hash) {
+      const result = await doc.send(new GetCommand({ TableName: table, Key: { PK: `APIKEY#${hash}`, SK: 'META' } }))
+      const item = result.Item
+      if (!item || typeof item.hash !== 'string' || !Array.isArray(item.signerIds)) return undefined
+      return { hash: item.hash, signerIds: item.signerIds as string[], label: String(item.label ?? '') }
     },
   }
 }

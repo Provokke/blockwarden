@@ -55,7 +55,9 @@ export function serializeCookie(name: string, value: string, options: CookieOpti
   return `${name}=${value}; Path=${options.path}; Max-Age=${options.maxAgeSeconds}; HttpOnly; Secure; SameSite=Strict`
 }
 
-export function readCookie(event: APIGatewayProxyEventV2, name: string): string | undefined {
+// narrower than APIGatewayProxyEventV2 on purpose: the authorizer event carries cookies too, and this way it
+// can call readCookie without a cast, instead of only Lambda's proxy-integration event shape
+export function readCookie(event: { cookies?: string[] }, name: string): string | undefined {
   for (const cookie of event.cookies ?? []) {
     const eq = cookie.indexOf('=')
     if (eq < 0) continue
