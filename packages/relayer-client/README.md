@@ -58,7 +58,7 @@ const event = await verifyWebhook({
 if (isTxEvent(event)) console.log(event.type, parseTx(event.data).status)
 ```
 
-The signature header is `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">`. Timestamps more than 300 seconds away are refused, and `secret` can be a list while a secret rotates. Use `X-Blockwarden-Delivery` (also `event.id`) to ignore a delivery you have already handled. Each status change gets its own delivery id, so a transaction reorged out and mined again sends a second `tx.mined` with a new id.
+The signature header is `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">`. Timestamps more than 300 seconds away are refused, and `secret` can be a list while a secret rotates. Use `event.id` from the verified body to ignore a delivery you have already handled; the same value is sent as the unsigned `X-Blockwarden-Delivery` header, which is for tracing. Each status change gets its own delivery id, so a transaction reorged out and mined again sends a second `tx.mined` with a new id.
 
 `isTxEvent` checks that the type is `tx.` followed by a known status and that `data` has every field of a transaction, so `parseTx` can read it. `signWebhook` refuses an empty secret, and `verifyWebhook` throws `WebhookVerificationError` for a secret that is empty or not a string.
 
@@ -75,4 +75,5 @@ if (isMatchEvent(event)) console.log(event.data.eventName, event.data.args, even
 if (isTxEvent(event)) console.log(event.type, parseTx(event.data).receiptStatus)
 ```
 
-Delivery is at least once: dedupe on `X-Blockwarden-Delivery`.
+Delivery is at least once: dedupe on `event.id`, which is inside the signed body. The `X-Blockwarden-Delivery`
+header carries the same value but is not signed, so it is for tracing, not for deduplication.
