@@ -2,19 +2,17 @@
 
 ## 0.2.0
 
-- Added `isMatchEvent`, `MatchEventData` and `MATCH_STATUSES` for `match.*` webhooks, and `WEBHOOK_SPEC_VERSION`.
-- Added `specVersion` to the webhook envelope.
-- **Source-breaking:** `revertData: Hex | null` is a required property of `RelayerTx` and `RelayerTxBody`.
-  Reading a transaction is unchanged, but code that builds one of these types now has to set it, as this
-  repository's own test fixtures had to. A body that arrives without the field still passes `isTxEvent`, and
-  `parseTx`, `relay` and `getTx` all report it as `null`.
-- Added `toDecodedValue`, which puts a decoded event argument into the form the schema publishes: an integer
-  viem decoded as a JS number becomes a decimal string, nested through arrays and tuples, and a number that is
-  not an integer throws rather than being rounded.
-- `isMatchEvent` now checks the width of `matchKey`, `transactionHash`, `blockHash` and `address`; hex with no
-  fixed width, such as calldata and revert data, is still accepted at any length.
-- Published the payload schema at `docs/webhooks/v1.md`.
+First release. Nothing before this version was published to npm.
 
-## 0.1.0
-
-- First release: `relay`, `getTx`, `listSigners`, `verifyWebhook`, `signWebhook`, `isTxEvent`, `parseTx`.
+- `relay`, `getTx`, `listSigners` and `RelayerApiError` for the relayer API.
+- `verifyWebhook`, `signWebhook`, `isTxEvent`, `isMatchEvent` and `parseTx` for webhooks, with
+  `SIGNATURE_HEADER`, `DELIVERY_HEADER`, `DEFAULT_TOLERANCE_SECONDS` and `WEBHOOK_SPEC_VERSION`.
+- `MatchEventData`, `MATCH_STATUSES` and `TX_STATUSES`, and `specVersion` in the webhook envelope.
+- `toDecodedValue`, which puts a decoded event argument into the form the schema publishes: an integer viem
+  decoded as a JS number becomes a decimal string, nested through arrays and tuples, and a number that is not
+  an integer throws rather than being rounded.
+- `isMatchEvent` checks the width of `matchKey`, `transactionHash`, `blockHash` and `address`; hex with no
+  fixed width, such as calldata and revert data, is accepted at any length.
+- `revertData: Hex | null` is a required property of `RelayerTx` and `RelayerTxBody`, and `isTxEvent` refuses
+  a body that leaves it out.
+- The payload schema is published at `docs/webhooks/v1.md`.

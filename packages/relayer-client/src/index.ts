@@ -27,7 +27,6 @@ export {
   parseTx,
   SIGNATURE_HEADER,
   signWebhook,
-  TIMESTAMP_TOLERANCE_SECONDS,
   toDecodedValue,
   verifyWebhook,
   WEBHOOK_SPEC_VERSION,
