@@ -105,7 +105,7 @@ variable "actions" {
 
   validation {
     condition = var.actions == null ? true : alltrue([for arn in var.actions.allowed_target_arns : can(regex(
-      "^arn:aws[a-z-]*:(sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,80}|lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]{1,140}(:[A-Za-z0-9_$-]+)?)$",
+      "^arn:aws[a-z-]*:(sqs:[a-z0-9-]+:[0-9]{12}:([A-Za-z0-9_-]{1,80}|[A-Za-z0-9_-]{1,75}[.]fifo)|lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]{1,140}(:[A-Za-z0-9_$-]+)?)$",
     arn))])
     error_message = "actions.allowed_target_arns takes whole SQS queue and Lambda function ARNs only."
   }

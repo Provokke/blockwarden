@@ -121,7 +121,7 @@ variable "allowed_target_arns" {
   # ARN the sender then refuses at cold start
   validation {
     condition = alltrue([for arn in var.allowed_target_arns : can(regex(
-      "^arn:aws[a-z-]*:(sqs:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,80}|lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]{1,140}(:[A-Za-z0-9_$-]+)?)$",
+      "^arn:aws[a-z-]*:(sqs:[a-z0-9-]+:[0-9]{12}:([A-Za-z0-9_-]{1,80}|[A-Za-z0-9_-]{1,75}[.]fifo)|lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]{1,140}(:[A-Za-z0-9_$-]+)?)$",
     arn))])
     error_message = "allowed_target_arns takes whole SQS queue and Lambda function ARNs only."
   }

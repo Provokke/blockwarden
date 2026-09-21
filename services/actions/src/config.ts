@@ -26,11 +26,12 @@ type Env = Record<string, string | undefined>
 const url = z.url()
 
 // The two services a delivery target can name. The sender refuses anything else when it sends, but an entry
-// that can never match is an allowlist that silently grants nothing.
+// that can never match is an allowlist that silently grants nothing. The queue name takes the same shape as
+// packages/core's sqs action: at most 80 characters, ".fifo" counting towards them.
 const targetArn = z
   .string()
   .regex(
-    /^arn:aws[a-z-]*:(sqs:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,80}|lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9_-]{1,140}(:[A-Za-z0-9_$-]+)?)$/,
+    /^arn:aws[a-z-]*:(sqs:[a-z0-9-]+:\d{12}:([A-Za-z0-9_-]{1,80}|[A-Za-z0-9_-]{1,75}\.fifo)|lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9_-]{1,140}(:[A-Za-z0-9_$-]+)?)$/,
     'expected an SQS queue ARN or a Lambda function ARN',
   )
 
