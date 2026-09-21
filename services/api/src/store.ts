@@ -32,7 +32,31 @@ export type ApiKeyStore = {
   getApiKey(hash: string): Promise<{ hash: string; signerIds: string[]; label: string } | undefined>
 }
 
-export type ApiStore = NonceStore & ApiKeyStore & RuleStore
+export type MatchRow = {
+  matchKey: string
+  ruleId: string
+  chainId: number
+  blockNumber: string
+  blockHash: string
+  transactionHash: string
+  logIndex: number
+  address: string
+  args: Record<string, unknown>
+  status: 'provisional' | 'final' | 'dropped'
+  firstSeenAt: string
+  finalizedAt?: string
+}
+
+export type MatchStore = {
+  listMatches(
+    ruleId: string,
+    limit: number,
+    cursor?: Record<string, unknown>,
+    status?: string,
+  ): Promise<{ matches: MatchRow[]; cursor?: Record<string, unknown> }>
+}
+
+export type ApiStore = NonceStore & ApiKeyStore & RuleStore & MatchStore
 
 export type StoreDeps = {
   doc: DynamoDBDocumentClient
@@ -147,6 +171,29 @@ export function createStore(deps: StoreDeps): ApiStore {
       }
       return { rules, ...(result.LastEvaluatedKey ? { cursor: result.LastEvaluatedKey } : {}) }
     },
+
+    async listMatches(ruleId, limit, cursor, status) {
+      const result = await doc.send(
+        new QueryCommand({
+          TableName: table,
+          IndexName: GSI1,
+          KeyConditionExpression: 'GSI1PK = :pk',
+          ExpressionAttributeValues: {
+            ':pk': `RULE#${ruleId}`,
+            ...(status ? { ':status': status } : {}),
+          },
+          ...(status
+            ? { FilterExpression: '#status = :status', ExpressionAttributeNames: { '#status': 'status' } }
+            : {}),
+          // GSI1SK is block and log index zero-padded, so descending is newest first with no sort of our own
+          ScanIndexForward: false,
+          Limit: limit,
+          ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+        }),
+      )
+      const matches = (result.Items ?? []).map(toMatchRow)
+      return { matches, ...(result.LastEvaluatedKey ? { cursor: result.LastEvaluatedKey } : {}) }
+    },
   }
 }
 
@@ -182,5 +229,23 @@ function toStoredRule(
     active: item.active === true,
     createdAt: String(item.createdAt ?? ''),
     updatedAt: String(item.updatedAt ?? ''),
+  }
+}
+
+function toMatchRow(item: Record<string, unknown>): MatchRow {
+  return {
+    matchKey: String(item.matchKey ?? ''),
+    ruleId: String(item.ruleId ?? ''),
+    chainId: Number(item.chainId ?? 0),
+    // the document client reads a number back wrong past 2^53, and a block number is a chain's clock
+    blockNumber: String(item.blockNumber ?? '0'),
+    blockHash: String(item.blockHash ?? ''),
+    transactionHash: String(item.transactionHash ?? ''),
+    logIndex: Number(item.logIndex ?? 0),
+    address: String(item.address ?? ''),
+    args: (item.args as Record<string, unknown>) ?? {},
+    status: item.status as MatchRow['status'],
+    firstSeenAt: String(item.firstSeenAt ?? ''),
+    ...(item.finalizedAt ? { finalizedAt: String(item.finalizedAt) } : {}),
   }
 }
