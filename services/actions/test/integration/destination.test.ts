@@ -29,6 +29,13 @@ beforeAll(async () => {
         res.writeHead(200)
         return res.write('a')
       }
+      if (req.url === '/drip') {
+        // a byte at a time, for ever: never idle, so only an absolute deadline ends this
+        res.writeHead(200)
+        const tick = setInterval(() => res.write('a'), 50)
+        res.on('close', () => clearInterval(tick))
+        return
+      }
       res.writeHead(204)
       res.end()
     })
@@ -78,9 +85,21 @@ describe('postJson', () => {
     expect((await postJson(local('/big'), '{}', {})).body).toHaveLength(2048)
   })
 
-  it('gives up on a destination that never finishes', async () => {
-    await expect(postJson(local('/hang'), '{}', {}, { timeoutMs: 500 })).rejects.toThrow('did not answer in time')
+  // the deadline is far away, so only the idle timeout can end this one
+  it('gives up on a destination that goes silent', async () => {
+    await expect(postJson(local('/hang'), '{}', {}, { timeoutMs: 500, deadlineMs: 60_000 })).rejects.toThrow(
+      'did not answer in time',
+    )
   })
+
+  // a byte every 50 ms keeps the socket busy for ever, so only the deadline ends this one
+  it('gives up at the deadline on a destination that dribbles for ever', async () => {
+    const started = Date.now()
+    await expect(postJson(local('/drip'), '{}', {}, { timeoutMs: 5_000, deadlineMs: 700 })).rejects.toThrow(
+      'took longer than the deadline',
+    )
+    expect(Date.now() - started).toBeLessThan(3_000)
+  }, 10_000)
 })
 
 describe('the guard and the socket together', () => {
