@@ -13,8 +13,29 @@ const hex = z
   .regex(/^0x([0-9a-fA-F]{2})*$/, 'expected 0x followed by whole bytes of hex')
   .transform((value) => value as Hex)
 const decimal = z.string().regex(/^(0|[1-9][0-9]*)$/, 'expected a decimal string')
+// the headers the sender computes for itself, plus the ones that frame the message or steer the connection: a
+// rule naming one of these would either be overwritten or break the delivery, and Host in particular decides
+// which site a destination thinks it is serving
+const RESERVED_HEADERS = new Set([
+  'connection',
+  'content-length',
+  'content-type',
+  'expect',
+  'host',
+  'keep-alive',
+  'proxy-authorization',
+  'proxy-connection',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'user-agent',
+])
 // RFC 7230 token, which is what a header name is
-const headerName = z.string().regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a header name')
+const headerName = z
+  .string()
+  .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a header name')
+  .refine((name) => !RESERVED_HEADERS.has(name.toLowerCase()), 'expected a header name that is not reserved')
 // SSM: a hierarchy of at most fifteen non-empty levels, each of a-zA-Z0-9_.-, and at most 1011 characters
 const parameterName = z
   .string()
