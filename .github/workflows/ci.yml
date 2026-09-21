@@ -30,6 +30,7 @@ jobs:
       - run: pnpm run test:integration
       - run: pnpm --filter @blockwarden/monitor run build
       - run: pnpm --filter @blockwarden/relayer run build
+      - run: pnpm --filter @blockwarden/actions run build
       - run: node scripts/pack-check.mjs
 
   terraform:
