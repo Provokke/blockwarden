@@ -14,8 +14,14 @@ export type ApiKeyStore = {
 
 export type ApiStore = NonceStore & ApiKeyStore
 
-export function createStore(deps: { doc: DynamoDBDocumentClient; table: string }): ApiStore {
-  const { doc, table } = deps
+export type StoreDeps = {
+  doc: DynamoDBDocumentClient
+  table: string
+  log?: (message: string, data?: Record<string, unknown>, level?: 'warn' | 'error') => void
+}
+
+export function createStore(deps: StoreDeps): ApiStore {
+  const { doc, table, log = (message, data) => console.error(message, data) } = deps
   return {
     async put(nonce, nowMs) {
       const expiresAt = nowMs + NONCE_SECONDS * 1000
@@ -53,8 +59,15 @@ export function createStore(deps: { doc: DynamoDBDocumentClient; table: string }
     async getApiKey(hash) {
       const result = await doc.send(new GetCommand({ TableName: table, Key: { PK: `APIKEY#${hash}`, SK: 'META' } }))
       const item = result.Item
-      if (!item || typeof item.hash !== 'string' || !Array.isArray(item.signerIds)) return undefined
-      return { hash: item.hash, signerIds: item.signerIds as string[], label: String(item.label ?? '') }
+      if (!item) return undefined
+      const label = String(item.label ?? '')
+      // Terraform never writes a hash attribute onto the row; the hash the row is keyed by is the hash we
+      // looked it up with, same as the relayer's own getApiKey
+      if (!Array.isArray(item.signerIds) || item.signerIds.some((id) => typeof id !== 'string')) {
+        log('API key row is malformed', { label }, 'error')
+        return undefined
+      }
+      return { hash, signerIds: item.signerIds as string[], label }
     },
   }
 }

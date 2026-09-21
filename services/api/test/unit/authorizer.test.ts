@@ -126,4 +126,8 @@ describe('callerFromContext', () => {
     } as never
     expect(callerFromContext(event)).toBeUndefined()
   })
+
+  it('returns undefined rather than throwing when requestContext itself is absent', () => {
+    expect(callerFromContext({} as never)).toBeUndefined()
+  })
 })
