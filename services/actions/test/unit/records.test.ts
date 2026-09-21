@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { keys } from '../../src/keys.js'
+import { deliveryId } from '../../src/ids.js'
+import { DUE_SHARDS, keys } from '../../src/keys.js'
 import { MAX_ERROR_CHARACTERS, TERMINAL, truncate } from '../../src/records.js'
 
 describe('keys', () => {
@@ -23,10 +24,17 @@ describe('keys', () => {
     expect(keys.outboundSubject('k')).toBe('OUTBOUND#k')
   })
 
-  it('has one partition for due deliveries and one per listed status', () => {
-    expect(keys.dueDeliveries()).toBe('DELIVERY#DUE')
+  it('shards the due partition and has one partition per listed status', () => {
+    expect(keys.dueDeliveries(2)).toBe('DELIVERY#DUE#2')
     expect(keys.deliveriesByStatus('dead')).toBe('DELIVERY#DEAD')
     expect(keys.deliveriesByStatus('delivered')).toBe('DELIVERY#DELIVERED')
+  })
+
+  it('sends a delivery to the same shard every time and spreads the ids over all of them', () => {
+    const ids = Array.from({ length: 200 }, (_, i) => deliveryId(keys.matchSubject(`0x${i}`), 'DELIVERY#a#e#0000'))
+    expect(ids.map(keys.dueShard)).toEqual(ids.map(keys.dueShard))
+    expect(new Set(ids.map(keys.dueShard))).toEqual(new Set([0, 1, 2, 3]))
+    expect(ids.every((id) => keys.dueShard(id) < DUE_SHARDS)).toBe(true)
   })
 
   it('refuses a seq that would not fit or sort in four digits', () => {
