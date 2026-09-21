@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import {
-  checkDestinationUrl,
   compileRule,
   RuleValidationError,
   ruleInputSchema,
@@ -53,15 +52,8 @@ export function validateRuleInput(
 
   for (const [index, action] of input.actions.entries()) {
     if (action.type !== 'webhook') continue
-    const url = checkDestinationUrl(action.url)
-    if (!url.ok) {
-      return {
-        ok: false,
-        result: error(400, 'invalid_rule', 'the rule names a destination that cannot be reached', {
-          issues: [{ path: `actions.${index}.url`, message: url.reason }],
-        }),
-      }
-    }
+    // webhookActionSchema's `url` field already runs checkDestinationUrl inside ruleInputSchema.safeParse
+    // above, so an invalid destination never reaches this point - only the prefix check below is live here
     if (action.secretParameter !== undefined && !underPrefix(action.secretParameter, settings.ruleSecretPrefixes)) {
       return {
         ok: false,
@@ -85,6 +77,19 @@ function underPrefix(name: string, prefixes: string[]): boolean {
 
 const MAX_PAGE = 100
 
+// GSI1's own LastEvaluatedKey for a rules-by-chain query is always exactly these four string attributes -
+// proven by reading one back from DynamoDB Local, not assumed. The cursor is unsigned base64, so any caller
+// can hand back a crafted key; anything of another shape must never reach ExclusiveStartKey, where DynamoDB
+// answers a bad key with a ValidationException that has no route-level catch
+const RULE_LIST_KEY_ATTRS = ['PK', 'SK', 'GSI1PK', 'GSI1SK'] as const
+
+function isRuleListKey(value: unknown): value is Record<(typeof RULE_LIST_KEY_ATTRS)[number], string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length !== RULE_LIST_KEY_ATTRS.length) return false
+  return RULE_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')
+}
+
 export type RuleDeps = { store: RuleStore; settings: RuleSettings; now(): string }
 
 export async function handleListRules(deps: RuleDeps, event: APIGatewayProxyEventV2): Promise<ApiResult> {
@@ -98,7 +103,16 @@ export async function handleListRules(deps: RuleDeps, event: APIGatewayProxyEven
   const start = decodeCursor(query.cursor ?? '')
   // the cursor names which chain it stopped on, because a page can end inside any of them
   const startChain = typeof start?.chainId === 'number' ? start.chainId : chains[0]
-  const startKey = start?.key as Record<string, unknown> | undefined
+  // a cursor naming a chain this listing is not walking would send chains.indexOf(startChain) to -1, and
+  // chains.slice(-1) would then silently walk only the last chain instead of refusing the request
+  if (start !== undefined && !chains.includes(startChain!)) {
+    return error(400, 'invalid_cursor', 'the cursor names a chain this listing is not walking')
+  }
+  const rawKey = start?.key
+  if (rawKey !== undefined && !isRuleListKey(rawKey)) {
+    return error(400, 'invalid_cursor', 'the cursor key is not shaped like one this listing could have issued')
+  }
+  const startKey = rawKey !== undefined && isRuleListKey(rawKey) ? rawKey : undefined
 
   const rules: StoredRule[] = []
   let cursor: string | undefined
@@ -173,7 +187,7 @@ export async function handleDeleteRule(deps: RuleDeps, event: APIGatewayProxyEve
   return { status: 204, body: {} }
 }
 
-function pageSize(raw: string | undefined): number {
+export function pageSize(raw: string | undefined): number {
   const asked = Number(raw ?? MAX_PAGE)
   if (!Number.isInteger(asked) || asked < 1) return MAX_PAGE
   return Math.min(asked, MAX_PAGE)
