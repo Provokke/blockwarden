@@ -31,6 +31,31 @@ describe('matchEventData', () => {
     const data = matchEventData(matchRow({ args: { permission: { spender: '0xab', allowance: '5' } } }), rule)
     expect(data.args.permission).toEqual({ spender: '0xab', allowance: '5' })
   })
+
+  it('maps each field from the row to its own field on the output, not a same-shaped neighbour', () => {
+    const matchKey = `0x${'1'.repeat(64)}`
+    const ruleId = 'rule-9'
+    const chainId = 84_532
+    const blockNumber = 111
+    const blockHash = `0x${'2'.repeat(64)}`
+    const transactionHash = `0x${'3'.repeat(64)}`
+    const logIndex = 5
+    const ordinal = 6
+    const firstSeenAt = '2026-09-20T11:00:00.000Z'
+    const data = matchEventData(
+      matchRow({ matchKey, ruleId, chainId, blockNumber, blockHash, transactionHash, logIndex, ordinal, firstSeenAt }),
+      rule,
+    )
+    expect(data.matchKey).toBe(matchKey)
+    expect(data.ruleId).toBe(ruleId)
+    expect(data.chainId).toBe(chainId)
+    expect(data.blockNumber).toBe(blockNumber)
+    expect(data.blockHash).toBe(blockHash)
+    expect(data.transactionHash).toBe(transactionHash)
+    expect(data.logIndex).toBe(logIndex)
+    expect(data.ordinal).toBe(ordinal)
+    expect(data.firstSeenAt).toBe(firstSeenAt)
+  })
 })
 
 describe('renderEvent', () => {
@@ -63,5 +88,17 @@ describe('renderEvent', () => {
     const signature = await signWebhook({ payload, secret: 's', nowMs })
     const event = await verifyWebhook({ payload, signature, secret: 's', nowMs })
     expect(isTxEvent(event)).toBe(true)
+  })
+})
+
+describe('txEventData', () => {
+  it('maps each field from the row to its own field on the output, not a same-shaped neighbour', () => {
+    const mined = { hash: `0x${'a'.repeat(64)}`, blockNumber: 111, blockHash: `0x${'b'.repeat(64)}`, status: 'success' }
+    const nonce = 7
+    const data = txEventData(txRow({ status: 'mined', nonce, mined }))
+    expect(data.hash).toBe(mined.hash)
+    expect(data.blockHash).toBe(mined.blockHash)
+    expect(data.blockNumber).toBe(mined.blockNumber)
+    expect(data.nonce).toBe(nonce)
   })
 })

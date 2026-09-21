@@ -38,6 +38,13 @@ describe('matches', () => {
     ])
   })
 
+  it('carries the row, matchKey and ruleId onto the change', () => {
+    const row = matchRow({ status: 'provisional', matchKey: 'mk-9', ruleId: 'rule-9' })
+    expect(changes(streamRecord('INSERT', { PK: pk, SK: 'META' }, { newImage: row }))).toEqual([
+      expect.objectContaining({ row, matchKey: 'mk-9', ruleId: 'rule-9' }),
+    ])
+  })
+
   it('a rewrite that does not change the status is nothing', () => {
     const row = matchRow({ status: 'final' })
     expect(
