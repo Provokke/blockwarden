@@ -59,7 +59,7 @@ pnpm --filter @blockwarden/actions run delivery:redrive --table blockwarden-demo
   --queue <delivery queue url> --dlq <dead-letter queue url> --all
 ```
 
-`TABLE_NAME`, `DELIVERY_QUEUE_URL` and `DELIVERY_DLQ_URL` stand in for the three flags. The redrive resets the item, queues it again, and deletes the dead-letter copies of the deliveries it redrove, which is what clears the alarm. Run without `--dlq` and the copies stay until the queue's retention expires them, so the alarm stays in ALARM; that is the safe default for an operator who has not read the queue yet.
+`TABLE_NAME`, `DELIVERY_QUEUE_URL` and `DELIVERY_DLQ_URL` stand in for the three flags. The redrive resets the item, queues it again, and deletes every dead-letter copy of the deliveries it redrove that it can see, which is what clears the alarm. One delivery often has more than one copy, so the count printed is of messages rather than deliveries, and the drain stops at the first empty receive: a copy that was in flight elsewhere stays, so run the command again if the alarm holds. Run without `--dlq` and the copies stay until the queue's retention expires them, so the alarm stays in ALARM; that is the safe default for an operator who has not read the queue yet.
 
 **Delivery is at least once.** Dedupe on `id` in the body `verifyWebhook()` returned: it is inside the signed bytes. The same value also rides along in the `X-Blockwarden-Delivery` header, but that header is not signed and is for tracing only. Two different events never share an id, and a transaction reorged out and mined again sends a second `tx.mined` with a different id.
 

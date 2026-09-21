@@ -135,6 +135,21 @@ describe('drainRedriven', () => {
     expect(receives).toHaveLength(2)
   })
 
+  // the pipeline makes several copies of one delivery on purpose: the sender copies it again every time an
+  // already-dead delivery comes round, and the reaper copies before markDead. Deleting one leaves the alarm on.
+  it('deletes every copy of a redriven delivery, not just the first', async () => {
+    const mine = ref('DELIVERY#mine')
+    const { sqs, deleted } = fakeSqs([
+      [
+        { Body: JSON.stringify(mine), ReceiptHandle: 'rh-1' },
+        { Body: JSON.stringify(mine), ReceiptHandle: 'rh-2' },
+      ],
+      [{ Body: JSON.stringify(mine), ReceiptHandle: 'rh-3' }],
+    ])
+    expect(await drainRedriven(sqs, 'https://sqs/dlq', [mine])).toBe(3)
+    expect(deleted).toEqual(['rh-1', 'rh-2', 'rh-3'])
+  })
+
   it('does not receive at all when nothing was redriven', async () => {
     const { sqs, send } = fakeSqs([])
     expect(await drainRedriven(sqs, 'https://sqs/dlq', [])).toBe(0)
