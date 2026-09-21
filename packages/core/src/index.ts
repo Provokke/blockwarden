@@ -34,7 +34,7 @@ export {
   type ActionInput,
   type ActionType,
 } from './actions.js'
-export { checkDestinationUrl, classifyAddress, PRIVATE_V4_RANGES, type AddressVerdict } from './net.js'
+export { checkDestinationUrl, classifyAddress, PRIVATE_V4_RANGES, redactedUrl, type AddressVerdict } from './net.js'
 export { DeadlineError, fetchLogsAdaptive, type FetchLogsOptions, type FetchRange } from './fetch-logs.js'
 export {
   bumpFees,

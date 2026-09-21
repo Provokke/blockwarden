@@ -92,6 +92,26 @@ export function classifyAddress(address: string): AddressVerdict {
   return { allowed: true }
 }
 
+// how much of the first path level is worth printing: enough to tell /services from /api, never a whole
+// path segment that could be a token
+const PATH_SHOWN = 12
+
+// A webhook URL is the credential: for a Discord or Slack hook the path is the secret, and an operator's
+// terminal, shell history and screenshots are not where it belongs. Enough here to recognise the destination,
+// not enough to send to it - the same rule senders/telegram.ts keeps for the token in its path.
+export function redactedUrl(raw: string): string {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return '(unreadable url)'
+  }
+  const [, first = ''] = url.pathname.split('/')
+  const head = first.slice(0, PATH_SHOWN)
+  const hidden = url.pathname.length > head.length + 1 || url.search !== '' || url.hash !== ''
+  return `${url.origin}/${head}${hidden ? '...' : ''}`
+}
+
 export function checkDestinationUrl(raw: string): { ok: true; url: URL } | { ok: false; reason: string } {
   if (raw.length > MAX_URL_LENGTH) return { ok: false, reason: `the URL is longer than ${MAX_URL_LENGTH} characters` }
   let url: URL
