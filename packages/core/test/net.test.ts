@@ -23,6 +23,7 @@ describe('classifyAddress', () => {
     expect(refused('172.31.255.255')).toContain('172.16.0.0/12')
     expect(refused('192.0.0.1')).toContain('192.0.0.0/24')
     expect(refused('192.168.1.1')).toContain('192.168.0.0/16')
+    expect(refused('192.88.99.1')).toContain('192.88.99.0/24')
     expect(refused('198.18.0.1')).toContain('198.18.0.0/15')
     expect(refused('224.0.0.1')).toContain('224.0.0.0/4')
     expect(refused('240.0.0.1')).toContain('240.0.0.0/4')
@@ -110,6 +111,14 @@ describe('checkDestinationUrl', () => {
     ]) {
       expect(checkDestinationUrl(raw).ok, raw).toBe(false)
     }
+  })
+
+  it('refuses port 0, which a client silently turns back into 443', () => {
+    expect(checkDestinationUrl('https://example.com:0/hook')).toEqual({
+      ok: false,
+      reason: 'the URL must not use port 0',
+    })
+    expect(checkDestinationUrl('https://example.com:8443/hook').ok).toBe(true)
   })
 
   it('refuses something that is not a URL', () => {
