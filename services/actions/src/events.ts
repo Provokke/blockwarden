@@ -1,4 +1,5 @@
 import { MATCH_STATUSES, TX_STATUSES, type MatchStatus, type TxStatus } from '@blockwarden/relayer-client'
+import { keys } from './keys.js'
 import type { Row, StreamChange } from './stream.js'
 
 export type MatchChange = {
@@ -47,7 +48,7 @@ export function changesFor(change: StreamChange): Change[] {
   if (change.sk !== 'META') return []
   const row = change.newImage
 
-  if (change.pk.startsWith('MATCH#')) {
+  if (keys.isMatchSubject(change.pk)) {
     const { status } = row
     if (!isMatchStatus(status)) return []
     if (change.oldImage?.status === status) return []
@@ -66,7 +67,7 @@ export function changesFor(change: StreamChange): Change[] {
     ]
   }
 
-  if (change.pk.startsWith('TX#')) {
+  if (keys.isTxSubject(change.pk)) {
     if (typeof row.txId !== 'string') return []
     const from = count(change.oldImage)
     return entries(row)
