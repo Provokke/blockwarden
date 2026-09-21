@@ -2,7 +2,7 @@ import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import { describe, expect, it } from 'vitest'
 import { encodeCursor } from '../../src/http.js'
 import { handleListDeliveries, handleRedrive, type DeliveryDeps } from '../../src/deliveries.js'
-import type { DeliveryItem } from '../../src/store.js'
+import type { DeliveryItem, DeliveryStore } from '../../src/store.js'
 
 // narrowed to the real event type rather than to `never`, same helper as matches.test.ts and rules.test.ts
 function apiEvent(over: Partial<APIGatewayProxyEventV2>): APIGatewayProxyEventV2 {
@@ -40,7 +40,6 @@ function deps() {
   const d: DeliveryDeps & { sent: unknown[]; requeued: string[] } = {
     sent,
     requeued,
-    queueUrl: 'https://sqs.local/deliveries',
     now: () => 1_770_000_000_000,
     store: {
       async listDead(limit, cursor) {
@@ -123,6 +122,60 @@ describe('handleListDeliveries', () => {
     expect(result.status).toBe(400)
   })
 
+  it('refuses a subject and a status given together, instead of answering one and dropping the other', async () => {
+    const result = await handleListDeliveries(deps(), event({ subject: 'MATCH#0xone', status: 'dead' }))
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe('subject_and_status')
+  })
+
+  it('refuses a subject-list cursor that is not shaped like a real page key', async () => {
+    const d = deps()
+    for (const key of [{ after: 2 }, { PK: 'x', SK: 'y', extra: 'z' }, { PK: 'x' }]) {
+      const cursor = encodeCursor(key)
+      const result = await handleListDeliveries(d, event({ subject: 'MATCH#0xone', cursor }))
+      expect((result.body as { error: { code: string } }).error.code, JSON.stringify(key)).toBe('invalid_cursor')
+    }
+  })
+
+  it('pages a subject with more deliveries than the limit, the same way listDead pages', async () => {
+    const subject = 'MATCH#0xmany'
+    const rows = Array.from({ length: 3 }, (_, i) => ({
+      ...dead(`many-${i}`),
+      subject,
+      sk: `DELIVERY#a1#match.final#${i}`,
+    }))
+    const store: DeliveryStore = {
+      async listDead() {
+        return { deliveries: [] }
+      },
+      async listBySubject(querySubject, limit, cursor) {
+        if (querySubject !== subject) return { deliveries: [] }
+        const from = cursor ? rows.findIndex((r) => r.sk === cursor.SK) + 1 : 0
+        const page = rows.slice(from, from + limit)
+        const last = page[page.length - 1]
+        const next = from + limit < rows.length && last ? { PK: last.subject, SK: last.sk } : undefined
+        return { deliveries: page, ...(next ? { cursor: next } : {}) }
+      },
+      async getDelivery() {
+        return undefined
+      },
+      async requeueDelivery() {
+        return false
+      },
+    }
+    const d: DeliveryDeps = { store, queue: { send: async () => {} }, now: () => 0 }
+
+    const first = await handleListDeliveries(d, event({ subject, limit: '2' }))
+    const firstBody = first.body as { deliveries: unknown[]; cursor?: string }
+    expect(firstBody.deliveries).toHaveLength(2)
+    expect(firstBody.cursor).toBeDefined()
+
+    const second = await handleListDeliveries(d, event({ subject, cursor: firstBody.cursor!, limit: '2' }))
+    const secondBody = second.body as { deliveries: unknown[]; cursor?: string }
+    expect(secondBody.deliveries).toHaveLength(1)
+    expect(secondBody.cursor).toBeUndefined()
+  })
+
   it('hands back a ref per row that addresses the delivery', async () => {
     const result = await handleListDeliveries(deps(), event({ status: 'dead' }))
     const [first] = (result.body as { deliveries: { ref: string }[] }).deliveries
@@ -189,6 +242,39 @@ describe('handleRedrive', () => {
     const again = await handleRedrive(d, redriveEvent(row!.deliveryId, { ref: row!.ref }))
     expect(again.status).toBe(409)
     expect(d.sent).toHaveLength(1)
+  })
+
+  it('refuses a delivery it already knows is not dead, without ever calling the store to write it', async () => {
+    const d = deps()
+    const notDead: DeliveryItem = { ...dead('one'), status: 'pending' }
+    d.store.getDelivery = async () => notDead
+    d.store.requeueDelivery = async () => {
+      // the handler's own pre-check reads delivery.status before it ever calls requeueDelivery; if it
+      // stopped doing that, this fake would be reached and this test would fail on the throw, not on a
+      // wrong status code
+      throw new Error('requeueDelivery must not be called for a delivery the handler already knows is not dead')
+    }
+    const ref = encodeCursor({ subject: notDead.subject, sk: notDead.sk })
+    const result = await handleRedrive(d, redriveEvent('one', { ref }))
+    expect(result.status).toBe(409)
+    expect((result.body as { error: { code: string; message: string } }).error).toEqual({
+      code: 'not_dead',
+      message: 'that delivery is pending, so there is nothing to redrive',
+    })
+  })
+
+  it("reports the store's own write conflict with its own message, distinct from the handler's pre-check", async () => {
+    const d = deps()
+    const row = dead('one')
+    d.store.getDelivery = async () => row
+    d.store.requeueDelivery = async () => false
+    const ref = encodeCursor({ subject: row.subject, sk: row.sk })
+    const result = await handleRedrive(d, redriveEvent('one', { ref }))
+    expect(result.status).toBe(409)
+    expect((result.body as { error: { code: string; message: string } }).error).toEqual({
+      code: 'not_dead',
+      message: 'that delivery changed before it could be redriven',
+    })
   })
 
   it('reports an unknown delivery as missing', async () => {
