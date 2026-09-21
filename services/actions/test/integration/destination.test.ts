@@ -1,7 +1,16 @@
 import http from 'node:http'
+import https from 'node:https'
+import tls from 'node:tls'
 import { once } from 'node:events'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { DestinationError, postJson, resolveDestination, type Resolved } from '../../src/destination.js'
+import {
+  DestinationError,
+  MAX_RESPONSE_BYTES,
+  postJson,
+  resolveDestination,
+  type Resolved,
+} from '../../src/destination.js'
+import { SELF_SIGNED_CERT, SELF_SIGNED_KEY } from './self-signed.js'
 
 let server: http.Server
 let port: number
@@ -24,6 +33,27 @@ beforeAll(async () => {
       if (req.url === '/big') {
         res.writeHead(200)
         return res.end('x'.repeat(5_000_000))
+      }
+      if (req.url === '/wide') {
+        // 6000 bytes, but only 3000 UTF-16 units: a cap that counts units would keep twice what it should
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+        return res.end('é'.repeat(3_000))
+      }
+      if (req.url === '/split') {
+        // the two bytes of one character, in two chunks, and a third character straddling the 2 KB cap
+        res.writeHead(200)
+        res.write('ok:')
+        res.write(Buffer.from([0xc3]))
+        res.write(Buffer.from([0xa9]))
+        res.write('a'.repeat(2_100))
+        return res.end()
+      }
+      if (req.url === '/cut') {
+        // promises 100 bytes, sends 7, then closes cleanly: no error reaches the client, only a short body
+        res.writeHead(200, { 'content-length': '100' })
+        res.write('partial')
+        setTimeout(() => res.socket?.end(), 20)
+        return
       }
       if (req.url === '/hang') {
         res.writeHead(200)
@@ -101,6 +131,23 @@ describe('postJson', () => {
     expect((await postJson(local('/big'), '{}', {})).body).toHaveLength(2048)
   })
 
+  it('counts the cap in bytes, not in characters', async () => {
+    const answer = await postJson(local('/wide'), '{}', {})
+    expect(Buffer.byteLength(answer.body)).toBeLessThanOrEqual(MAX_RESPONSE_BYTES)
+    expect(answer.body).toBe('é'.repeat(1_024))
+  })
+
+  it('decodes whole characters, at a chunk boundary and at the cap', async () => {
+    const answer = await postJson(local('/split'), '{}', {})
+    expect(answer.body.startsWith('ok:é')).toBe(true)
+    expect(answer.body).not.toContain('�')
+    expect(Buffer.byteLength(answer.body)).toBeLessThanOrEqual(MAX_RESPONSE_BYTES)
+  })
+
+  it('refuses an answer the destination cut short, rather than reporting it delivered', async () => {
+    await expect(postJson(local('/cut'), '{}', {})).rejects.toThrow('before the answer was complete')
+  })
+
   // the deadline is far away, so only the idle timeout can end this one
   it('gives up on a destination that goes silent', async () => {
     await expect(postJson(local('/hang'), '{}', {}, { timeoutMs: 500, deadlineMs: 60_000 })).rejects.toThrow(
@@ -116,6 +163,74 @@ describe('postJson', () => {
     )
     expect(Date.now() - started).toBeLessThan(3_000)
   }, 10_000)
+})
+
+describe('over TLS', () => {
+  let secureServer: https.Server
+  let securePort: number
+  const sni: string[] = []
+  const peers: (string | undefined)[] = []
+
+  beforeAll(async () => {
+    secureServer = https.createServer(
+      {
+        key: SELF_SIGNED_KEY,
+        cert: SELF_SIGNED_CERT,
+        SNICallback: (name, cb) => {
+          sni.push(name)
+          cb(null, undefined)
+        },
+      },
+      (req, res) => {
+        peers.push(req.socket.remoteAddress)
+        seen.push({ url: req.url, body: '', headers: req.headers })
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end('{"ok":true}')
+      },
+    )
+    secureServer.listen(0, '127.0.0.1')
+    await once(secureServer, 'listening')
+    securePort = (secureServer.address() as { port: number }).port
+  })
+
+  afterAll(() => {
+    secureServer.close()
+  })
+
+  // pinned.invalid never resolves, so a request that arrives did so through the pinned lookup, on the https path
+  const pinned = (): Resolved => ({
+    url: new URL(`https://pinned.invalid:${securePort}/hook`),
+    host: 'pinned.invalid',
+    address: '127.0.0.1',
+    family: 4,
+    port: securePort,
+  })
+
+  it('refuses a certificate it has no reason to trust', async () => {
+    const thrown = await postJson(pinned(), '{}', {}).catch((e: NodeJS.ErrnoException) => e)
+    expect((thrown as NodeJS.ErrnoException).code).toBe('DEPTH_ZERO_SELF_SIGNED_CERT')
+    // it still got that far over TLS, at the pinned address, with the name in the handshake
+    expect(sni.at(-1)).toBe('pinned.invalid')
+  })
+
+  it('reaches the pinned address over TLS and reads the answer', async () => {
+    // the certificate is checked against the name, so this machine has to trust the test certificate for the
+    // request to complete. Nothing in the guard changes: postJson has no option that would skip the check.
+    const createSecureContext = tls.createSecureContext
+    tls.createSecureContext = (options = {}) => createSecureContext({ ...options, ca: SELF_SIGNED_CERT })
+    try {
+      const answer = await postJson(pinned(), '{"a":1}', { 'x-blockwarden-signature': 't=1,v1=ab' })
+      expect(answer.statusCode).toBe(200)
+      expect(answer.body).toBe('{"ok":true}')
+      expect(answer.remoteAddress).toBe('127.0.0.1')
+      expect(peers.at(-1)).toBe('127.0.0.1')
+      expect(sni.at(-1)).toBe('pinned.invalid')
+      expect(seen.at(-1)!.headers.host).toBe(`pinned.invalid:${securePort}`)
+      expect(seen.at(-1)!.headers['x-blockwarden-signature']).toBe('t=1,v1=ab')
+    } finally {
+      tls.createSecureContext = createSecureContext
+    }
+  })
 })
 
 describe('the guard and the socket together', () => {
