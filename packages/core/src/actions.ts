@@ -1,8 +1,17 @@
 import { z } from 'zod'
+import type { Address, Hex } from 'viem'
 import { checkDestinationUrl } from './net.js'
 
-const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'expected a 20-byte hex address')
-const hex = z.string().regex(/^0x([0-9a-fA-F]{2})*$/, 'expected 0x followed by whole bytes of hex')
+// the regex already proves the value is 0x-prefixed hex; the transform only carries that into the type so a
+// relay action's to/data come out as viem's own Address/Hex instead of a plain string every caller has to cast
+const address = z
+  .string()
+  .regex(/^0x[0-9a-fA-F]{40}$/, 'expected a 20-byte hex address')
+  .transform((value) => value as Address)
+const hex = z
+  .string()
+  .regex(/^0x([0-9a-fA-F]{2})*$/, 'expected 0x followed by whole bytes of hex')
+  .transform((value) => value as Hex)
 const decimal = z.string().regex(/^(0|[1-9][0-9]*)$/, 'expected a decimal string')
 // RFC 7230 token, which is what a header name is
 const headerName = z.string().regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a header name')
