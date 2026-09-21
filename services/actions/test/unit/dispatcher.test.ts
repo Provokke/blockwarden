@@ -1,0 +1,241 @@
+import { describe, expect, it, vi } from 'vitest'
+import { dispatchRecords, MAX_ATTEMPTS, sweepDue } from '../../src/dispatcher.js'
+import type { CompiledRuleView } from '../../src/lookup.js'
+import type { DeliveryStore } from '../../src/store.js'
+import { matchRow, streamRecord, txRow } from '../helpers/images.js'
+import { fakeLookup, fakeQueue, fakeStore } from './fakes.js'
+
+const webhookRule = (
+  mode: 'fast' | 'finalized',
+  actions: CompiledRuleView['actions'] = [
+    { actionId: 'a_1111111111111111', action: { type: 'webhook', url: 'https://example.com/hook' } },
+  ],
+): CompiledRuleView => ({
+  ruleId: 'rule-1',
+  event: 'event Transfer(address indexed from, address indexed to, uint256 value)',
+  eventName: 'Transfer',
+  mode,
+  actions,
+})
+
+const deps = (rules: Record<string, CompiledRuleView>, signers = {}) => {
+  const { store, items } = fakeStore()
+  const { queue, sent } = fakeQueue()
+  const log = vi.fn()
+  return {
+    deps: {
+      store: store as unknown as DeliveryStore,
+      lookup: fakeLookup(rules, signers),
+      queue,
+      now: () => new Date(1_000),
+      log,
+    },
+    items,
+    sent,
+    log,
+  }
+}
+
+describe('matches', () => {
+  it('creates one delivery per action and enqueues each of them', async () => {
+    const rules = {
+      'rule-1': webhookRule('finalized', [
+        { actionId: 'a_1111111111111111', action: { type: 'webhook', url: 'https://example.com/a' } },
+        { actionId: 'a_2222222222222222', action: { type: 'email', to: ['ops@example.com'] } },
+      ]),
+    }
+    const d = deps(rules)
+    const row = matchRow({ status: 'final' })
+    const response = await dispatchRecords(d.deps, [
+      streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row }),
+    ])
+    expect(response.batchItemFailures).toEqual([])
+    expect(d.items.size).toBe(2)
+    expect(d.sent).toHaveLength(2)
+    expect(d.sent[0]!.delaySeconds).toBe(0)
+    const delivery = [...d.items.values()][0]!
+    expect(delivery.status).toBe('queued')
+    expect(JSON.parse(delivery.payload).type).toBe('match.final')
+    expect(JSON.parse(delivery.payload).data.eventName).toBe('Transfer')
+  })
+
+  it('sends a provisional match only for a fast rule', async () => {
+    const row = matchRow({ status: 'provisional' })
+    const record = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
+    const fast = deps({ 'rule-1': webhookRule('fast') })
+    await dispatchRecords(fast.deps, [record])
+    expect(fast.items.size).toBe(1)
+    const slow = deps({ 'rule-1': webhookRule('finalized') })
+    await dispatchRecords(slow.deps, [record])
+    expect(slow.items.size).toBe(0)
+  })
+
+  it('sends a drop notice only for a fast rule', async () => {
+    const before = matchRow({ status: 'provisional' })
+    const after = matchRow({ status: 'dropped' })
+    const record = streamRecord(
+      'MODIFY',
+      { PK: before.PK as string, SK: 'META' },
+      { oldImage: before, newImage: after },
+    )
+    const fast = deps({ 'rule-1': webhookRule('fast') })
+    await dispatchRecords(fast.deps, [record])
+    expect(fast.items.size).toBe(1)
+    const slow = deps({ 'rule-1': webhookRule('finalized') })
+    await dispatchRecords(slow.deps, [record])
+    expect(slow.items.size).toBe(0)
+  })
+
+  it('creates the same delivery once however often the record arrives', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized') })
+    const row = matchRow({ status: 'final' })
+    const record = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
+    await dispatchRecords(d.deps, [record])
+    await dispatchRecords(d.deps, [record])
+    await dispatchRecords(d.deps, [record])
+    expect(d.items.size).toBe(1)
+    // the message is sent once: a delivery that already exists is not re-enqueued from the stream
+    expect(d.sent).toHaveLength(1)
+  })
+
+  it('skips a match whose rule is gone, and does not fail the batch', async () => {
+    const d = deps({})
+    const row = matchRow({ status: 'final' })
+    const response = await dispatchRecords(d.deps, [
+      streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row }),
+    ])
+    expect(response.batchItemFailures).toEqual([])
+    expect(d.items.size).toBe(0)
+    expect(d.log).toHaveBeenCalledWith('no rule for match', expect.anything(), 'warn')
+  })
+
+  it('skips a rule with no actions without writing anything', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized', []) })
+    const row = matchRow({ status: 'final' })
+    await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
+    expect(d.items.size).toBe(0)
+  })
+})
+
+describe('transactions', () => {
+  const signers = {
+    demo: { signerId: 'demo', webhooks: ['https://example.com/tx'], webhookSecretParameter: '/bw/secret' },
+  }
+
+  it('creates one delivery per signer webhook', async () => {
+    const d = deps({}, signers)
+    const row = txRow({ signerId: 'demo' })
+    await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: 'TX#tx-1', SK: 'META' }, { newImage: row })])
+    expect(d.items.size).toBe(1)
+    const delivery = [...d.items.values()][0]!
+    expect(delivery.event).toBe('tx.queued')
+    expect(delivery.target).toEqual({
+      channel: 'webhook',
+      url: 'https://example.com/tx',
+      secretParameter: '/bw/secret',
+    })
+    expect(JSON.parse(delivery.payload).data.txId).toBe('tx-1')
+  })
+
+  it('gives the second tx.mined of a reorg its own delivery id', async () => {
+    const d = deps({}, signers)
+    const first = txRow({
+      signerId: 'demo',
+      status: 'mined',
+      history: [
+        { status: 'queued', at: 't0' },
+        { status: 'submitted', at: 't1' },
+        { status: 'mined', at: 't2' },
+      ],
+    })
+    const second = txRow({
+      signerId: 'demo',
+      status: 'mined',
+      history: [
+        { status: 'queued', at: 't0' },
+        { status: 'submitted', at: 't1' },
+        { status: 'mined', at: 't2' },
+        { status: 'submitted', at: 't3' },
+        { status: 'mined', at: 't4' },
+      ],
+    })
+    await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: 'TX#tx-1', SK: 'META' }, { newImage: first })])
+    await dispatchRecords(d.deps, [
+      streamRecord('MODIFY', { PK: 'TX#tx-1', SK: 'META' }, { oldImage: first, newImage: second }),
+    ])
+    const mined = [...d.items.values()].filter((d) => d.event === 'tx.mined')
+    expect(mined).toHaveLength(2)
+    expect(new Set(mined.map((m) => m.deliveryId)).size).toBe(2)
+  })
+
+  it('writes nothing for a signer with no webhooks', async () => {
+    const d = deps({}, { demo: { signerId: 'demo', webhooks: [] } })
+    await dispatchRecords(d.deps, [
+      streamRecord('INSERT', { PK: 'TX#tx-1', SK: 'META' }, { newImage: txRow({ signerId: 'demo' }) }),
+    ])
+    expect(d.items.size).toBe(0)
+  })
+})
+
+describe('failures', () => {
+  it('reports the first record DynamoDB refused and stops there', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized') })
+    const failing = {
+      ...d.deps,
+      store: {
+        ...d.deps.store,
+        create: async () => {
+          throw new Error('ProvisionedThroughputExceededException')
+        },
+      } as unknown as DeliveryStore,
+    }
+    const row = matchRow({ status: 'final' })
+    const first = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
+    const second = streamRecord(
+      'INSERT',
+      { PK: 'MATCH#0xff', SK: 'META' },
+      { newImage: matchRow({ PK: 'MATCH#0xff', matchKey: '0xff', status: 'final' }) },
+    )
+    const response = await dispatchRecords(failing, [first, second])
+    expect(response.batchItemFailures).toEqual([{ itemIdentifier: first.dynamodb!.SequenceNumber }])
+  })
+
+  it('does not report a record it simply could not read', async () => {
+    const d = deps({})
+    const response = await dispatchRecords(d.deps, [
+      streamRecord('INSERT', { PK: 'CHAIN#1', SK: 'CURSOR' }, { newImage: { PK: 'CHAIN#1', SK: 'CURSOR' } }),
+    ])
+    expect(response.batchItemFailures).toEqual([])
+  })
+})
+
+describe('the reaper', () => {
+  it('re-enqueues a delivery whose next attempt is past by more than the grace', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized') })
+    const row = matchRow({ status: 'final' })
+    await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
+    d.sent.length = 0
+    expect(await sweepDue(d.deps, 121_500, 10)).toEqual({ requeued: 1, dead: 0 })
+    expect(d.sent).toHaveLength(1)
+  })
+
+  it('leaves an attempt that is still inside its lease alone', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized') })
+    const row = matchRow({ status: 'final' })
+    await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
+    d.sent.length = 0
+    expect(await sweepDue(d.deps, 5_000, 10)).toEqual({ requeued: 0, dead: 0 })
+    expect(d.sent).toHaveLength(0)
+  })
+
+  it('kills a delivery that has already used every attempt, so nothing loops', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized') })
+    const row = matchRow({ status: 'final' })
+    await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
+    for (const item of d.items.values()) item.attempts = MAX_ATTEMPTS
+    d.sent.length = 0
+    expect(await sweepDue(d.deps, 121_500, 10)).toEqual({ requeued: 0, dead: 1 })
+    expect(d.sent).toHaveLength(0)
+    expect([...d.items.values()][0]!.status).toBe('dead')
+  })
+})
