@@ -4,6 +4,7 @@ import { DUE_SHARDS, keys } from './keys.js'
 import {
   DELIVERY_TTL_SECONDS,
   MAX_PAYLOAD_BYTES,
+  PayloadTooLargeError,
   TERMINAL,
   truncate,
   type DeliveryRecord,
@@ -63,9 +64,8 @@ export class DeliveryStore {
   ) {}
 
   async create(delivery: NewDelivery, now: Date): Promise<DeliveryRecord | undefined> {
-    if (Buffer.byteLength(delivery.payload, 'utf8') > MAX_PAYLOAD_BYTES) {
-      throw new Error(`delivery ${delivery.deliveryId} payload is larger than ${MAX_PAYLOAD_BYTES} bytes`)
-    }
+    const bytes = Buffer.byteLength(delivery.payload, 'utf8')
+    if (bytes > MAX_PAYLOAD_BYTES) throw new PayloadTooLargeError(delivery.deliveryId, bytes)
     const nowMs = now.getTime()
     const record: DeliveryRecord = {
       ...delivery,

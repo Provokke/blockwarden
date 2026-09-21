@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { dispatchRecords, MAX_ATTEMPTS, sweepDue } from '../../src/dispatcher.js'
 import type { CompiledRuleView } from '../../src/lookup.js'
-import type { DeliveryStore } from '../../src/store.js'
+import { keys } from '../../src/keys.js'
 import { matchRow, streamRecord, txRow } from '../helpers/images.js'
 import { fakeLookup, fakeQueue, fakeStore } from './fakes.js'
 
@@ -24,7 +24,7 @@ const deps = (rules: Record<string, CompiledRuleView>, signers = {}) => {
   const log = vi.fn()
   return {
     deps: {
-      store: store as unknown as DeliveryStore,
+      store,
       lookup: fakeLookup(rules, signers),
       queue,
       now: () => new Date(1_000),
@@ -187,7 +187,7 @@ describe('failures', () => {
         create: async () => {
           throw new Error('ProvisionedThroughputExceededException')
         },
-      } as unknown as DeliveryStore,
+      },
     }
     const row = matchRow({ status: 'final' })
     const first = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
@@ -226,6 +226,42 @@ describe('the reaper', () => {
     d.sent.length = 0
     expect(await sweepDue(d.deps, 5_000, 10)).toEqual({ requeued: 0, dead: 0 })
     expect(d.sent).toHaveLength(0)
+  })
+
+  it('drains the oldest delivery first', async () => {
+    const d = deps({
+      'rule-1': webhookRule('finalized', [
+        { actionId: 'a_1111111111111111', action: { type: 'webhook', url: 'https://example.com/a' } },
+        { actionId: 'a_2222222222222222', action: { type: 'webhook', url: 'https://example.com/b' } },
+        { actionId: 'a_3333333333333333', action: { type: 'webhook', url: 'https://example.com/c' } },
+      ]),
+    })
+    const row = matchRow({ status: 'final' })
+    await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
+    const [first, second, third] = [...d.items.values()]
+    // the real store merges four shards on the due time, so the sweep always sees the backlog oldest first
+    first!.nextAttemptAt = 300_000
+    second!.nextAttemptAt = 100_000
+    third!.nextAttemptAt = 200_000
+    d.sent.length = 0
+    expect(await sweepDue(d.deps, 360_000, 10)).toEqual({ requeued: 3, dead: 0 })
+    expect(d.sent.map((s) => s.ref.sk)).toEqual(
+      [second!, third!, first!].map((x) => keys.delivery(x.subject, x.actionId, x.event, x.seq).SK),
+    )
+  })
+
+  it('logs a delivery another invocation requeued first rather than throwing', async () => {
+    const d = deps({ 'rule-1': webhookRule('finalized') })
+    const row = matchRow({ status: 'final' })
+    await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
+    // what the sweep read, and then the item moving on underneath it: the version condition refuses the write
+    const stale = { ...[...d.items.values()][0]! }
+    for (const item of d.items.values()) item.version += 1
+    const store = { ...d.deps.store, listDuePage: async () => ({ deliveries: [stale] }) }
+    d.sent.length = 0
+    expect(await sweepDue({ ...d.deps, store }, 121_500, 10)).toEqual({ requeued: 0, dead: 0 })
+    expect(d.sent).toHaveLength(0)
+    expect(d.log).toHaveBeenCalledWith('could not requeue a delivery', expect.anything(), 'warn')
   })
 
   it('kills a delivery that has already used every attempt, so nothing loops', async () => {
