@@ -1,5 +1,5 @@
 import { clampFees } from '@blockwarden/core'
-import type { LocalAccount } from 'viem'
+import type { Hex, LocalAccount } from 'viem'
 import { DEADLINE_MARGIN_MS } from './batch.js'
 import { describeError, EstimateError, short, type RelayerChain } from './chain.js'
 import { feeCap } from './policy.js'
@@ -37,6 +37,19 @@ const MAX_NONCE_RESETS = 2
 // never sent again, so their bytes are dropped
 export const MAX_ABANDONED_ATTEMPTS = 4
 
+// A node picks the length of a revert payload, and the whole of it would land on the item, on every RelayerTxBody,
+// and in every webhook, where the dispatcher refuses a payload over 64 KB. 256 bytes is a selector plus several
+// 32-byte arguments, comfortably inside that and the item's 400 KB budget - milestone 2 capped the operator
+// message this data also feeds at the same number of characters.
+const MAX_REVERT_DATA_BYTES = 256
+
+// truncates on a byte boundary so the stored value is still decodable hex; a payload at exactly the cap may have
+// been cut short, anything shorter is complete
+function capRevertData(data: Hex): Hex {
+  const hexChars = MAX_REVERT_DATA_BYTES * 2
+  return (data.length <= hexChars + 2 ? data : data.slice(0, hexChars + 2)) as Hex
+}
+
 // remainingMs is the Lambda's time left, when there is one
 export async function processTx(deps: SignerDeps, txId: string, remainingMs?: () => number): Promise<ProcessOutcome> {
   const { store } = deps
@@ -60,13 +73,20 @@ export async function processTx(deps: SignerDeps, txId: string, remainingMs?: ()
     const state = dependencyState(await store.getTx(tx.dependsOn))
     // the sweeper requeues this transaction once its dependency settles
     if (state === 'waiting') return 'waiting'
-    const reason =
+    const failure: DependencyFailure | undefined =
       state === 'unsuccessful'
-        ? 'the transaction this one depends on did not succeed'
+        ? { reason: 'the transaction this one depends on did not succeed' }
         : await revertsNow(deps, chain, account.address, tx)
-    if (reason) {
+    if (failure) {
       // no nonce was taken, so no filler is needed
-      await store.saveTx({ ...withStatus(tx, 'failed', stamp()), error: reason }, stamp())
+      await store.saveTx(
+        {
+          ...withStatus(tx, 'failed', stamp()),
+          error: failure.reason,
+          ...(failure.revertData === undefined ? {} : { revertData: failure.revertData }),
+        },
+        stamp(),
+      )
       return 'failed'
     }
   }
@@ -151,13 +171,15 @@ export async function processTx(deps: SignerDeps, txId: string, remainingMs?: ()
   }
 }
 
+type DependencyFailure = { reason: string; revertData?: Hex }
+
 // the estimate the API skipped for a dependent transaction, run once its dependency is confirmed
 async function revertsNow(
   deps: SignerDeps,
   chain: RelayerChain,
   from: TxRecord['from'],
   tx: TxRecord,
-): Promise<string | undefined> {
+): Promise<DependencyFailure | undefined> {
   try {
     const estimate = await chain.estimateGas({ from, to: tx.to, data: tx.data, value: BigInt(tx.value) })
     // the caller fixed gasLimit before this estimate existed; still send it, just flag that it may run short
@@ -172,12 +194,16 @@ async function revertsNow(
   } catch (err) {
     if (!(err instanceof EstimateError)) throw err
     if (err.kind === 'reverted') {
-      // the node chooses how long this is, and it goes on the item; the API still answers with the whole of it
-      return `eth_estimateGas reverted once the dependency was confirmed: ${short(err.revertData ?? '0x')}`
+      // the message keeps a short copy for an operator; the field keeps as much of the payload as the item can spare
+      const revertData = capRevertData(err.revertData ?? '0x')
+      return {
+        reason: `eth_estimateGas reverted once the dependency was confirmed: ${short(revertData)}`,
+        revertData,
+      }
     }
     // a definitive refusal that isn't a revert (insufficient balance, gas above the block limit, ...): retrying
     // the estimate will not clear it either, so this is the same dead end as a revert
-    if (err.kind === 'failed') return describeError(err)
+    if (err.kind === 'failed') return { reason: describeError(err) }
     throw err
   }
 }

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
-import { compileRule, ruleInputSchema } from '@blockwarden/core'
+import { compileRule, RuleValidationError, ruleInputSchema } from '@blockwarden/core'
 import { createDocumentClient } from '@blockwarden/dynamo'
 import { MonitorStore } from '../src/store.js'
 
@@ -26,7 +26,11 @@ if (!file || !tableName) {
 
 const input = ruleInputSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
 const ruleId = values.id ?? randomUUID()
-compileRule(ruleId, input)
+// compileRule only throws over what stops a rule matching; everything else it drops and reports as a warning,
+// so that a rule written before a check existed keeps being polled. A rule being written now has an author
+// watching, so this path refuses the lot.
+const compiled = compileRule(ruleId, input)
+if (compiled.warnings.length > 0) throw new RuleValidationError(compiled.warnings)
 
 const endpoint = process.env.DYNAMODB_ENDPOINT
 const store = new MonitorStore(createDocumentClient(new DynamoDBClient(endpoint ? { endpoint } : {})), tableName)

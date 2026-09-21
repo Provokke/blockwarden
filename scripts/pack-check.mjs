@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { gunzipSync } from 'node:zlib'
@@ -12,7 +12,19 @@ const packages = {
     './testing': ['createLocalDigestSigner'],
   },
   'packages/relayer-client': {
-    '.': ['relay', 'getTx', 'listSigners', 'verifyWebhook', 'signWebhook', 'RelayerApiError', 'TX_STATUSES'],
+    '.': [
+      'relay',
+      'getTx',
+      'listSigners',
+      'verifyWebhook',
+      'signWebhook',
+      'RelayerApiError',
+      'TX_STATUSES',
+      'isMatchEvent',
+      'toDecodedValue',
+      'WEBHOOK_SPEC_VERSION',
+      'MATCH_STATUSES',
+    ],
   },
 }
 
@@ -54,7 +66,9 @@ for (const [dir, entries] of Object.entries(packages)) {
   // extracted inside the package, so imports resolve through the package's own node_modules
   extract(join(out, tgz), out)
   const manifest = JSON.parse(readFileSync(join(out, 'package', 'package.json'), 'utf8'))
-  for (const file of ['README.md', 'LICENSE']) {
+  // a changelog a consumer can only read on GitHub is one they will not read, so one that exists must ship
+  const required = ['README.md', 'LICENSE', ...(existsSync(join(root, 'CHANGELOG.md')) ? ['CHANGELOG.md'] : [])]
+  for (const file of required) {
     try {
       readFileSync(join(out, 'package', file))
     } catch {

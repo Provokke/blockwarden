@@ -16,6 +16,24 @@ export {
   type Scalar,
 } from './rule.js'
 export type { RawLog } from './types.js'
+export {
+  actionSchema,
+  DEFAULT_DELIVERY_HEADER,
+  DEFAULT_SIGNATURE_HEADER,
+  emailActionSchema,
+  headerName,
+  lambdaActionSchema,
+  MAX_HEADER_NAME_LENGTH,
+  MAX_RELAY_DATA_BYTES,
+  parameterName,
+  relayActionSchema,
+  sqsActionSchema,
+  telegramActionSchema,
+  webhookActionSchema,
+  type ActionInput,
+  type ActionType,
+} from './actions.js'
+export { checkDestinationUrl, classifyAddress, PRIVATE_V4_RANGES, type AddressVerdict } from './net.js'
 export { DeadlineError, fetchLogsAdaptive, type FetchLogsOptions, type FetchRange } from './fetch-logs.js'
 export {
   bumpFees,

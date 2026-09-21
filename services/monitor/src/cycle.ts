@@ -32,7 +32,7 @@ export type CycleDeps = {
   startBlock?: number
   finalityDepth?: number
   now?: () => number
-  log?: (message: string, data?: Record<string, unknown>) => void
+  log?: (message: string, data?: Record<string, unknown>, level?: 'warn') => void
   owner?: string
   leaseMs?: number
 }
@@ -50,6 +50,10 @@ export type CycleResult = {
   dropped: number
   laggingNode: boolean
   deadlineHit: boolean
+  // rules that could not be compiled at all, and rules that compiled with something dropped; both mean a rule
+  // is not doing what it says, so the handler publishes each as its own metric and an alarm can watch them
+  ruleSkips: number
+  ruleWarnings: number
 }
 
 type Log = NonNullable<CycleDeps['log']>
@@ -85,7 +89,9 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
   const deadline = Math.min(started + deps.timeBudgetMs, deps.deadlineMs ?? Number.POSITIVE_INFINITY)
   const inTime = () => now() < deadline
   const shouldStop = () => !inTime()
-  const rules = await loadRules(deps, log)
+  const loaded = await loadRules(deps, log)
+  const rules = loaded.rules
+  const ruleCounts = { ruleSkips: loaded.skipped, ruleWarnings: loaded.warned }
   const fastRules = rules.filter((r) => r.confirmation.mode === 'fast')
 
   let head: number
@@ -108,7 +114,7 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
   } catch (err) {
     if (!(err instanceof DeadlineError)) throw err
     log('the hard stop passed while reading the head or the finalized block, stopping this run', { chainId })
-    return { ...nothingObserved('ok'), deadlineHit: true }
+    return { ...nothingObserved('ok'), ...ruleCounts, deadlineHit: true }
   }
 
   const firstSeenAt = new Date(now()).toISOString()
@@ -124,6 +130,7 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
     fastBlock: at.fastBlock,
     durableLag: finalized === undefined ? undefined : Math.max(0, finalized - at.durableBlock),
     ...counts,
+    ...ruleCounts,
     laggingNode,
     deadlineHit,
   })
@@ -279,6 +286,8 @@ function nothingObserved(status: CycleResult['status']): CycleResult {
     dropped: 0,
     laggingNode: false,
     deadlineHit: false,
+    ruleSkips: 0,
+    ruleWarnings: 0,
   }
 }
 
@@ -300,16 +309,33 @@ async function readFinalRange(
   return logs
 }
 
-async function loadRules(deps: CycleDeps, log: Log): Promise<CompiledRule[]> {
+// Both endings are quiet failures - a rule stops being monitored, or stops delivering part of what it says -
+// so both are logged at warn and counted for a metric, rather than sitting in an info line nobody reads.
+async function loadRules(
+  deps: CycleDeps,
+  log: Log,
+): Promise<{ rules: CompiledRule[]; skipped: number; warned: number }> {
   const stored = await deps.store.listActiveRules(deps.chainId)
-  return stored.flatMap((rule) => {
+  const rules: CompiledRule[] = []
+  let skipped = 0
+  let warned = 0
+  for (const rule of stored) {
+    let compiled: CompiledRule
     try {
-      return [compileRule(rule.ruleId, rule.input)]
+      compiled = compileRule(rule.ruleId, rule.input)
     } catch (err) {
-      log('skipping a rule that no longer compiles', { ruleId: rule.ruleId, error: (err as Error).message })
-      return []
+      skipped++
+      log('skipping a rule that no longer compiles', { ruleId: rule.ruleId, error: (err as Error).message }, 'warn')
+      continue
     }
-  })
+    if (compiled.warnings.length > 0) {
+      warned++
+      const warnings = compiled.warnings.map((w) => `${w.path}: ${w.message}`).join('; ')
+      log('a rule is being polled with part of it dropped', { ruleId: rule.ruleId, warnings }, 'warn')
+    }
+    rules.push(compiled)
+  }
+  return { rules, skipped, warned }
 }
 
 function toNewMatch(chainId: number, match: KeyedMatch, firstSeenAt: string): NewMatch {

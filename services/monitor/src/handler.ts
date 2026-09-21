@@ -26,7 +26,10 @@ async function init(): Promise<Runtime> {
   const endpoint = process.env.DYNAMODB_ENDPOINT
   const doc = createDocumentClient(new DynamoDBClient(endpoint ? { endpoint } : {}))
   const chain = createChainReader(config.rpcUrls, requestTimeoutMs(config.timeBudgetMs, config.rpcUrls.length))
-  return { config, store: new MonitorStore(doc, config.tableName), chain }
+  const store = new MonitorStore(doc, config.tableName, () => new Date(), {
+    log: (message, data) => logger.info(message, data ?? {}),
+  })
+  return { config, store, chain }
 }
 
 // leaves time to release the lease and publish metrics before Lambda stops the invocation
@@ -69,8 +72,11 @@ export async function handler(_event: unknown, context?: { getRemainingTimeInMil
         deadlineMs,
         startBlock: config.startBlock,
         finalityDepth: config.finalityDepth,
-        log: (message, data) =>
-          logger.info(redact(message), redactData(data ?? {}, config.rpcUrls) as Record<string, unknown>),
+        log: (message, data, level) => {
+          const line = redactData(data ?? {}, config.rpcUrls) as Record<string, unknown>
+          if (level === 'warn') logger.warn(redact(message), line)
+          else logger.info(redact(message), line)
+        },
       })
     } catch (err) {
       // viem puts the full RPC URL, API key included, in its error messages and stacks
@@ -93,6 +99,11 @@ export async function handler(_event: unknown, context?: { getRemainingTimeInMil
       // no alarms of their own: a node that keeps lagging, or runs that keep running out of time, trip durableLag
       if (result.laggingNode) metrics.addMetric('laggingNodeSkips', MetricUnit.Count, 1)
       if (result.deadlineHit) metrics.addMetric('deadlineSkips', MetricUnit.Count, 1)
+      // a rule that no longer compiles has left the poll, and one polled with an action dropped delivers less
+      // than it says; both are otherwise only a log line, so an alarm needs these. Published only when they
+      // happen, as every other count here is, because a custom metric is billed per name.
+      if (result.ruleSkips > 0) metrics.addMetric('ruleSkips', MetricUnit.Count, result.ruleSkips)
+      if (result.ruleWarnings > 0) metrics.addMetric('ruleWarnings', MetricUnit.Count, result.ruleWarnings)
     }
     logger.info('cycle finished', { ...result })
     return result

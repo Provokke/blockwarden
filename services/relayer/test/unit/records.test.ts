@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { liveAttempt, toTxBody, withStatus, type Attempt, type TxRecord } from '../../src/records.js'
+import { txRecord } from '../helpers/fixtures.js'
 
 const attempt = (n: number, rejected?: string): Attempt => ({
   hash: `0x${String(n).repeat(64)}`,
@@ -46,6 +47,11 @@ describe('toTxBody', () => {
     }
     expect(toTxBody(mined)).toMatchObject({ hash: attempt(1).hash, blockNumber: 9, receiptStatus: 'reverted' })
     expect(toTxBody({ ...tx, attempts: [], nonce: undefined })).toMatchObject({ hash: null, nonce: null })
+  })
+
+  it('reports the revert data on the body, and null when there is none', () => {
+    expect(toTxBody(txRecord({ revertData: '0x11fbe712' })).revertData).toBe('0x11fbe712')
+    expect(toTxBody(txRecord({})).revertData).toBeNull()
   })
 })
 

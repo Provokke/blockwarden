@@ -68,3 +68,8 @@ export function queuedTx(from: Address, overrides: Partial<TxRecord> = {}): TxRe
     ...overrides,
   }
 }
+
+// for tests that build a TxRecord without caring about the sender address
+export function txRecord(overrides: Partial<TxRecord> = {}): TxRecord {
+  return queuedTx(overrides.from ?? TARGET, overrides)
+}

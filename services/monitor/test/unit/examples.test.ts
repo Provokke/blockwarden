@@ -11,8 +11,9 @@ describe('examples', () => {
     expect(files.length).toBeGreaterThan(0)
   })
 
+  // an example is a write path too: it must compile with nothing dropped, which is what rule:put enforces
   it.each(files)('%s is a valid rule', (file) => {
     const input = ruleInputSchema.parse(JSON.parse(readFileSync(new URL(file, dir), 'utf8')))
-    expect(() => compileRule(file, input)).not.toThrow()
+    expect(compileRule(file, input).warnings).toEqual([])
   })
 })
