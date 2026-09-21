@@ -71,7 +71,7 @@ A webhook action's own `secretParameter` is optional, and so is the deployment-w
 
 **SES sandbox.** A new AWS account's SES is in the sandbox, where **every recipient** has to be verified too, and sending is capped. `ses_from_address` creates and must confirm the sender identity; moving out of the sandbox is a support request the operator makes.
 
-**Rules without the dashboard.** `modules/blockwarden` takes a `rules` map and writes each one at apply time. A rule's `conditions` and each of its `actions` are JSON strings, because Terraform cannot type a rule's nested shape; the module validates what it can, and the monitor skips and logs a rule that does not compile.
+**Rules without the dashboard.** `modules/blockwarden` takes a `rules` map and writes each one at apply time. A rule's `conditions` and each of its `actions` are JSON strings, because Terraform cannot type a rule's nested shape; the module validates what it can, and the monitor logs and drops the part of a rule that does not compile - an action that fails its schema is dropped and the rule goes on matching, while a rule whose event signature will not parse leaves the poll altogether.
 
 **Deliveries that did not come from a match.** With `outbound_queue = true`, the module creates a queue that turns a message into a signed delivery with the caller's own header names:
 

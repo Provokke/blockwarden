@@ -1,4 +1,4 @@
-import { DeadlineError } from '@blockwarden/core'
+import { DeadlineError, type RuleInput } from '@blockwarden/core'
 import {
   HttpRequestError,
   InternalRpcError,
@@ -74,6 +74,8 @@ const BUSY: CycleResult = {
   dropped: 0,
   laggingNode: false,
   deadlineHit: false,
+  ruleSkips: 0,
+  ruleWarnings: 0,
 }
 
 describe('runCycle', () => {
@@ -96,6 +98,8 @@ describe('runCycle', () => {
       dropped: 0,
       laggingNode: false,
       deadlineHit: false,
+      ruleSkips: 0,
+      ruleWarnings: 0,
     })
     const [provisional] = [...store.matches.values()]
     expect(provisional).toMatchObject({
@@ -218,6 +222,8 @@ describe('runCycle', () => {
       dropped: 0,
       laggingNode: false,
       deadlineHit: false,
+      ruleSkips: 0,
+      ruleWarnings: 0,
     })
     expect(records(store)).toEqual(['final:1@10:final', 'final:2@15:final'])
 
@@ -277,6 +283,8 @@ describe('runCycle', () => {
       dropped: 0,
       laggingNode: false,
       deadlineHit: false,
+      ruleSkips: 0,
+      ruleWarnings: 0,
     })
     expect(drop).not.toHaveBeenCalled()
     expect(getLogs.mock.calls.map(([, from, to]) => [from, to])).toEqual([[171, 201]])
@@ -707,6 +715,8 @@ describe('runCycle', () => {
       dropped: 0,
       laggingNode: false,
       deadlineHit: false,
+      ruleSkips: 0,
+      ruleWarnings: 0,
     })
     expect(store.cursors.size).toBe(0)
     expect(chain.getLogsCalls).toBe(0)
@@ -1175,7 +1185,7 @@ describe('runCycle', () => {
     const log = vi.fn()
 
     expect(await runCycle(deps(chain, store, { log }))).toMatchObject({ status: 'ok', final: 1 })
-    expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ ruleId: 'broken' }))
+    expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ ruleId: 'broken' }), 'warn')
     expect(records(store)).toEqual(['final:1@1:final'])
   })
 
@@ -1213,5 +1223,96 @@ describe('runCycle', () => {
       [1, 1],
       [2, 0],
     ])
+  })
+})
+
+// Milestone 3 added action validation and a deep condition-path check to compileRule. Both ran before a rule
+// could match, so a rule written under milestones 1 and 2 stopped being polled the day this shipped.
+describe('a rule milestone 3 made stricter is still polled', () => {
+  const stored = (ruleId: string, patch: Partial<RuleInput>): StoredRule => {
+    const rule = pingRule(ruleId, { mode: 'fast' })
+    return { ...rule, input: { ...rule.input, ...patch } as RuleInput }
+  }
+
+  const cases: [string, Partial<RuleInput>][] = [
+    [
+      'an action with a key the schema does not know',
+      { actions: [{ type: 'webhook', url: 'https://e.com/h', retries: 3 }] as unknown as RuleInput['actions'] },
+    ],
+    [
+      'an action of an unknown type',
+      { actions: [{ type: 'slack', url: 'https://e.com/h' }] as unknown as RuleInput['actions'] },
+    ],
+    [
+      'a webhook action with an http URL',
+      { actions: [{ type: 'webhook', url: 'http://e.com/h' }] as unknown as RuleInput['actions'] },
+    ],
+    [
+      'a condition path that goes deeper than the event',
+      {
+        conditions: {
+          any: [
+            { field: 'args.value.raw', op: 'eq', value: '1' },
+            { field: 'args.value', op: 'gte', value: '0' },
+          ],
+        } as RuleInput['conditions'],
+      },
+    ],
+  ]
+
+  for (const [what, patch] of cases) {
+    it(`matches a rule carrying ${what}`, async () => {
+      const chain = new FakeChain(0)
+      chain.emit(5n)
+      const store = new InMemoryStore()
+      store.rules.push(stored('legacy', patch))
+
+      const result = await runCycle(deps(chain, store))
+      expect(result.provisional).toBe(1)
+      expect(store.matches.size).toBe(1)
+    })
+  }
+
+  it('logs the dropped action at warn and counts it, and the rule keeps only the actions that pass', async () => {
+    const chain = new FakeChain(0)
+    chain.emit(5n)
+    const store = new InMemoryStore()
+    store.rules.push(
+      stored('legacy', {
+        actions: [
+          { type: 'webhook', url: 'http://e.com/h' },
+          { type: 'email', to: ['ops@example.com'] },
+        ] as unknown as RuleInput['actions'],
+      }),
+    )
+    const lines: { message: string; data?: Record<string, unknown>; level?: string }[] = []
+
+    const result = await runCycle(
+      deps(chain, store, { log: (message, data, level) => lines.push({ message, data, level }) }),
+    )
+
+    expect(result.provisional).toBe(1)
+    expect(result.ruleWarnings).toBe(1)
+    expect(result.ruleSkips).toBe(0)
+    const warned = lines.filter((l) => l.level === 'warn')
+    expect(warned).toHaveLength(1)
+    expect(warned[0]?.data).toMatchObject({ ruleId: 'legacy' })
+    expect(String(warned[0]?.data?.warnings)).toContain('actions.0.url')
+  })
+
+  it('still skips a rule whose event signature does not parse, and counts that separately', async () => {
+    const chain = new FakeChain(0)
+    chain.emit(5n)
+    const store = new InMemoryStore()
+    store.rules.push(stored('broken', { event: 'event Ping(address' }))
+    const lines: { message: string; level?: string }[] = []
+
+    const result = await runCycle(
+      deps(chain, store, { log: (message, _data, level) => lines.push({ message, level }) }),
+    )
+
+    expect(result.ruleSkips).toBe(1)
+    expect(store.matches.size).toBe(0)
+    expect(lines.filter((l) => l.level === 'warn')).toHaveLength(1)
   })
 })

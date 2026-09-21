@@ -112,7 +112,7 @@ variable "actions" {
 }
 
 variable "rules" {
-  description = "Rules created at apply time, keyed by rule id. conditions and each action are JSON strings, because Terraform cannot type a rule's nested shape. The monitor skips a rule that does not compile and logs it."
+  description = "Rules created at apply time, keyed by rule id. conditions and each action are JSON strings, because Terraform cannot type a rule's nested shape. The monitor logs and drops the part of a rule that does not compile: an action that fails its schema is dropped and the rule keeps matching."
   type = map(object({
     chain_id          = number
     addresses         = list(string)

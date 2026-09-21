@@ -64,6 +64,28 @@ describe('matches', () => {
     expect(JSON.parse(delivery.payload).data.eventName).toBe('Transfer')
   })
 
+  // compileRule drops an action it would have refused and the lookup hands over what is left, so a rule that is
+  // half valid still delivers its good half and nothing is created for the dropped one
+  it('delivers the actions a half-valid rule kept, and nothing at all when every action was dropped', async () => {
+    const row = matchRow({ status: 'final' })
+    const record = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
+
+    const half = deps({
+      'rule-1': webhookRule('finalized', [
+        { actionId: 'a_2222222222222222', action: { type: 'email', to: ['ops@example.com'] } },
+      ]),
+    })
+    await dispatchRecords(half.deps, [record])
+    expect([...half.items.values()].map((d) => d.channel)).toEqual(['email'])
+
+    const none = deps({ 'rule-1': webhookRule('finalized', []) })
+    const response = await dispatchRecords(none.deps, [record])
+    expect(response.batchItemFailures).toEqual([])
+    expect(none.items.size).toBe(0)
+    expect(none.sent).toEqual([])
+    expect(none.dead).toEqual([])
+  })
+
   it('sends a provisional match only for a fast rule', async () => {
     const row = matchRow({ status: 'provisional' })
     const record = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })

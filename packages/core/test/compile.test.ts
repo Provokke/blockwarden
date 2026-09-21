@@ -12,6 +12,11 @@ const base = ruleInputSchema.parse({
   confirmation: { mode: 'fast' },
 })
 
+// what the rule still carries: a warning does not stop it compiling, so there is a rule to read it off
+function warningsOf(fn: () => { warnings: RuleValidationError['issues'] }): RuleValidationError['issues'] {
+  return fn().warnings
+}
+
 function issuesOf(fn: () => unknown): RuleValidationError['issues'] {
   try {
     fn()
@@ -62,9 +67,9 @@ describe('compileRule', () => {
     ])
   })
 
-  it('accepts context fields and a nested tuple path, and refuses a nested path past a field with no components', () => {
-    // `to` is a plain address on Transfer: resolveField on a string never has a `.length` own property,
-    // so the old code let this compile a rule whose third condition could never match anything
+  it('accepts context fields and a nested tuple path, and warns about a nested path past a field with no components', () => {
+    // `to` is indexed on this event, so the log carries it and nothing under it; the fourth condition can never
+    // match. That is the leaf's problem, not the rule's, so the rule still compiles
     const event =
       'event Approved(address indexed from, address indexed to, uint256 value, (address spender, uint256 allowance) grant)'
     const conditions = {
@@ -75,8 +80,11 @@ describe('compileRule', () => {
         { field: 'args.to.length', op: 'gt' as const, value: 0 },
       ],
     }
-    expect(issuesOf(() => compileRule('r', { ...base, event, conditions }))).toEqual([
-      { path: 'conditions.all.3.field', message: 'field "to" is an address and has no components' },
+    expect(warningsOf(() => compileRule('r', { ...base, event, conditions }))).toEqual([
+      {
+        path: 'conditions.all.3.field',
+        message: 'field "to" is indexed, so the log carries only its hash and it has no components',
+      },
     ])
   })
 })
@@ -101,26 +109,38 @@ describe('action validation', () => {
   })
 
   // a rule stored by any path other than scripts/put-rule.ts reaches the monitor without ruleInputSchema,
-  // so compileRule is the last gate before the dispatcher
-  it('refuses an action the channel schema refuses, naming the field', () => {
+  // so compileRule is where an action it would have refused is dropped - the rule itself goes on matching
+  it('drops an action the channel schema refuses, naming the field', () => {
     const rule = {
       ...ruleInputSchema.parse(base),
-      actions: [{ type: 'webhook', url: 'http://example.com/hook' }],
+      actions: [
+        { type: 'webhook', url: 'http://example.com/hook' },
+        { type: 'email', to: ['ops@example.com'] },
+      ],
     } as RuleInput
-    expect(issuesOf(() => compileRule('r1', rule))).toEqual([
-      { path: 'actions.0.url', message: 'the URL must be https' },
-    ])
+    const compiled = compileRule('r1', rule)
+    expect(compiled.warnings).toEqual([{ path: 'actions.0.url', message: 'the URL must be https' }])
+    expect(compiled.actions).toEqual([{ type: 'email', to: ['ops@example.com'] }])
   })
 
-  it('refuses an unknown channel by its type', () => {
+  it('drops an unknown channel by its type', () => {
     const rule = {
       ...ruleInputSchema.parse(base),
       actions: [{ type: 'slack', url: 'https://e.com/h' }],
     } as unknown as RuleInput
-    const issues = issuesOf(() => compileRule('r1', rule))
-    expect(issues).toHaveLength(1)
-    expect(issues[0]?.path).toBe('actions.0.type')
-    expect(issues[0]?.message).toBeTruthy()
+    const compiled = compileRule('r1', rule)
+    expect(compiled.actions).toEqual([])
+    expect(compiled.warnings).toHaveLength(1)
+    expect(compiled.warnings[0]?.path).toBe('actions.0.type')
+    expect(compiled.warnings[0]?.message).toBeTruthy()
+  })
+
+  // actionId hashes the action object and a delivery is keyed by it, so the object that survives has to be the
+  // one that was stored, not one zod rebuilt
+  it('keeps the stored action object itself', () => {
+    const action = { type: 'webhook', url: 'https://example.com/hook' }
+    const rule = { ...ruleInputSchema.parse(base), actions: [action] } as RuleInput
+    expect(compileRule('r1', rule).actions[0]).toBe(action)
   })
 
   it('refuses a rule whose webhook URL points at the metadata endpoint', () => {
@@ -149,16 +169,29 @@ describe('nested condition fields', () => {
     expect(compileRule('r1', ruleInputSchema.parse(inputFor('args.permission.spender'))).ruleId).toBe('r1')
   })
 
-  it('refuses a component the tuple does not have', () => {
-    expect(() => compileRule('r1', ruleInputSchema.parse(inputFor('args.permission.nope')))).toThrow(
-      'tuple "permission" has no component named "nope"',
-    )
+  it('warns about a component the tuple does not have', () => {
+    expect(warningsOf(() => compileRule('r1', ruleInputSchema.parse(inputFor('args.permission.nope'))))).toEqual([
+      { path: 'conditions.all.0.field', message: 'tuple "permission" has no component named "nope"' },
+    ])
   })
 
-  it('refuses a path that walks into something that is not a tuple', () => {
-    expect(() => compileRule('r1', ruleInputSchema.parse(inputFor('args.hash.inner')))).toThrow(
-      'field "hash" is a bytes32 and has no components',
-    )
+  it('warns about a path that walks into something that is not a tuple', () => {
+    expect(warningsOf(() => compileRule('r1', ruleInputSchema.parse(inputFor('args.hash.inner'))))).toEqual([
+      { path: 'conditions.all.0.field', message: 'field "hash" is a bytes32 and has no components' },
+    ])
+  })
+
+  // the whole tuple is hashed into the topic, so args.permission.spender is not in the log at all
+  it('warns about a path into an indexed tuple, which the log carries only as a hash', () => {
+    const indexed =
+      'event PermissionApproved((address account, address spender, uint160 allowance) indexed permission, bytes32 hash)'
+    const input = { ...inputFor('args.permission.spender'), event: indexed }
+    expect(warningsOf(() => compileRule('r1', ruleInputSchema.parse(input)))).toEqual([
+      {
+        path: 'conditions.all.0.field',
+        message: 'field "permission" is indexed, so the log carries only its hash and it has no components',
+      },
+    ])
   })
 
   it('still refuses an unknown first segment', () => {
@@ -209,14 +242,14 @@ describe('array condition fields', () => {
     }
   })
 
-  it('refuses a component an array element does not have', () => {
-    expect(issuesOf(() => compileRule('r', inputFor('args.items.0.unknown')))).toEqual([
+  it('warns about a component an array element does not have', () => {
+    expect(warningsOf(() => compileRule('r', inputFor('args.items.0.unknown')))).toEqual([
       { path: 'conditions.all.0.field', message: 'tuple "items.0" has no component named "unknown"' },
     ])
   })
 
-  it('refuses a segment that is neither an index nor a length', () => {
-    expect(issuesOf(() => compileRule('r', inputFor('args.amounts.first')))).toEqual([
+  it('warns about a segment that is neither an index nor a length', () => {
+    expect(warningsOf(() => compileRule('r', inputFor('args.amounts.first')))).toEqual([
       {
         path: 'conditions.all.0.field',
         message: 'field "amounts" is a uint256[]; expected an index or "length"',
@@ -224,20 +257,21 @@ describe('array condition fields', () => {
     ])
   })
 
-  it('refuses a path past a length, which is a number', () => {
-    expect(issuesOf(() => compileRule('r', inputFor('args.amounts.length.0')))).toEqual([
+  it('warns about a path past a length, which is a number', () => {
+    expect(warningsOf(() => compileRule('r', inputFor('args.amounts.length.0')))).toEqual([
       { path: 'conditions.all.0.field', message: 'field "amounts.length" is a number and has no components' },
     ])
   })
 
-  it('still refuses a length or an index on a scalar', () => {
+  it('still warns about a length or an index on a scalar', () => {
+    const indexedHash = 'field "operator" is indexed, so the log carries only its hash and it has no components'
     for (const [field, message] of [
-      ['args.operator.length', 'field "operator" is an address and has no components'],
-      ['args.operator.0', 'field "operator" is an address and has no components'],
+      ['args.operator.length', indexedHash],
+      ['args.operator.0', indexedHash],
       ['args.amounts.0.length', 'field "amounts.0" is a uint256 and has no components'],
     ]) {
       expect(
-        issuesOf(() => compileRule('r', inputFor(field as string))),
+        warningsOf(() => compileRule('r', inputFor(field as string))),
         field,
       ).toEqual([{ path: 'conditions.all.0.field', message }])
     }
