@@ -28,6 +28,7 @@
     "zod": "4.6.2"
   },
   "devDependencies": {
+    "@aws-sdk/client-dynamodb-streams": "3.1131.0",
     "@types/aws-lambda": "8.10.163",
     "esbuild": "0.28.2",
     "testcontainers": "12.1.0",
