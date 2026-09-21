@@ -91,7 +91,10 @@ export class MonitorStore implements MonitorStorePort {
     private readonly doc: DynamoDBDocumentClient,
     private readonly tableName: string,
     private readonly clock: () => Date = () => new Date(),
-    private readonly options: { pageSize?: number } = {},
+    private readonly options: {
+      pageSize?: number
+      log?: (message: string, data?: Record<string, unknown>) => void
+    } = {},
   ) {}
 
   async acquireLease(chainId: number, owner: string, nowMs: number, ttlMs: number): Promise<boolean> {
@@ -189,7 +192,11 @@ export class MonitorStore implements MonitorStorePort {
       // Terraform has no way to build a nested DynamoDB map from an arbitrary rule, so a rule it writes keeps
       // its body as one JSON string
       const input = i.input ?? parseInput(i.inputJson)
-      if (!input) continue
+      // a rule that quietly stops matching is worse than one that fails loudly; lookup.ts warns for the same case
+      if (!input) {
+        this.options.log?.('skipping a rule whose body cannot be read', { ruleId: i.ruleId, chainId })
+        continue
+      }
       rules.push({
         ruleId: i.ruleId as string,
         input: input as RuleInput,

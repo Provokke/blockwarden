@@ -186,8 +186,15 @@ describe('MonitorStore', () => {
         },
       }),
     )
-    const rules = await store.listActiveRules(8453)
+    const logged: { message: string; data?: Record<string, unknown> }[] = []
+    const logging = new MonitorStore(dynamo.doc, tableName, () => new Date(NOW), {
+      log: (message, data) => logged.push({ message, data }),
+    })
+    const rules = await logging.listActiveRules(8453)
     expect(rules.map((r) => r.ruleId)).not.toContain('tf-2')
+    // a rule that silently stops matching leaves nothing to find; the log line is the only trace there is
+    expect(logged).toHaveLength(1)
+    expect(logged[0]?.data).toEqual({ ruleId: 'tf-2', chainId: 8453 })
   })
 
   it('writes a provisional match once, indexed by rule and by chain, with bigint args as strings', async () => {

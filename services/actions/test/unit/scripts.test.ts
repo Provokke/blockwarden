@@ -1,6 +1,14 @@
+import { DeleteMessageCommand, ReceiveMessageCommand } from '@aws-sdk/client-sqs'
 import { describe, expect, it, vi } from 'vitest'
-import { allDead, checkRedriveArgs, describeTarget, positiveInt, redactedUrl } from '../../scripts/lib.js'
-import type { DeliveryRecord } from '../../src/records.js'
+import {
+  allDead,
+  checkRedriveArgs,
+  describeTarget,
+  drainRedriven,
+  positiveInt,
+  redactedUrl,
+} from '../../scripts/lib.js'
+import type { DeliveryRecord, DeliveryRef } from '../../src/records.js'
 import type { DeadPage } from '../../src/store.js'
 
 const SLACK = 'https://hooks.example.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX'
@@ -81,5 +89,55 @@ describe('allDead', () => {
     const listDeadPage = vi.fn(async () => ({ deliveries: [] }))
     expect(await allDead({ listDeadPage })).toEqual([])
     expect(listDeadPage).toHaveBeenCalledOnce()
+  })
+})
+
+const ref = (sk: string): DeliveryRef => ({ subject: 'MATCH#1', sk })
+
+// a fake SQS that answers one receive per queued batch and then nothing, which is what the real queue does once
+// everything visible is in flight
+function fakeSqs(batches: { Body: string; ReceiptHandle: string }[][]) {
+  const deleted: string[] = []
+  const receives: unknown[] = []
+  const send = vi.fn(async (command: unknown) => {
+    if (command instanceof DeleteMessageCommand) {
+      deleted.push(command.input.ReceiptHandle!)
+      return {}
+    }
+    if (command instanceof ReceiveMessageCommand) {
+      receives.push(command.input)
+      const next = batches.shift()
+      return next ? { Messages: next } : {}
+    }
+    throw new Error('unexpected command')
+  })
+  return { sqs: { send } as never, deleted, receives, send }
+}
+
+describe('drainRedriven', () => {
+  it('deletes the dead-letter copy of a delivery it redrove and leaves everything else alone', async () => {
+    const mine = ref('DELIVERY#mine')
+    const theirs = ref('DELIVERY#theirs')
+    const { sqs, deleted } = fakeSqs([
+      [
+        { Body: JSON.stringify(theirs), ReceiptHandle: 'rh-theirs' },
+        { Body: JSON.stringify(mine), ReceiptHandle: 'rh-mine' },
+      ],
+    ])
+    expect(await drainRedriven(sqs, 'https://sqs/dlq', [mine])).toBe(1)
+    expect(deleted).toEqual(['rh-mine'])
+  })
+
+  it('stops at the first empty receive rather than waiting for a queue that is never empty', async () => {
+    const mine = ref('DELIVERY#mine')
+    const { sqs, receives } = fakeSqs([[{ Body: '{"not":"a ref"}', ReceiptHandle: 'rh-other' }]])
+    expect(await drainRedriven(sqs, 'https://sqs/dlq', [mine])).toBe(0)
+    expect(receives).toHaveLength(2)
+  })
+
+  it('does not receive at all when nothing was redriven', async () => {
+    const { sqs, send } = fakeSqs([])
+    expect(await drainRedriven(sqs, 'https://sqs/dlq', [])).toBe(0)
+    expect(send).not.toHaveBeenCalled()
   })
 })
