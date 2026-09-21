@@ -18,8 +18,12 @@ export const MAX_SWEEP_PAGES = 10
 // the grace the reaper waits past a due time lives with the store, which queues deliveries out by the same one
 export { REAPER_GRACE_MS }
 
+// only the store methods the dispatcher uses. The real DeliveryStore still satisfies it, and a test fake is
+// then a plain object rather than a cast that hides every way the fake has drifted from the store.
+export type DispatcherStore = Pick<DeliveryStore, 'create' | 'markQueued' | 'markDead' | 'listDuePage'>
+
 export type DispatcherDeps = {
-  store: DeliveryStore
+  store: DispatcherStore
   lookup: Lookup
   queue: DeliveryQueue
   now: () => Date
