@@ -2,11 +2,18 @@ import type { ActionInput } from '@blockwarden/core'
 import type { DynamoDBBatchResponse, DynamoDBRecord } from 'aws-lambda'
 import { changesFor, type Change } from './events.js'
 import { actionId, deliveryId } from './ids.js'
-import { keys } from './keys.js'
+import { DeliverySeqRangeError, keys } from './keys.js'
 import type { Lookup } from './lookup.js'
 import type { DeliveryQueue } from './queue.js'
 import { matchEventData, renderEvent, txEventData } from './render.js'
-import type { DeliveryChannel, DeliveryRecord, DeliveryTarget, Log, NewDelivery } from './records.js'
+import {
+  PayloadTooLargeError,
+  type DeliveryChannel,
+  type DeliveryRecord,
+  type DeliveryTarget,
+  type Log,
+  type NewDelivery,
+} from './records.js'
 import { readRecord } from './stream.js'
 import { REAPER_GRACE_MS, type DeliveryStore, type DueCursor } from './store.js'
 
@@ -119,6 +126,15 @@ async function plan(deps: DispatcherDeps, change: Change): Promise<NewDelivery[]
   })
 }
 
+// A throw that is a property of the record itself: the same bytes and the same sequence number come back on
+// every delivery of it, so reporting it back would stall every later record on this ordered shard for the
+// stream's whole 24-hour retention. Everything else - DynamoDB, SQS - might pass next time and is reported.
+function poison(err: unknown): string | undefined {
+  if (err instanceof DeliverySeqRangeError) return `sequence number ${err.seq} is past the width of the sort key`
+  if (err instanceof PayloadTooLargeError) return `payload of ${err.bytes} bytes is over the size cap`
+  return undefined
+}
+
 export async function dispatchRecords(deps: DispatcherDeps, records: DynamoDBRecord[]): Promise<DynamoDBBatchResponse> {
   for (const record of records) {
     const change = readRecord(record)
@@ -141,6 +157,24 @@ export async function dispatchRecords(deps: DispatcherDeps, records: DynamoDBRec
         }
       }
     } catch (err) {
+      const reason = poison(err)
+      if (reason) {
+        // Logged and skipped, never retried. Nothing was written for it - create() refuses the oversized
+        // payload before it puts anything, and the range error happens before there is a sort key to write
+        // under at all - so there is no item here to mark dead; the log line is the record of it.
+        deps.log(
+          'record skipped; nothing about it can succeed',
+          {
+            reason,
+            sequenceNumber: record.dynamodb?.SequenceNumber,
+            pk: change.pk,
+            sk: change.sk,
+            error: (err as Error).message,
+          },
+          'error',
+        )
+        continue
+      }
       // Lambda checkpoints at the lowest sequence number returned and retries from there, so reporting this one
       // and stopping is the same as reporting the rest too
       deps.log(
@@ -148,7 +182,11 @@ export async function dispatchRecords(deps: DispatcherDeps, records: DynamoDBRec
         { sequenceNumber: record.dynamodb?.SequenceNumber, error: (err as Error).message },
         'error',
       )
-      return { batchItemFailures: [{ itemIdentifier: record.dynamodb?.SequenceNumber ?? '' }] }
+      const itemIdentifier = record.dynamodb?.SequenceNumber
+      // Lambda rejects a partial-batch response holding an empty identifier and retries the whole batch; a
+      // record with no sequence number cannot be named, so say that outright rather than send a shape it refuses
+      if (!itemIdentifier) throw err
+      return { batchItemFailures: [{ itemIdentifier }] }
     }
   }
   return { batchItemFailures: [] }
