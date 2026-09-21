@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { dispatchRecords, MAX_ATTEMPTS, sweepDue } from '../../src/dispatcher.js'
+import { dispatchRecords, MAX_ATTEMPTS, MAX_SWEEP_PAGES, sweepDue } from '../../src/dispatcher.js'
 import type { CompiledRuleView } from '../../src/lookup.js'
 import { keys } from '../../src/keys.js'
 import { MAX_PAYLOAD_BYTES } from '../../src/records.js'
+import type { DueCursor } from '../../src/store.js'
 import { matchRow, streamRecord, txRow } from '../helpers/images.js'
 import { fakeLookup, fakeQueue, fakeStore } from './fakes.js'
 
@@ -274,7 +275,7 @@ describe('the reaper', () => {
     expect(d.sent).toHaveLength(1)
   })
 
-  it('leaves an attempt that is still inside its lease alone', async () => {
+  it('leaves a delivery that was queued inside the grace alone', async () => {
     const d = deps({ 'rule-1': webhookRule('finalized') })
     const row = matchRow({ status: 'final' })
     await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
@@ -317,6 +318,47 @@ describe('the reaper', () => {
     expect(await sweepDue({ ...d.deps, store }, 121_500, 10)).toEqual({ requeued: 0, dead: 0 })
     expect(d.sent).toHaveLength(0)
     expect(d.log).toHaveBeenCalledWith('could not requeue a delivery', expect.anything(), 'warn')
+  })
+
+  it('walks the backlog with the cursor rather than reading the first page again', async () => {
+    const d = deps({
+      'rule-1': webhookRule('finalized', [
+        { actionId: 'a_1111111111111111', action: { type: 'webhook', url: 'https://example.com/a' } },
+        { actionId: 'a_2222222222222222', action: { type: 'webhook', url: 'https://example.com/b' } },
+      ]),
+    })
+    const row = matchRow({ status: 'final' })
+    await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
+    d.sent.length = 0
+    const cursors: (DueCursor | undefined)[] = []
+    const store = {
+      ...d.deps.store,
+      listDuePage: (nowMs: number, limit: number, cursor?: DueCursor) => {
+        cursors.push(cursor)
+        return d.deps.store.listDuePage(nowMs, limit, cursor)
+      },
+    }
+    // a limit of one puts the second delivery on a second page, which is only reached by feeding the cursor back
+    expect(await sweepDue({ ...d.deps, store }, 121_500, 1)).toEqual({ requeued: 2, dead: 0 })
+    expect(cursors).toHaveLength(2)
+    expect(cursors[0]).toBeUndefined()
+    expect(cursors[1]).toBeDefined()
+    expect(new Set(d.sent.map((s) => s.ref.sk)).size).toBe(2)
+  })
+
+  it('stops at the page cap when the cursor never runs out', async () => {
+    const d = deps({})
+    let pages = 0
+    const store = {
+      ...d.deps.store,
+      // a backlog that never drains, which is what the cap is there for: the sweep is on a schedule and has to end
+      listDuePage: async () => {
+        pages++
+        return { deliveries: [], cursor: { 0: { page: pages } } }
+      },
+    }
+    expect(await sweepDue({ ...d.deps, store }, 121_500, 10)).toEqual({ requeued: 0, dead: 0 })
+    expect(pages).toBe(MAX_SWEEP_PAGES)
   })
 
   it('kills a delivery that has already used every attempt, so nothing loops', async () => {
