@@ -40,7 +40,7 @@
     "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@aws-sdk/client-kms": "3.1131.0"
+    "@aws-sdk/client-kms": "3.1135.0"
   },
   "peerDependencies": {
     "viem": "^2.56.3"
