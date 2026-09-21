@@ -82,6 +82,12 @@ variable "relayer_api_url" {
   description = "Base URL of the relayer API, for the relay action type. Needs relayer_api_key_parameter."
   type        = string
   default     = null
+
+  # the API key goes in a header on every relay request; the sender refuses a non-https URL at cold start
+  validation {
+    condition     = var.relayer_api_url == null ? true : startswith(var.relayer_api_url, "https://")
+    error_message = "relayer_api_url must be an https URL."
+  }
 }
 
 variable "relayer_api_key_parameter" {
@@ -147,6 +153,23 @@ variable "outbound_secret_prefixes" {
       !contains(split("/", prefix), "..")
     ])
     error_message = "every outbound_secret_prefixes entry must be an SSM parameter name with an optional trailing slash; \"/\" alone would grant every parameter in the account."
+  }
+}
+
+variable "rule_secret_prefixes" {
+  description = "SSM parameter prefixes a rule's own webhook action may name in secretParameter. The sender refuses an action naming anything else and can read nothing else. Kept apart from outbound_secret_prefixes so granting one does not widen the other."
+  type        = list(string)
+  default     = []
+
+  # same rule as secretPrefixes() in services/actions/src/config.ts: a prefix is a parameter name with an
+  # optional trailing slash. "/" alone is not one - it would let a rule name any parameter in the account.
+  validation {
+    condition = alltrue([for prefix in var.rule_secret_prefixes :
+      startswith(prefix, "/") && length(trimsuffix(prefix, "/")) <= 1011 &&
+      can(regex("^(/[A-Za-z0-9_.-]+){1,15}$", trimsuffix(prefix, "/"))) &&
+      !contains(split("/", prefix), "..")
+    ])
+    error_message = "every rule_secret_prefixes entry must be an SSM parameter name with an optional trailing slash; \"/\" alone would let a rule name every parameter in the account."
   }
 }
 

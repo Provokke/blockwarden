@@ -118,6 +118,7 @@ const dispatcherDeps = (): DispatcherDeps => ({
   // the reaper's dead-letter path shares this queue with the sender's, and sweepDue's deps require it now
   deadLetters: deadLetters(),
   now: () => new Date(),
+  ruleSecretPrefixes: ['/blockwarden/'],
   log: () => {},
 })
 

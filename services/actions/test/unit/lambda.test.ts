@@ -13,6 +13,7 @@ const config = loadConfig({
   AWS_REGION: 'us-east-1',
   ALLOWED_TARGET_ARNS: 'arn:aws:sqs:us-east-1:111122223333:targets',
   OUTBOUND_SECRET_PREFIXES: '/billwarden/',
+  RULE_SECRET_PREFIXES: '/bw/rules/',
   TELEGRAM_TOKEN_PARAMETER: '/bw/telegram',
   REAPER_LIMIT: '7',
 })
@@ -65,6 +66,7 @@ describe('the dispatcher handler', () => {
         deadLetters: 'deadLetters',
         now: expect.any(Function),
         log: f.log,
+        ruleSecretPrefixes: ['/bw/rules/'],
       },
       records,
     )
@@ -101,6 +103,7 @@ describe('the dispatcher handler', () => {
         deadLetters: 'deadLetters',
         now: expect.any(Function),
         log: f.log,
+        ruleSecretPrefixes: ['/bw/rules/'],
       },
       expect.any(Number),
       7,

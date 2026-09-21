@@ -51,6 +51,7 @@ describe('against a real table', () => {
       deadLetters,
       now: () => new Date(1_000),
       log,
+      ruleSecretPrefixes: [],
     }
     const row = matchRow({ status: 'final' })
     const record = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })

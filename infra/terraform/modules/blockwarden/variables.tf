@@ -73,6 +73,8 @@ variable "actions" {
     allowed_target_arns       = optional(list(string), [])
     outbound_queue            = optional(bool, false)
     outbound_secret_prefixes  = optional(list(string), [])
+    # the prefixes a rule's own webhook action may name; separate from the outbound list on purpose
+    rule_secret_prefixes = optional(list(string), [])
     # each relayer signer's webhook_secret_parameter, which the sender reads when it signs that signer's webhook
     signer_webhook_secret_parameters = optional(list(string), [])
     log_level                        = optional(string, "INFO")
@@ -185,6 +187,19 @@ variable "rules" {
       ])
     ]]))
     error_message = "a webhook action's signatureHeader and deliveryHeader must each be a header name, and not a reserved header."
+  }
+
+  # the dispatcher refuses to build a delivery for an action naming a parameter outside this list, because the
+  # sender would otherwise sign the rule's body with somebody else's secret. Caught here at plan rather than as
+  # a match that quietly delivers nothing.
+  validation {
+    condition = alltrue(flatten([for r in var.rules : [for a in r.actions :
+      try(jsondecode(a).type, null) != "webhook" || try(jsondecode(a).secretParameter, null) == null || anytrue([
+        for p in(var.actions == null ? [] : var.actions.rule_secret_prefixes) :
+        startswith(try(jsondecode(a).secretParameter, ""), endswith(p, "/") ? p : "${p}/")
+      ])
+    ]]))
+    error_message = "a webhook action's secretParameter must sit under one of actions.rule_secret_prefixes."
   }
 
   # one name for both headers means one of them is never sent; a name left out still counts, since the sender

@@ -20,7 +20,7 @@ const webhookRule = (
   actions,
 })
 
-const deps = (rules: Record<string, CompiledRuleView>, signers = {}) => {
+const deps = (rules: Record<string, CompiledRuleView>, signers = {}, ruleSecretPrefixes = ['/bw/rules/']) => {
   const { store, items } = fakeStore()
   const { queue, sent } = fakeQueue()
   const { queue: deadLetters, sent: dead } = fakeQueue()
@@ -33,6 +33,7 @@ const deps = (rules: Record<string, CompiledRuleView>, signers = {}) => {
       deadLetters,
       now: () => new Date(1_000),
       log,
+      ruleSecretPrefixes,
     },
     items,
     sent,
@@ -84,6 +85,27 @@ describe('matches', () => {
     expect(none.items.size).toBe(0)
     expect(none.sent).toEqual([])
     expect(none.dead).toEqual([])
+  })
+
+  // the sender reads whatever parameter the action names and signs the rule's own body with it, so a rule that
+  // could name any parameter in the account is a signing oracle. The outbound queue has always had this check.
+  it('refuses to build a delivery whose action names a secret parameter outside the allowed prefixes', async () => {
+    const row = matchRow({ status: 'final' })
+    const record = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
+    const action = (secretParameter: string) => ({
+      actionId: 'a_1111111111111111',
+      action: { type: 'webhook' as const, url: 'https://example.com/hook', secretParameter },
+    })
+
+    const outside = deps({ 'rule-1': webhookRule('finalized', [action('/other/party/secret')]) })
+    const response = await dispatchRecords(outside.deps, [record])
+    expect(response.batchItemFailures).toEqual([])
+    expect(outside.items.size).toBe(0)
+    expect(outside.log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ ruleId: 'rule-1' }), 'error')
+
+    const inside = deps({ 'rule-1': webhookRule('finalized', [action('/bw/rules/one')]) })
+    await dispatchRecords(inside.deps, [record])
+    expect(inside.items.size).toBe(1)
   })
 
   it('sends a provisional match only for a fast rule', async () => {

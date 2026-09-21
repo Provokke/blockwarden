@@ -42,11 +42,22 @@ locals {
     )) : "arn:${local.partition}:ssm:${local.region}:${local.account_id}:parameter${name}"
   ]
 
-  # a caller may only name a parameter under one of these, and the sender may only read under one of these
+  # a caller may only name a parameter under one of these, and the sender may only read under one of these.
+  # The trailing slash is put back deliberately: the code compares against the level separator, so "/bw/shops"
+  # means /bw/shops/*, and "parameter/bw/shops*" would have granted /bw/shopsEvil as well.
   outbound_secret_arns = [
     for prefix in var.outbound_secret_prefixes :
-    "arn:${local.partition}:ssm:${local.region}:${local.account_id}:parameter${prefix}*"
+    "arn:${local.partition}:ssm:${local.region}:${local.account_id}:parameter${trimsuffix(prefix, "/")}/*"
   ]
+
+  # the same, for the parameters a rule's own webhook action may name. A separate list, so granting a rule's
+  # secret does not also widen what an outbound caller may name.
+  rule_secret_arns = [
+    for prefix in var.rule_secret_prefixes :
+    "arn:${local.partition}:ssm:${local.region}:${local.account_id}:parameter${trimsuffix(prefix, "/")}/*"
+  ]
+
+  all_secret_arns = concat(local.secret_parameter_arns, local.outbound_secret_arns, local.rule_secret_arns)
 
   # anchored, as the config's own regex is: an unanchored ":sqs:" also matches a queue name that contains it
   target_queue_arns    = [for arn in var.allowed_target_arns : arn if can(regex("^arn:aws[a-z-]*:sqs:", arn))]

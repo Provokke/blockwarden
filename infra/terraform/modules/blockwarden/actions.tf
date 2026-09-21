@@ -18,6 +18,7 @@ module "actions" {
   allowed_target_arns       = var.actions.allowed_target_arns
   outbound_queue            = var.actions.outbound_queue
   outbound_secret_prefixes  = var.actions.outbound_secret_prefixes
+  rule_secret_prefixes      = var.actions.rule_secret_prefixes
 
   signer_webhook_secret_parameters = var.actions.signer_webhook_secret_parameters
   # the reaper runs on the same clock as the pollers it follows

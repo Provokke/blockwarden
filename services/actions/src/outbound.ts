@@ -7,6 +7,7 @@ import {
 } from '@blockwarden/core'
 import type { SQSBatchResponse } from 'aws-lambda'
 import { z } from 'zod'
+import { underAnyPrefix } from './config.js'
 import { actionId, canonicalJson, deliveryId } from './ids.js'
 import { keys } from './keys.js'
 import type { DeliveryQueue } from './queue.js'
@@ -96,10 +97,7 @@ export async function acceptOutbound(
       )
       continue
     }
-    // a prefix names a level of the hierarchy, not a run of characters: /billwarden must not admit
-    // /billwardenX, which is somebody else's parameter, so the comparison is made against the level separator
-    const under = (prefix: string) => parsed.secretParameter.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`)
-    if (!deps.allowedSecretPrefixes.some(under)) {
+    if (!underAnyPrefix(deps.allowedSecretPrefixes, parsed.secretParameter)) {
       refuse(`secretParameter is not under an allowed prefix`)
       continue
     }

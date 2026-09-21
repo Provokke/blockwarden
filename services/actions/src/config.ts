@@ -14,6 +14,7 @@ export type ActionsConfig = {
   relayerApiKeyParameter?: string
   allowedTargetArns: string[]
   outboundSecretPrefixes: string[]
+  ruleSecretPrefixes: string[]
   reaperLimit: number
 }
 
@@ -24,6 +25,9 @@ type Env = Record<string, string | undefined>
 // invocation, not as one dead delivery an hour later.
 
 const url = z.url()
+// the API key travels in a header on every relay: plain http would put it on the wire and there is no reason
+// for a relayer to be reached that way
+const httpsUrl = z.url().refine((value) => value.startsWith('https://'), 'expected an https URL')
 
 // The two services a delivery target can name. The sender refuses anything else when it sends, but an entry
 // that can never match is an allowlist that silently grants nothing. The queue name takes the same shape as
@@ -36,7 +40,7 @@ const targetArn = z
   )
 
 export function loadConfig(env: Env): ActionsConfig {
-  const relayerApiUrl = checked(env, 'RELAYER_API_URL', url)
+  const relayerApiUrl = checked(env, 'RELAYER_API_URL', httpsUrl)
   const relayerApiKeyParameter = checked(env, 'RELAYER_API_KEY_PARAMETER', parameterName)
   // half a relayer is worse than none: a rule would fail at send time instead of at deploy time
   if (relayerApiUrl && !relayerApiKeyParameter)
@@ -56,7 +60,8 @@ export function loadConfig(env: Env): ActionsConfig {
     ...optional('relayerApiUrl', relayerApiUrl),
     ...optional('relayerApiKeyParameter', relayerApiKeyParameter),
     allowedTargetArns: checkedList(env, 'ALLOWED_TARGET_ARNS', targetArn),
-    outboundSecretPrefixes: secretPrefixes(env),
+    outboundSecretPrefixes: secretPrefixes(env, 'OUTBOUND_SECRET_PREFIXES'),
+    ruleSecretPrefixes: secretPrefixes(env, 'RULE_SECRET_PREFIXES'),
     reaperLimit: positive(env, 'REAPER_LIMIT') ?? 100,
   }
 }
@@ -100,17 +105,24 @@ function checkedList(env: Env, key: string, schema: z.ZodType<string>): string[]
 }
 
 // A prefix names a level of the hierarchy, so it is a parameter name with an optional trailing slash. "/" alone
-// is not a prefix: outbound.ts would then admit every parameter in the account, which is the outbound secret
-// guard switched off by one character in Terraform.
-function secretPrefixes(env: Env): string[] {
-  return list(env.OUTBOUND_SECRET_PREFIXES).map((prefix) => {
-    if (!prefix.startsWith('/')) throw new Error(`OUTBOUND_SECRET_PREFIXES entry "${prefix}" must start with /`)
+// is not a prefix: the guard would then admit every parameter in the account, which is the secret guard switched
+// off by one character in Terraform.
+function secretPrefixes(env: Env, key: 'OUTBOUND_SECRET_PREFIXES' | 'RULE_SECRET_PREFIXES'): string[] {
+  return list(env[key]).map((prefix) => {
+    if (!prefix.startsWith('/')) throw new Error(`${key} entry "${prefix}" must start with /`)
     const named = parameterName.safeParse(prefix.replace(/\/$/, ''))
     if (!named.success) {
-      throw new Error(`OUTBOUND_SECRET_PREFIXES entry "${prefix}" ${named.error.issues[0]?.message ?? 'is invalid'}`)
+      throw new Error(`${key} entry "${prefix}" ${named.error.issues[0]?.message ?? 'is invalid'}`)
     }
     return prefix
   })
+}
+
+// A prefix names a level of the hierarchy, not a run of characters: /billwarden must not admit /billwardenX,
+// which is somebody else's parameter, so the comparison is made against the level separator. The IAM grant in
+// modules/actions is built to match, prefix + "/" + "*".
+export function underAnyPrefix(prefixes: readonly string[], name: string): boolean {
+  return prefixes.some((prefix) => name.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`))
 }
 
 function positive(env: Env, key: string): number | undefined {
