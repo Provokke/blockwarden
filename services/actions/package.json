@@ -24,7 +24,7 @@
     "@blockwarden/core": "workspace:*",
     "@blockwarden/dynamo": "workspace:*",
     "@blockwarden/relayer-client": "workspace:*",
-    "viem": "2.56.3",
+    "viem": "2.56.7",
     "zod": "4.6.2"
   },
   "devDependencies": {

@@ -18,7 +18,7 @@
     "@aws-sdk/lib-dynamodb": "3.1131.0",
     "@blockwarden/core": "workspace:*",
     "@blockwarden/dynamo": "workspace:*",
-    "viem": "2.56.3"
+    "viem": "2.56.7"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
