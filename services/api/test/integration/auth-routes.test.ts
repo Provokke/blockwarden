@@ -1,5 +1,5 @@
 import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
-import { createPublicClient, http } from 'viem'
+import { createPublicClient, custom } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { createSiweMessage } from 'viem/siwe'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -13,13 +13,22 @@ const secret = new TextEncoder().encode('s'.repeat(48))
 let dynamo: Dynamo
 let deps: SiweDeps
 let nowMs = 1_770_000_000_000
+let rpcCalls = 0
 
 beforeAll(async () => {
   dynamo = await startDynamo()
   const table = await dynamo.newTable()
-  // no chain here: a chain-specialized client isn't structurally a bare PublicClient, and this client only
-  // needs to exist for an EIP-1271 path an EOA signature never takes — its transport is unroutable on purpose
-  const client = createPublicClient({ transport: http('http://127.0.0.1:1') })
+  // no chain here: a chain-specialized client isn't structurally a bare PublicClient, and this client is
+  // only reached by a contract-wallet path an EOA signature doesn't take with mode: 'eoa' — throwing on
+  // every request, rather than pointing at an unroutable address, is what proves that path is never taken
+  const client = createPublicClient({
+    transport: custom({
+      request: async () => {
+        rpcCalls++
+        throw new Error('the RPC must not be reached for an EOA signature')
+      },
+    }),
+  })
   deps = {
     store: createStore({ doc: dynamo.doc, table }),
     settings: {
@@ -71,6 +80,14 @@ describe('the SIWE round trip', () => {
     expect(session?.address).toBe(account.address)
   })
 
+  it('signs in with an EOA signature without ever reaching the RPC', async () => {
+    const before = rpcCalls
+    const { message, signature } = await signIn()
+    const result = await handleVerify(deps, event({ message, signature }))
+    expect(result.status).toBe(200)
+    expect(rpcCalls).toBe(before)
+  })
+
   it('refuses the same message a second time, because the nonce is spent', async () => {
     const { message, signature } = await signIn()
     expect((await handleVerify(deps, event({ message, signature }))).status).toBe(200)
@@ -103,6 +120,16 @@ describe('the SIWE round trip', () => {
     const signature = await account.signMessage({ message })
     const result = await handleVerify(deps, event({ message, signature }))
     expect((result.body as { error: { code: string } }).error.code).toBe('siwe_nonce')
+  })
+
+  it('refuses a malformed message with 400, not the 401 a real rejected message gets', async () => {
+    const { message, signature } = await signIn()
+    // parseSiweMessage's suffix fields all come from one match against one regex, so dropping the URI line
+    // also drops version, chain ID and nonce - this is a client error, not a signature this deployment rejects
+    const malformed = message.replace(/URI: .+\n/, '')
+    const result = await handleVerify(deps, event({ message: malformed, signature }))
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe('siwe_malformed')
   })
 
   it('refuses a wallet that is not on the allowlist before spending the nonce', async () => {

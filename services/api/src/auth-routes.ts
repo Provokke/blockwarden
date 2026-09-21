@@ -33,14 +33,20 @@ export async function handleVerify(deps: SiweDeps, event: APIGatewayProxyEventV2
     return error(401, 'siwe_nonce', 'that nonce is unknown, spent or expired')
   }
 
-  // verifySiweMessage covers a contract wallet through EIP-1271, which needs the chain's client
-  const valid = await verifySiweMessage(client, {
+  // eoa recovers locally first, so an ordinary wallet's login never depends on the RPC; a contract wallet
+  // still falls through to EIP-1271/ERC-6492, which is why the client is still required here
+  //
+  // VerifySiweMessageParameters doesn't list `mode` even though verifySiweMessage forwards it to verifyHash
+  // verbatim, so it's declared on a typed variable rather than the call's object literal
+  const verifyParams: Parameters<typeof verifySiweMessage>[1] & { mode: 'eoa' } = {
     message: parsed.data.message,
     signature: parsed.data.signature as Hex,
     domain: deps.settings.domain,
     nonce: checked.nonce,
     time: new Date(nowMs),
-  })
+    mode: 'eoa',
+  }
+  const valid = await verifySiweMessage(client, verifyParams)
   if (!valid) return error(401, 'siwe_signature', 'the signature does not match the message')
 
   const token = await mintSession(deps.secret, checked.address, nowMs)

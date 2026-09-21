@@ -67,7 +67,13 @@ export function checkSiweMessage(
 function isOurUri(uri: string, origin: string): boolean {
   // string prefixes let demo.blockwarden.dev.evil.example through; the URL's own origin does not
   try {
-    return new URL(uri).origin === new URL(origin).origin
+    const uriUrl = new URL(uri)
+    const originUrl = new URL(origin)
+    // .origin is the literal string "null" for a scheme the URL standard doesn't special-case, so two
+    // different non-http schemes would otherwise compare equal
+    if (uriUrl.protocol !== 'http:' && uriUrl.protocol !== 'https:') return false
+    if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') return false
+    return uriUrl.origin === originUrl.origin
   } catch {
     return false
   }
