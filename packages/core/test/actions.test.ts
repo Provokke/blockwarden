@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { actionSchema } from '../src/actions.js'
+import { actionSchema, DEFAULT_SIGNATURE_HEADER } from '../src/actions.js'
 
 const parse = (action: unknown) => actionSchema.safeParse(action)
 const reason = (action: unknown) => {
@@ -57,6 +57,17 @@ describe('webhook actions', () => {
       expect(reason({ type: 'webhook', url, deliveryHeader: name }), name).toContain('reserved')
     }
     expect(parse({ type: 'webhook', url, signatureHeader: 'X-Hostname' }).success).toBe(true)
+  })
+
+  it('refuses two header names that are the same header, because the delivery id would erase the signature', () => {
+    const url = 'https://e.com/h'
+    expect(reason({ type: 'webhook', url, signatureHeader: 'X-Sig', deliveryHeader: 'X-Sig' })).toContain('same header')
+    // HTTP header names are case-insensitive, so these two are one header
+    expect(reason({ type: 'webhook', url, signatureHeader: 'X-Sig', deliveryHeader: 'x-sig' })).toContain('same header')
+    // a name that is left out is still a name: the sender falls back to its default
+    expect(reason({ type: 'webhook', url, deliveryHeader: DEFAULT_SIGNATURE_HEADER })).toContain('same header')
+    expect(reason({ type: 'webhook', url, signatureHeader: 'X-Blockwarden-Delivery' })).toContain('same header')
+    expect(parse({ type: 'webhook', url, signatureHeader: 'X-Sig', deliveryHeader: 'X-Dlv' }).success).toBe(true)
   })
 
   it('refuses a secret parameter that is not an SSM parameter name', () => {

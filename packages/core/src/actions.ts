@@ -47,14 +47,29 @@ const destination = z.string().superRefine((raw, ctx) => {
   if (!checked.ok) ctx.addIssue({ code: 'custom', message: checked.reason })
 })
 
-export const webhookActionSchema = z.strictObject({
-  type: z.literal('webhook'),
-  url: destination,
-  // several comma-separated secrets may sit in one parameter while one is being rotated
-  secretParameter: parameterName.optional(),
-  signatureHeader: headerName.optional(),
-  deliveryHeader: headerName.optional(),
-})
+// what the sender calls the two headers when a rule names neither. @blockwarden/relayer-client exports the same
+// pair as SIGNATURE_HEADER/DELIVERY_HEADER, and docs/webhooks/v1.md publishes them.
+export const DEFAULT_SIGNATURE_HEADER = 'x-blockwarden-signature'
+export const DEFAULT_DELIVERY_HEADER = 'x-blockwarden-delivery'
+
+export const webhookActionSchema = z
+  .strictObject({
+    type: z.literal('webhook'),
+    url: destination,
+    // several comma-separated secrets may sit in one parameter while one is being rotated
+    secretParameter: parameterName.optional(),
+    signatureHeader: headerName.optional(),
+    deliveryHeader: headerName.optional(),
+  })
+  // one name for both headers means one of them wins and the other is never sent; if the signature is the one
+  // that loses, the request goes out unsigned. A name that is left out still counts, because the sender falls
+  // back to its default, and the comparison is case-insensitive because a header name is.
+  .refine(
+    (action) =>
+      (action.signatureHeader ?? DEFAULT_SIGNATURE_HEADER).toLowerCase() !==
+      (action.deliveryHeader ?? DEFAULT_DELIVERY_HEADER).toLowerCase(),
+    'expected the signature and delivery headers to be different headers, not the same header twice',
+  )
 
 export const emailActionSchema = z.strictObject({
   type: z.literal('email'),
