@@ -1,6 +1,5 @@
 import { GenericContainer, Wait } from 'testcontainers'
 import { SESv2Client } from '@aws-sdk/client-sesv2'
-import { SQSClient } from '@aws-sdk/client-sqs'
 import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import { keys } from '../../src/keys.js'
 import type { NewDelivery } from '../../src/records.js'
@@ -36,7 +35,7 @@ export function newDelivery(overrides: Partial<NewDelivery> = {}): NewDelivery {
   }
 }
 
-// moto 5.2.3 serves SQS and SES v2; its KMS is unusable, which is why the relayer only uses it for SQS
+// moto 5.2.3 serves SES v2; its KMS is unusable, which is why the relayer only uses it for SQS
 export async function startMoto() {
   const container = await new GenericContainer('motoserver/moto:5.2.3')
     .withExposedPorts(5000)
@@ -45,11 +44,9 @@ export async function startMoto() {
   const endpoint = `http://${container.getHost()}:${container.getMappedPort(5000)}`
   const config = { endpoint, region: 'us-east-1', credentials: { accessKeyId: 'local', secretAccessKey: 'local' } }
   const ses = new SESv2Client(config)
-  const sqs = new SQSClient(config)
   return {
     endpoint,
     ses,
-    sqs,
     // moto keeps every backend's state here; ses.Message holds what SendEmail was given
     async sentEmails(): Promise<
       { id: string; source: string; subject: string; body: string; destinations: Record<string, string[]> }[]
@@ -60,7 +57,6 @@ export async function startMoto() {
     },
     async stop(): Promise<void> {
       ses.destroy()
-      sqs.destroy()
       await container.stop()
     },
   }

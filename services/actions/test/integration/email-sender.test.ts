@@ -63,6 +63,11 @@ describe('sendEmail', () => {
     expect((await moto.sentEmails()).at(-1)!.subject).toBe('Large transfer')
   })
 
+  it("folds a caller's own subject onto one line before the provider sees it", async () => {
+    await sendEmail(deps(), delivery(['ops@example.com'], 'Large\r\n transfer'))
+    expect((await moto.sentEmails()).at(-1)!.subject).toBe('Large transfer')
+  })
+
   it('calls an unverified sender a permanent failure', async () => {
     const outcome = await sendEmail({ ...deps(), fromAddress: 'nobody@example.com' }, delivery(['ops@example.com']))
     expect(outcome).toMatchObject({ kind: 'permanent' })
