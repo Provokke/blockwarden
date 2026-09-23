@@ -1,4 +1,7 @@
+import type { LambdaClient } from '@aws-sdk/client-lambda'
 import type { SESv2Client } from '@aws-sdk/client-sesv2'
+import type { SQSClient } from '@aws-sdk/client-sqs'
+import type { relay } from '@blockwarden/relayer-client'
 import type { SecretReader } from '../secrets.js'
 import type { HttpAnswer, Resolved, Resolver } from '../destination.js'
 import type { DeliveryRecord, Log } from '../records.js'
@@ -31,6 +34,15 @@ export type SenderDeps = {
   // the real one is api.telegram.org. An override is operator configuration and still goes through the
   // destination guard, so a test that points it at a local server injects `resolve` as well
   telegramApiBase?: string
+  relayerApiUrl?: string
+  relayerApiKeyParameter?: string
+  // injected so a test drives the published client's behaviour without an HTTP server
+  relay?: typeof relay
+  sqs?: Pick<SQSClient, 'send'>
+  lambda?: Pick<LambdaClient, 'send'>
+  // the only ARNs a rule may deliver to; the sender's IAM policy grants exactly these
+  allowedTargetArns?: readonly string[]
+  region?: string
 }
 
 export type Sender = (deps: SenderDeps, delivery: DeliveryRecord) => Promise<SendOutcome>
