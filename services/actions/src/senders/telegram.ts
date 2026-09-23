@@ -1,29 +1,33 @@
-import { postJson, resolveDestination, type Resolved } from '../destination.js'
+import { DestinationError, postJson, resolveDestination, type Resolved } from '../destination.js'
 import { truncate } from '../records.js'
 import { summarise } from './render-text.js'
 import type { Sender, SendOutcome } from './types.js'
 
 const DEFAULT_API_BASE = 'https://api.telegram.org'
-// Telegram refuses a message above this; the rendering is already capped below it
-const MAX_MESSAGE = 4_096
 
 export const sendTelegram: Sender = async (deps, delivery) => {
   if (delivery.target.channel !== 'telegram')
     throw new Error(`delivery ${delivery.deliveryId} is not a telegram message`)
   if (!deps.telegramTokenParameter) return { kind: 'permanent', error: 'no Telegram bot token is configured' }
 
-  let token: string
+  let first: string | undefined
   try {
-    const [first] = await deps.secrets.read(deps.telegramTokenParameter)
-    token = first!
+    ;[first] = await deps.secrets.read(deps.telegramTokenParameter)
   } catch (err) {
     return { kind: 'retry', error: truncate(`the Telegram token could not be read: ${(err as Error).message}`) }
   }
+  // an empty parameter is a rotation half done more often than a decision, and the URL would otherwise be
+  // built with the word undefined where the token belongs
+  if (!first) {
+    return { kind: 'retry', error: truncate(`parameter ${deps.telegramTokenParameter} holds no Telegram bot token`) }
+  }
+  const token = first
 
+  // summarise() already caps the text at 4096 characters, which is Telegram's own limit for one message
   const { text } = summarise(delivery.payload)
   const body = JSON.stringify({
     chat_id: delivery.target.chatId,
-    text: text.slice(0, MAX_MESSAGE),
+    text,
     disable_web_page_preview: true,
   })
 
@@ -45,6 +49,12 @@ export const sendTelegram: Sender = async (deps, delivery) => {
     // the token is in the path, so nothing about this request other than the parsed answer goes into an error
     return classify(answer.statusCode, answer.body)
   } catch (err) {
+    if (err instanceof DestinationError) {
+      // a base URL the guard refuses is refused again next time; a resolver that could not answer may not be
+      return err.retryable
+        ? { kind: 'retry', error: truncate(err.message) }
+        : { kind: 'permanent', error: truncate(err.message) }
+    }
     return { kind: 'retry', error: truncate(`Telegram could not be reached: ${(err as Error).message}`) }
   }
 }
@@ -74,6 +84,10 @@ function classify(statusCode: number, body: string): SendOutcome {
     }
   }
   if (statusCode >= 500) return { kind: 'retry', error: description, statusCode }
-  // 401 is a bad token, 404 a malformed one, 400 a chat the bot cannot post to: none of them changes on a retry
+  // 401 and 404 answer our own bot token, which is operator configuration the secret cache holds for five
+  // minutes: a rotation would make every alert look like a dead token and dead-letter it. Retrying a token
+  // that really is dead costs eight attempts and dead-letters anyway, which is the cheaper mistake. A 400 is
+  // the chat id the tenant configured, and that does not improve on a retry.
+  if (statusCode === 401 || statusCode === 404) return { kind: 'retry', error: description, statusCode }
   return { kind: 'permanent', error: description, statusCode }
 }
