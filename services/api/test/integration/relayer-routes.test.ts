@@ -293,6 +293,42 @@ describe('listing pending transactions through the API', () => {
     expect(result.status).toBe(400)
     expect((result.body as { error: { code: string } }).error.code).toBe('invalid_cursor')
   })
+
+  it('refuses a real cursor whose key has been swapped to another chains partition', async () => {
+    await createPendingTx({ signerId: 'demo', chainId: CHAIN, createdAt: '2026-09-21T04:00:00.000Z' })
+    await createPendingTx({ signerId: 'demo', chainId: CHAIN, createdAt: '2026-09-21T04:00:01.000Z' })
+
+    const page1 = await handleListTxs(
+      deps(),
+      session,
+      apiEvent({
+        routeKey: 'GET /v1/relayer/txs',
+        queryStringParameters: { status: 'pending', chainId: String(CHAIN), limit: '1' },
+      }),
+    )
+    const body1 = page1.body as { cursor?: string }
+    expect(body1.cursor).toBeDefined()
+
+    // a real LastEvaluatedKey minted by DynamoDB itself, then forged to name OTHER_CHAIN's own partition while
+    // still claiming (in the envelope) to be resuming CHAIN - the shape check alone would let this through
+    const decoded = decodeCursor(body1.cursor!) as { chainId: number; key: Record<string, unknown> }
+    expect(decoded.chainId).toBe(CHAIN)
+    const forged = encodeCursor({
+      chainId: decoded.chainId,
+      key: { ...decoded.key, GSI2PK: `TXPENDING#${OTHER_CHAIN}` },
+    })
+
+    const result = await handleListTxs(
+      deps(),
+      session,
+      apiEvent({
+        routeKey: 'GET /v1/relayer/txs',
+        queryStringParameters: { status: 'pending', chainId: String(CHAIN), cursor: forged },
+      }),
+    )
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe('invalid_cursor')
+  })
 })
 
 // direct proof, against real DynamoDB Local, that GSI2's own key attributes for this query are exactly what

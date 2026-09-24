@@ -83,11 +83,15 @@ const MAX_PAGE = 100
 // answers a bad key with a ValidationException that has no route-level catch
 const RULE_LIST_KEY_ATTRS = ['PK', 'SK', 'GSI1PK', 'GSI1SK'] as const
 
-function isRuleListKey(value: unknown): value is Record<(typeof RULE_LIST_KEY_ATTRS)[number], string> {
+function isRuleListKey(value: unknown, chainId: number): value is Record<(typeof RULE_LIST_KEY_ATTRS)[number], string> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
   if (Object.keys(record).length !== RULE_LIST_KEY_ATTRS.length) return false
-  return RULE_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')
+  if (!RULE_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')) return false
+  // shape alone lets a caller mint a cursor naming its own (permitted) chain in the envelope while its key's
+  // GSI1PK is another chain's partition (store.ts's putRule: GSI1PK = `CHAIN#<chainId>#RULES`) - that key would
+  // still reach ExclusiveStartKey and read that other chain's page, so the partition itself must match too
+  return record.GSI1PK === `CHAIN#${chainId}#RULES`
 }
 
 export type RuleDeps = { store: RuleStore; settings: RuleSettings; now(): string }
@@ -109,10 +113,10 @@ export async function handleListRules(deps: RuleDeps, event: APIGatewayProxyEven
     return error(400, 'invalid_cursor', 'the cursor names a chain this listing is not walking')
   }
   const rawKey = start?.key
-  if (rawKey !== undefined && !isRuleListKey(rawKey)) {
+  if (rawKey !== undefined && !isRuleListKey(rawKey, startChain!)) {
     return error(400, 'invalid_cursor', 'the cursor key is not shaped like one this listing could have issued')
   }
-  const startKey = rawKey !== undefined && isRuleListKey(rawKey) ? rawKey : undefined
+  const startKey = rawKey !== undefined && isRuleListKey(rawKey, startChain!) ? rawKey : undefined
 
   const rules: StoredRule[] = []
   let cursor: string | undefined

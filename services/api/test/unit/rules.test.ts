@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import type { RuleInput } from '@blockwarden/core'
 import { describe, expect, it } from 'vitest'
-import { decodeCursor } from '../../src/http.js'
+import { decodeCursor, encodeCursor } from '../../src/http.js'
 import { handleListRules, pageSize, validateRuleInput, type RuleDeps, type RuleSettings } from '../../src/rules.js'
 import type { RuleStore, StoredRule } from '../../src/store.js'
 
@@ -208,5 +208,26 @@ describe('handleListRules across a chain boundary', () => {
     const secondBody = second.body as { rules: { ruleId: string }[]; cursor?: string }
     expect(secondBody.rules.map((r) => r.ruleId)).toEqual(['b1'])
     expect(secondBody.cursor).toBeUndefined()
+  })
+
+  it('refuses a cursor whose key names a different chains partition than the one it claims to resume', async () => {
+    const store = fakeRuleStore({ 8453: [fixtureRule('a1', 8453)], 42161: [fixtureRule('b1', 42161)] })
+    const deps: RuleDeps = {
+      store,
+      settings: { ruleSecretPrefixes: [], chainIds: [8453, 42161] },
+      now: () => '2026-09-21T00:00:00.000Z',
+    }
+    // shaped exactly right - all four attributes present as strings - but GSI1PK is 42161's partition while
+    // the envelope's own chainId claims to be resuming 8453
+    const forged = encodeCursor({
+      chainId: 8453,
+      key: { PK: 'RULE#a1', SK: 'META', GSI1PK: 'CHAIN#42161#RULES', GSI1SK: 'RULE#a1' },
+    })
+    const result = await handleListRules(
+      deps,
+      apiEvent({ routeKey: 'GET /v1/rules', queryStringParameters: { cursor: forged } }),
+    )
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe('invalid_cursor')
   })
 })

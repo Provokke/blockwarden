@@ -36,11 +36,20 @@ export async function handleGetTx(
 // catch (same convention as matches.ts's isMatchListKey and rules.ts's isRuleListKey)
 const TX_LIST_KEY_ATTRS = ['PK', 'SK', 'GSI2PK'] as const
 
-function isTxListKey(value: unknown): value is Record<(typeof TX_LIST_KEY_ATTRS)[number], string> & { GSI2SK: number } {
+function isTxListKey(
+  value: unknown,
+  chainId: number,
+): value is Record<(typeof TX_LIST_KEY_ATTRS)[number], string> & { GSI2SK: number } {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
   if (Object.keys(record).length !== TX_LIST_KEY_ATTRS.length + 1) return false
-  return TX_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string') && typeof record.GSI2SK === 'number'
+  if (!TX_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string') || typeof record.GSI2SK !== 'number') {
+    return false
+  }
+  // shape alone lets a caller mint a cursor naming its own (permitted) chain in the envelope while its key's
+  // GSI2PK is another chain's partition - that key would still reach ExclusiveStartKey and read that other
+  // chain's page, so the partition itself must match the chain this cursor claims to resume
+  return record.GSI2PK === `TXPENDING#${chainId}`
 }
 
 export async function handleListTxs(
@@ -71,10 +80,10 @@ export async function handleListTxs(
   if (start !== undefined && !chains.includes(startChain!)) {
     return error(400, 'invalid_cursor', 'the cursor names a chain this listing is not walking')
   }
-  if (start?.key !== undefined && !isTxListKey(start.key)) {
+  if (start?.key !== undefined && !isTxListKey(start.key, startChain!)) {
     return error(400, 'invalid_cursor', 'the cursor key is not shaped like one this listing could have issued')
   }
-  const startKey = start?.key !== undefined && isTxListKey(start.key) ? start.key : undefined
+  const startKey = start?.key !== undefined && isTxListKey(start.key, startChain!) ? start.key : undefined
 
   // the store hands back a page and only then this handler drops what the caller may not see, so an API key
   // can get a short page with a cursor. That is correct and is not hidden by looping until the page is full -
