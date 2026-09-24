@@ -10,7 +10,7 @@ variable "monitor_source_dir" {
 }
 
 variable "chains" {
-  description = "Chains to monitor, keyed by a short name. Each rpc_urls_parameter must be a SecureString encrypted with the default aws/ssm key; the monitor role can only decrypt that key."
+  description = "Chains to monitor, keyed by a short name. Each rpc_urls_parameter must be a SecureString encrypted with the default aws/ssm key; the monitor role can only decrypt that key. When the api input is also set, the API reads these same parameters and refuses to start if any one holds more than 3 URLs, even though the monitor itself has no such limit."
   type = map(object({
     chain_id           = number
     rpc_urls_parameter = string

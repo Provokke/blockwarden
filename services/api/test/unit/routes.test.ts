@@ -278,7 +278,26 @@ describe('createApiHandler', () => {
 // shipped, and a guarded route left public would reach its handler with no caller. This reads the file as text
 // rather than parsing HCL, so it pins the shape the routes are written in as well as their values.
 describe('modules/api', () => {
-  const mainTf = () => readFile(new URL('../../../../infra/terraform/modules/api/main.tf', import.meta.url), 'utf8')
+  // a commented-out route_key line still matches the raw text, and would otherwise pass both tests below as if
+  // the route were live
+  const stripHclComments = (text: string): string =>
+    text
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .map((line) => {
+        let inString = false
+        for (let i = 0; i < line.length; i++) {
+          if (line[i] === '"' && line[i - 1] !== '\\') inString = !inString
+          if (!inString && (line[i] === '#' || (line[i] === '/' && line[i + 1] === '/'))) return line.slice(0, i)
+        }
+        return line
+      })
+      .join('\n')
+
+  const mainTf = async () =>
+    stripHclComments(
+      await readFile(new URL('../../../../infra/terraform/modules/api/main.tf', import.meta.url), 'utf8'),
+    )
 
   it('registers in Terraform exactly the routes the service handles', async () => {
     const tf = await mainTf()
