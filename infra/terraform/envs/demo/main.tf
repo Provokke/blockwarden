@@ -24,6 +24,18 @@ variable "alarm_email" {
   default     = null
 }
 
+# no default for either: no one wallet is right for every deployment, and there is no origin to default to until
+# the dashboard's distribution exists
+variable "allowed_wallets" {
+  description = "Wallets that may sign in to the dashboard."
+  type        = list(string)
+}
+
+variable "site_origin" {
+  description = "The origin the dashboard is served from, such as https://blockwarden.example.com."
+  type        = string
+}
+
 provider "aws" {
   region = var.region
 
@@ -64,6 +76,12 @@ module "blockwarden" {
   actions = {
     source_dir               = "${path.root}/../../../../services/actions/dist"
     webhook_secret_parameter = "/blockwarden-demo/webhook-secret"
+  }
+
+  api = {
+    source_dir      = "${path.root}/../../../../services/api/dist"
+    allowed_wallets = var.allowed_wallets
+    site_origin     = var.site_origin
   }
 }
 
@@ -130,4 +148,12 @@ output "relayer_api_url" {
 
 output "relayer_signer_key_arns" {
   value = module.relayer.signer_key_arns
+}
+
+output "api_endpoint" {
+  value = module.blockwarden.api_endpoint
+}
+
+output "session_secret_parameter" {
+  value = module.blockwarden.session_secret_parameter
 }

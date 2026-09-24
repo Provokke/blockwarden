@@ -13,6 +13,21 @@ output "stream_failure_queue_url" {
   value       = aws_sqs_queue.stream_failures.url
 }
 
+output "delivery_queue_arn" {
+  description = "ARN of the delivery queue, for a caller's own IAM policy."
+  value       = aws_sqs_queue.deliveries.arn
+}
+
+output "delivery_dead_letter_queue_arn" {
+  description = "ARN of the delivery dead-letter queue, for a caller's own IAM policy."
+  value       = aws_sqs_queue.dead_letter.arn
+}
+
+output "stream_failure_queue_arn" {
+  description = "ARN of the stream-failure queue, for a caller's own IAM policy."
+  value       = aws_sqs_queue.stream_failures.arn
+}
+
 output "outbound_queue_url" {
   description = "Queue that accepts signed deliveries which did not come from a match, or null when it is switched off."
   value       = var.outbound_queue ? aws_sqs_queue.outbound[0].url : null

@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import { HttpRequestError } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -269,5 +270,38 @@ describe('createApiHandler', () => {
       queues: { delivery: { visible: 0, inFlight: 0 } },
     })
     expect(calls.sort()).toEqual(['health.doc', 'health.sqs'])
+  })
+})
+
+// API Gateway forwards only the routes Terraform registers, and puts the authorizer only where Terraform says: a
+// route registered with no handler is a 500 on a real request, a handler with no route is dead code that reads as
+// shipped, and a guarded route left public would reach its handler with no caller. This reads the file as text
+// rather than parsing HCL, so it pins the shape the routes are written in as well as their values.
+describe('modules/api', () => {
+  const mainTf = () => readFile(new URL('../../../../infra/terraform/modules/api/main.tf', import.meta.url), 'utf8')
+
+  it('registers in Terraform exactly the routes the service handles', async () => {
+    const tf = await mainTf()
+    const declared = [...tf.matchAll(/route_key\s*=\s*"([^"]+)"/g)].map((m) => m[1])
+    expect(declared).toHaveLength(ALL_ROUTES.length)
+    expect(new Set(declared)).toEqual(new Set(ALL_ROUTES))
+  })
+
+  it('leaves exactly the public routes without the authorizer', async () => {
+    const tf = await mainTf()
+    const entries = [...tf.matchAll(/route_key\s*=\s*"([^"]+)"\s*,\s*public\s*=\s*(true|false)\s*\}/g)]
+    // every route_key has to be in this one-line form, or a route could be registered without being checked here
+    expect(entries).toHaveLength([...tf.matchAll(/route_key\s*=\s*"/g)].length)
+    const open = entries.filter((m) => m[2] === 'true').map((m) => m[1])
+    expect(new Set(open)).toEqual(new Set(PUBLIC_ROUTES))
+
+    // and the flag is what decides it, on the one route resource, which registers every entry
+    const route = /resource "aws_apigatewayv2_route" "api" \{[\s\S]*?\n\}/.exec(tf)?.[0] ?? ''
+    expect(route).toMatch(/for_each\s*=\s*local\.routes\n/)
+    expect(route).toMatch(/authorization_type\s*=\s*each\.value\.public \? "NONE" : "CUSTOM"\n/)
+    expect(route).toMatch(
+      /authorizer_id\s*=\s*each\.value\.public \? null : aws_apigatewayv2_authorizer\.session\.id\n/,
+    )
+    expect([...tf.matchAll(/resource "aws_apigatewayv2_route"/g)]).toHaveLength(1)
   })
 })
