@@ -1,7 +1,6 @@
-import { hashApiKey } from '@blockwarden/core'
+import { describeError, hashApiKey } from '@blockwarden/core'
 import type { APIGatewayRequestAuthorizerEventV2 } from 'aws-lambda'
 import { authorize, type AuthorizerResult } from '../authorizer.js'
-import { describeError } from '../errors.js'
 import { createAuthorizerRuntime, createLogger, once } from './runtime.js'
 
 const logger = createLogger('blockwarden-api-authorizer')

@@ -4,7 +4,7 @@ import {
   type QueueAttributeName,
 } from '@aws-sdk/client-sqs'
 import { GetCommand, type GetCommandOutput } from '@aws-sdk/lib-dynamodb'
-import { describeError } from './errors.js'
+import { describeError } from '@blockwarden/core'
 import { ok, type ApiResult } from './http.js'
 
 // What this route can honestly see is what the table and the queues already hold. Block lag would need each chain's
