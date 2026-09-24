@@ -38,11 +38,17 @@ export const headerName = z
   .string()
   .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a header name')
   .refine((name) => !RESERVED_HEADERS.has(name.toLowerCase()), 'expected a header name that is not reserved')
-// SSM: a hierarchy of at most fifteen non-empty levels, each of a-zA-Z0-9_.-, and at most 1011 characters
-const parameterName = z
+// SSM: a hierarchy of at most fifteen non-empty levels, each of a-zA-Z0-9_.-, and at most 1011 characters.
+// Exported for the same reason headerName is: Task 12's outbound request lets a third party name this parameter,
+// and that surface has to mean the same thing by a parameter name as a rule's own action does.
+export const parameterName = z
   .string()
   .max(1011)
   .regex(/^(\/[A-Za-z0-9_.-]+){1,15}$/, 'expected an SSM parameter name starting with / and at most 15 levels deep')
+  // nothing in the chain normalises a path: SSM reads the name literally and an IAM resource ARN matches it as
+  // a string. A `..` level is therefore a real level with a misleading name, and refusing it keeps a prefix
+  // check and the grant that mirrors it from ever disagreeing about which parameter is meant.
+  .refine((name) => !name.split('/').includes('..'), 'expected a parameter name without a .. level')
 
 const destination = z.string().superRefine((raw, ctx) => {
   const checked = checkDestinationUrl(raw)
