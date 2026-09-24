@@ -31,8 +31,10 @@ const RESERVED_HEADERS = new Set([
   'upgrade',
   'user-agent',
 ])
-// RFC 7230 token, which is what a header name is
-const headerName = z
+// RFC 7230 token, which is what a header name is. Exported so a caller-facing schema outside a rule's own
+// action (Task 12's outbound request) refuses the same names a webhook action would, rather than growing a
+// second, looser idea of what a header name is.
+export const headerName = z
   .string()
   .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a header name')
   .refine((name) => !RESERVED_HEADERS.has(name.toLowerCase()), 'expected a header name that is not reserved')
