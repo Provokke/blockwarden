@@ -20,6 +20,8 @@ export type DeliveryTarget =
       // Project B's merchants see their own header name, not ours
       signatureHeader?: string
       deliveryHeader?: string
+      // what the delivery header carries; an outbound request sets its own, everything else uses the delivery id
+      eventId?: string
     }
   | { channel: 'email'; to: string[]; subject?: string }
   | { channel: 'telegram'; chatId: string }

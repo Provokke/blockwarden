@@ -49,7 +49,7 @@ export const sendWebhook: Sender = async (deps, delivery) => {
   try {
     headers = {
       [signatureName]: await signatureFor(delivery.payload, secrets, deps.now()),
-      [deliveryName]: delivery.deliveryId,
+      [deliveryName]: delivery.target.eventId ?? delivery.deliveryId,
     }
   } catch (err) {
     // an empty or unusable secret is a fault in the configuration, not a destination that would not answer

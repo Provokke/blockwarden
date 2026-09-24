@@ -21,6 +21,7 @@ export {
   DEFAULT_DELIVERY_HEADER,
   DEFAULT_SIGNATURE_HEADER,
   emailActionSchema,
+  headerName,
   lambdaActionSchema,
   relayActionSchema,
   sqsActionSchema,
