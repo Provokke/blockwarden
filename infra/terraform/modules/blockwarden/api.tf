@@ -15,7 +15,7 @@ module "api" {
 
   allowed_wallets = var.api.allowed_wallets
   site_origin     = var.api.site_origin
-  siwe_domain     = coalesce(var.api.siwe_domain, trimprefix(var.api.site_origin, "https://"))
+  siwe_domain     = var.api.siwe_domain
   # the dispatcher's own list, so a rule the API accepts is one it will build deliveries for
   rule_secret_prefixes = var.actions.rule_secret_prefixes
 

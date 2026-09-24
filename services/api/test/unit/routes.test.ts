@@ -278,21 +278,38 @@ describe('createApiHandler', () => {
 // shipped, and a guarded route left public would reach its handler with no caller. This reads the file as text
 // rather than parsing HCL, so it pins the shape the routes are written in as well as their values.
 describe('modules/api', () => {
-  // a commented-out route_key line still matches the raw text, and would otherwise pass both tests below as if
-  // the route were live
-  const stripHclComments = (text: string): string =>
-    text
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n')
-      .map((line) => {
-        let inString = false
-        for (let i = 0; i < line.length; i++) {
-          if (line[i] === '"' && line[i - 1] !== '\\') inString = !inString
-          if (!inString && (line[i] === '#' || (line[i] === '/' && line[i + 1] === '/'))) return line.slice(0, i)
+  // A commented-out route_key line still matches the raw text, and would otherwise pass the tests below as if the
+  // route were live. One pass that knows where strings are, because "/v1/*" and "${arn}/*" open a block comment
+  // to a scanner that does not.
+  const stripHclComments = (text: string): string => {
+    let out = ''
+    let inString = false
+    for (let i = 0; i < text.length; i++) {
+      if (inString) {
+        if (text[i] === '\\') {
+          out += text.slice(i, i + 2)
+          i++
+          continue
         }
-        return line
-      })
-      .join('\n')
+        if (text[i] === '"' || text[i] === '\n') inString = false
+        out += text[i]
+      } else if (text[i] === '"') {
+        inString = true
+        out += text[i]
+      } else if (text[i] === '#' || text.startsWith('//', i)) {
+        const end = text.indexOf('\n', i)
+        if (end < 0) break
+        i = end - 1
+      } else if (text.startsWith('/*', i)) {
+        const end = text.indexOf('*/', i + 2)
+        if (end < 0) break
+        i = end + 1
+      } else {
+        out += text[i]
+      }
+    }
+    return out
+  }
 
   const mainTf = async () =>
     stripHclComments(
@@ -322,5 +339,78 @@ describe('modules/api', () => {
       /authorizer_id\s*=\s*each\.value\.public \? null : aws_apigatewayv2_authorizer\.session\.id\n/,
     )
     expect([...tf.matchAll(/resource "aws_apigatewayv2_route"/g)]).toHaveLength(1)
+  })
+
+  const siteTf = async () =>
+    stripHclComments(
+      await readFile(new URL('../../../../infra/terraform/modules/api/site.tf', import.meta.url), 'utf8'),
+    )
+
+  // every block whose opening line matches, braces balanced, so an assertion reads one block and not whatever
+  // follows it in the file
+  const blocks = (text: string, opening: RegExp): string[] =>
+    [...text.matchAll(new RegExp(opening.source, 'g'))].map((match) => {
+      const start = match.index
+      let depth = 0
+      for (let i = text.indexOf('{', start); i < text.length; i++) {
+        if (text[i] === '{') depth++
+        if (text[i] === '}' && --depth === 0) return text.slice(start, i + 1)
+      }
+      return text.slice(start)
+    })
+
+  const lookupNamed = (tf: string, type: string, name: string): string => {
+    const found = [...tf.matchAll(new RegExp(`data "${type}" "([^"]+)" \\{\\s*name\\s*=\\s*"${name}"\\s*\\}`, 'g'))]
+    expect(found, name).toHaveLength(1)
+    return found[0]?.[1] ?? ''
+  }
+
+  // A reading test: it proves the distribution is configured to forward the cookie, not that a browser keeps its
+  // session through a real one. Nothing is deployed, so nothing proves that.
+  it('forwards the cookie to the API origin, which is what makes SameSite=Strict work', async () => {
+    const tf = await siteTf()
+    const forwardAll = lookupNamed(tf, 'aws_cloudfront_origin_request_policy', 'Managed-AllViewerExceptHostHeader')
+    const noCache = lookupNamed(tf, 'aws_cloudfront_cache_policy', 'Managed-CachingDisabled')
+
+    const ordered = blocks(tf, /\n\s*ordered_cache_behavior\s*\{/)
+    expect(ordered).toHaveLength(1)
+    const api = ordered[0] ?? ''
+    expect(api).toMatch(/path_pattern\s*=\s*"\/v1\/\*"\n/)
+    expect(api).toMatch(/target_origin_id\s*=\s*"api"\n/)
+    expect(api).toMatch(
+      new RegExp(
+        `origin_request_policy_id\\s*=\\s*data\\.aws_cloudfront_origin_request_policy\\.${forwardAll}\\.id\\n`,
+      ),
+    )
+    // a cached answer would be one caller's rules served to the next
+    expect(api).toMatch(new RegExp(`cache_policy_id\\s*=\\s*data\\.aws_cloudfront_cache_policy\\.${noCache}\\.id\\n`))
+    for (const method of ['GET', 'HEAD', 'OPTIONS', 'PUT', 'POST', 'PATCH', 'DELETE']) {
+      expect(api).toMatch(new RegExp(`allowed_methods\\s*=\\s*\\[[^\\]]*"${method}"`))
+    }
+
+    const apiOrigins = blocks(tf, /\n\s*origin\s*\{/).filter((origin) => /origin_id\s*=\s*"api"\n/.test(origin))
+    expect(apiOrigins).toHaveLength(1)
+    expect(apiOrigins[0]).toMatch(
+      /domain_name\s*=\s*trimprefix\(aws_apigatewayv2_api\.api\.api_endpoint, "https:\/\/"\)\n/,
+    )
+  })
+
+  it('rewrites page paths on the site only, and never answers an API error with a page', async () => {
+    const tf = await siteTf()
+    const functions = [...tf.matchAll(/resource "aws_cloudfront_function" "([^"]+)"/g)]
+    expect(functions).toHaveLength(1)
+    const [fn] = blocks(tf, /resource "aws_cloudfront_function"/)
+    expect(fn).toMatch(/code\s*=\s*file\("\$\{path\.module\}\/site-rewrite\.js"\)\n/)
+
+    const [site] = blocks(tf, /\n\s*default_cache_behavior\s*\{/)
+    expect(site).toMatch(/target_origin_id\s*=\s*"site"\n/)
+    const [association] = blocks(site ?? '', /function_association\s*\{/)
+    expect(association).toMatch(/event_type\s*=\s*"viewer-request"\n/)
+    expect(association).toMatch(
+      new RegExp(`function_arn\\s*=\\s*aws_cloudfront_function\\.${functions[0]?.[1]}\\.arn\\n`),
+    )
+    // the default behaviour's is the only association, and error responses are distribution-wide
+    expect([...tf.matchAll(/function_association\s*\{/g)]).toHaveLength(1)
+    expect(tf).not.toMatch(/custom_error_response/)
   })
 })

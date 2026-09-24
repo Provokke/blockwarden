@@ -74,13 +74,14 @@ variable "allowed_wallets" {
 }
 
 variable "site_origin" {
-  description = "The origin the dashboard is served from, such as https://blockwarden.example.com: no port, path or trailing slash."
+  description = "The origin the dashboard is served from, such as https://blockwarden.example.com: no port, path or trailing slash. Leave null for the distribution's own https://<id>.cloudfront.net name."
   type        = string
+  default     = null
 
   # A lowercase host name, because the API compares this with new URL(SITE_ORIGIN).origin, which lowercases the
   # host and turns a host whose last label is a number into an IPv4 address; either would not compare equal.
   validation {
-    condition = (
+    condition = var.site_origin == null ? true : (
       can(regex("^https://[a-z0-9.-]+$", var.site_origin)) &&
       can(regex("^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])*[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.site_origin)) &&
       !can(regex("(^https://|[.])([0-9]+|0x[0-9a-f]*)$", var.site_origin))
@@ -90,21 +91,23 @@ variable "site_origin" {
 }
 
 variable "siwe_domain" {
-  description = "The domain a sign-in message must name: the host of site_origin."
+  description = "The domain a sign-in message must name: the host of site_origin. Leave null to use that host."
   type        = string
+  default     = null
 
   validation {
-    condition = (
+    condition = var.siwe_domain == null ? true : (
       can(regex("^([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])*[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.siwe_domain)) &&
       !can(regex("(^|[.])([0-9]+|0x[0-9a-f]*)$", var.siwe_domain))
     )
     error_message = "siwe_domain must be a lowercase host name, with no scheme, port or path."
   }
 
-  # two settings that disagree make every login fail with a message about domains that names neither
+  # Two settings that disagree make every login fail with a message about domains that names neither. With no
+  # site_origin the host is the distribution's, which nobody can know before it exists.
   validation {
-    condition     = var.siwe_domain == trimprefix(var.site_origin, "https://")
-    error_message = "siwe_domain must be the host of site_origin."
+    condition     = var.siwe_domain == null ? true : var.site_origin == null ? false : var.siwe_domain == trimprefix(var.site_origin, "https://")
+    error_message = "siwe_domain must be the host of site_origin, and can only be set with it; leave it out to use that host."
   }
 }
 

@@ -59,7 +59,8 @@ blockwarden/
   infra/terraform/
     modules/blockwarden/   full stack: table, monitor, alarms, and the actions and api modules
     modules/actions/       dispatcher, sender, queues and alarms; used by modules/blockwarden
-    modules/api/           HTTP API, authorizer, route and authorizer functions, session secret and alarms; used by modules/blockwarden
+    modules/api/           HTTP API, authorizer, route and authorizer functions, session secret, alarms, and the dashboard's bucket
+                           and the CloudFront distribution in front of both; used by modules/blockwarden
     modules/relayer/       relayer only, for downstream projects
     envs/demo/
     envs/staging/
@@ -376,7 +377,8 @@ These are estimates from published AWS pricing and have to be measured after the
 | API Gateway HTTP API: the relayer's, and from milestone 4 the API's | cents at demo traffic |
 | Lambda: the API's route function and authorizer, two invocations per authenticated request, since the authorizer caches nothing | within the always-free 1M requests and 400k GB-seconds at demo traffic |
 | CloudWatch Logs: the API's access log, kept 14 days like every log group here | cents |
-| CloudFront, S3 | within free tier at demo traffic |
+| CloudFront: one distribution for the dashboard and `/v1/*`, its viewer-request function on the dashboard's paths, and standard logging to S3 | within CloudFront's always-free tier at demo traffic: 1 TB out, 10M requests and 2M function invocations a month. Past the free tier the function costs $0.10 per million invocations. Standard logging (legacy) is free to deliver; only the stored logs are billed |
+| S3: the dashboard's export, with a month of previous versions, and the log bucket, whose logs expire after 30 days | cents; S3 has no always-free tier, and the traffic from S3 to CloudFront is free |
 | SSM standard parameters | free |
 | DynamoDB Streams | free: AWS does not charge for `GetRecords` calls made by a Lambda trigger |
 | SQS: the delivery queue, its dead-letter queue, the stream-failure queue, and the optional outbound pair | within the 1M free requests at demo traffic |
@@ -390,7 +392,7 @@ The fast scan adds one `eth_getLogs` call per run on each chain that has `fast` 
 
 Milestone 3 raised the ceiling: it adds $0.40 a month that is always charged (four alarms, all of them past CloudWatch's free ten) and up to $2.40 more in a month where a delivery dies, a stream batch fails, or a rule stops compiling, so up to $2.80 in all, and $0.10 more again with `outbound_queue`. The plan for milestone 3 estimated $0.30 to $0.40 of alarms because it counted three; the stream-failure alarm is the fourth. It also counted the rule metrics as two, which is what they cost on a single-chain deployment: the monitor tags every metric it publishes with `chainId`, and CloudWatch bills a custom metric per name and dimension combination, so on the demo's three chains they are six. After milestone 3 the worst month was $3.40 above the $5 goal in the Scope section.
 
-Milestone 4 adds $0.30 a month that is always charged: three alarms, all of them past the free ten. It adds no custom metric, because API Gateway and Lambda publish the metrics its alarms watch for free. Its access log group and the extra invocations the uncached authorizer costs are cents at demo traffic. The worst month is now $3.70 above the $5 goal.
+Milestone 4 adds $0.30 a month that is always charged: three alarms, all of them past the free ten. It adds no custom metric, because API Gateway and Lambda publish the metrics its alarms watch for free. Its access log group and the extra invocations the uncached authorizer costs are cents at demo traffic, and the dashboard's distribution and its two buckets add no alarm, no metric and no fixed charge. The worst month is now $3.70 above the $5 goal.
 
 What would bring it back under $5, if that matters more than the observability: the monitor's five occasional metrics are fifteen of the seventeen billed ones. Without `deadlineSkips`, `busySkips` and `laggingNodeSkips` the worst month publishes 18 metrics, 8 of them billed, and the total is about $6.00. Dropping `deliveriesDead` and `deliveryBatchFailures` as well leaves 16 published, 6 billed, and about $5.40; the dead-letter alarm still pages on a dead delivery, and both functions log every one. Getting under $5 costs one of the two rule metrics as well: keeping `ruleWarnings` alone leaves 13 published, 3 billed, and about $4.50, and gives up the metric for a rule that has left the poll entirely. None of these cuts touches an alarm or any behaviour.
 

@@ -24,16 +24,16 @@ variable "alarm_email" {
   default     = null
 }
 
-# no default for either: no one wallet is right for every deployment, and there is no origin to default to until
-# the dashboard's distribution exists
+# no default: no one wallet is right for every deployment
 variable "allowed_wallets" {
   description = "Wallets that may sign in to the dashboard."
   type        = list(string)
 }
 
 variable "site_origin" {
-  description = "The origin the dashboard is served from, such as https://blockwarden.example.com."
+  description = "The origin the dashboard is served from, such as https://blockwarden.example.com. Leave null for the distribution's own cloudfront.net name."
   type        = string
+  default     = null
 }
 
 provider "aws" {
@@ -156,4 +156,16 @@ output "api_endpoint" {
 
 output "session_secret_parameter" {
   value = module.blockwarden.session_secret_parameter
+}
+
+output "site_bucket" {
+  value = module.blockwarden.site_bucket
+}
+
+output "distribution_id" {
+  value = module.blockwarden.distribution_id
+}
+
+output "site_url" {
+  value = module.blockwarden.site_url
 }

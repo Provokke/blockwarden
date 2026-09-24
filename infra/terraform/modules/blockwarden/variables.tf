@@ -138,7 +138,8 @@ variable "api" {
   type = object({
     source_dir      = string
     allowed_wallets = list(string)
-    site_origin     = string
+    # the distribution's own https://<id>.cloudfront.net name when left out
+    site_origin = optional(string)
     # the host of site_origin when left out, which is the only value the API accepts
     siwe_domain = optional(string)
   })
@@ -157,7 +158,7 @@ variable "api" {
   }
 
   validation {
-    condition = var.api == null ? true : (
+    condition = var.api == null ? true : var.api.site_origin == null ? true : (
       can(regex("^https://[a-z0-9.-]+$", var.api.site_origin)) &&
       can(regex("^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])*[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.api.site_origin)) &&
       !can(regex("(^https://|[.])([0-9]+|0x[0-9a-f]*)$", var.api.site_origin))
@@ -166,8 +167,8 @@ variable "api" {
   }
 
   validation {
-    condition     = var.api == null ? true : var.api.siwe_domain == null || var.api.siwe_domain == trimprefix(var.api.site_origin, "https://")
-    error_message = "api.siwe_domain must be the host of api.site_origin; leave it out to use that host."
+    condition     = var.api == null ? true : var.api.siwe_domain == null ? true : var.api.site_origin == null ? false : var.api.siwe_domain == trimprefix(var.api.site_origin, "https://")
+    error_message = "api.siwe_domain must be the host of api.site_origin, and can only be set with it; leave it out to use that host."
   }
 
   # names another variable, so this one waits for a plan
