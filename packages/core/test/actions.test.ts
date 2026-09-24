@@ -92,6 +92,16 @@ describe('webhook actions', () => {
     }
   })
 
+  // neither SSM nor an IAM resource ARN normalises a path, so `..` is an ordinary level with a misleading name;
+  // refused so that a prefix check and the grant that mirrors it never have to disagree about what it means
+  it('refuses a parameter name with a .. level', () => {
+    const url = 'https://e.com/h'
+    expect(reason({ type: 'webhook', url, secretParameter: '/blockwarden/../other/secret' })).toBeTruthy()
+    expect(reason({ type: 'webhook', url, secretParameter: '/blockwarden/..' })).toBeTruthy()
+    // a name that merely contains dots is still a name
+    expect(parse({ type: 'webhook', url, secretParameter: '/blockwarden/a..b' }).success).toBe(true)
+  })
+
   it('refuses an unknown key, so a misspelt option is not silently ignored', () => {
     expect(reason({ type: 'webhook', url: 'https://e.com/h', secrets: 'x' })).toContain('Unrecognized key')
   })

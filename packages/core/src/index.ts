@@ -23,6 +23,7 @@ export {
   emailActionSchema,
   headerName,
   lambdaActionSchema,
+  parameterName,
   relayActionSchema,
   sqsActionSchema,
   telegramActionSchema,
