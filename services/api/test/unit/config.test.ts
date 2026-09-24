@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { loadAuthorizerConfig, loadConfig, rpcUrlsFrom, sessionSecretFrom } from '../../src/config.js'
+import { loadAuthorizerConfig, loadConfig, MAX_RPC_URLS, rpcUrlsFrom, sessionSecretFrom } from '../../src/config.js'
 
 const wallet = '0x52908400098527886E0F7030069857D2E4169EE7'
 
@@ -7,6 +7,8 @@ const valid = {
   TABLE_NAME: 'blockwarden',
   SESSION_SECRET_PARAMETER: '/blockwarden/session-secret',
   DELIVERY_QUEUE_URL: 'https://sqs.eu-west-2.amazonaws.com/123456789012/blockwarden-deliveries',
+  DELIVERY_DLQ_URL: 'https://sqs.eu-west-2.amazonaws.com/123456789012/blockwarden-deliveries-dlq',
+  STREAM_FAILURE_QUEUE_URL: 'https://sqs.eu-west-2.amazonaws.com/123456789012/blockwarden-stream-failures',
   SITE_ORIGIN: 'https://demo.blockwarden.dev',
   SIWE_DOMAIN: 'demo.blockwarden.dev',
   ALLOWED_WALLETS: wallet,
@@ -33,6 +35,8 @@ describe('loadConfig', () => {
       tableName: 'blockwarden',
       sessionSecretParameter: '/blockwarden/session-secret',
       deliveryQueueUrl: valid.DELIVERY_QUEUE_URL,
+      deliveryDlqUrl: valid.DELIVERY_DLQ_URL,
+      streamFailureQueueUrl: valid.STREAM_FAILURE_QUEUE_URL,
       siteOrigin: 'https://demo.blockwarden.dev',
       siweDomain: 'demo.blockwarden.dev',
       allowedWallets: [wallet],
@@ -58,6 +62,8 @@ describe('loadConfig', () => {
     'TABLE_NAME',
     'SESSION_SECRET_PARAMETER',
     'DELIVERY_QUEUE_URL',
+    'DELIVERY_DLQ_URL',
+    'STREAM_FAILURE_QUEUE_URL',
     'SITE_ORIGIN',
     'SIWE_DOMAIN',
     'ALLOWED_WALLETS',
@@ -83,6 +89,18 @@ describe('loadConfig', () => {
   it('refuses a plain-http queue URL or site origin', () => {
     expect(refusal({ ...valid, DELIVERY_QUEUE_URL: 'http://sqs.local/q' })).toContain('DELIVERY_QUEUE_URL')
     expect(refusal({ ...valid, SITE_ORIGIN: 'http://demo.blockwarden.dev' })).toContain('SITE_ORIGIN')
+  })
+
+  it('refuses a dead-letter queue URL that is not https, naming DELIVERY_DLQ_URL', () => {
+    const message = refusal({ ...valid, DELIVERY_DLQ_URL: 'http://sqs.local/dlq' })
+    expect(message).toContain('DELIVERY_DLQ_URL')
+    expect(message).not.toContain('STREAM_FAILURE_QUEUE_URL')
+  })
+
+  it('refuses a stream-failure queue URL that is not https, naming STREAM_FAILURE_QUEUE_URL', () => {
+    const message = refusal({ ...valid, STREAM_FAILURE_QUEUE_URL: 'not a url' })
+    expect(message).toContain('STREAM_FAILURE_QUEUE_URL')
+    expect(message).not.toContain('DELIVERY_DLQ_URL')
   })
 
   it('refuses a site origin that carries a path', () => {
@@ -203,6 +221,19 @@ describe('rpcUrlsFrom', () => {
     }
     expect(message).toContain('/bw/rpc/base')
     expect(message).not.toContain('SECRETKEY')
+  })
+
+  it('takes as many URLs as the relayer does and refuses one more, naming the parameter and the count only', () => {
+    const urls = Array.from({ length: MAX_RPC_URLS + 1 }, (_, i) => `https://rpc${i}.example/v2/SECRETKEY${i}`)
+    expect(rpcUrlsFrom('/bw/rpc/base', urls.slice(0, MAX_RPC_URLS).join(','))).toHaveLength(MAX_RPC_URLS)
+    let message = ''
+    try {
+      rpcUrlsFrom('/bw/rpc/base', urls.join(','))
+    } catch (err) {
+      message = (err as Error).message
+    }
+    expect(message).toBe(`parameter /bw/rpc/base holds 4 RPC URLs; the API takes at most 3`)
+    expect(message).not.toContain('example')
   })
 })
 

@@ -14,11 +14,15 @@ import {
 
 const SECRET = 'x'.repeat(40)
 const QUEUE = 'https://sqs.eu-west-2.amazonaws.com/123456789012/deliveries'
+const DLQ = 'https://sqs.eu-west-2.amazonaws.com/123456789012/deliveries-dlq'
+const STREAM_FAILURES = 'https://sqs.eu-west-2.amazonaws.com/123456789012/stream-failures'
 
 const env = {
   TABLE_NAME: 'blockwarden',
   SESSION_SECRET_PARAMETER: '/bw/session',
   DELIVERY_QUEUE_URL: QUEUE,
+  DELIVERY_DLQ_URL: DLQ,
+  STREAM_FAILURE_QUEUE_URL: STREAM_FAILURES,
   SITE_ORIGIN: 'https://demo.blockwarden.dev',
   SIWE_DOMAIN: 'demo.blockwarden.dev',
   ALLOWED_WALLETS: '0x52908400098527886E0F7030069857D2E4169EE7',
@@ -77,13 +81,23 @@ function fakeDoc(rows: Record<string, unknown>[], asked: unknown[]): DynamoDBDoc
   } as unknown as DynamoDBDocumentClient
 }
 
+// each queue holds its own depth, so a queue reported with another's URL shows up as the wrong numbers
+const DEPTHS: Record<string, [visible: string, inFlight: string]> = {
+  [QUEUE]: ['4', '1'],
+  [DLQ]: ['7', '0'],
+  [STREAM_FAILURES]: ['2', '3'],
+}
+
 function fakeSqs(asked: unknown[]): SQSClient {
   return {
     async send(command: unknown) {
       if (command instanceof GetQueueAttributesCommand) {
         asked.push(command.input)
-        if (command.input.QueueUrl !== QUEUE) throw new Error('NonExistentQueue')
-        return { Attributes: { ApproximateNumberOfMessages: '4', ApproximateNumberOfMessagesNotVisible: '1' } }
+        const depth = DEPTHS[command.input.QueueUrl ?? '']
+        if (!depth) throw new Error('NonExistentQueue')
+        return {
+          Attributes: { ApproximateNumberOfMessages: depth[0], ApproximateNumberOfMessagesNotVisible: depth[1] },
+        }
       }
       if (command instanceof SendMessageCommand) {
         asked.push(command.input)
@@ -143,6 +157,15 @@ describe('createApiRuntime', () => {
     await expect(failure).rejects.not.toThrow('SECRETKEY')
   })
 
+  it('refuses a cold start whose RPC parameter holds more URLs than the timeout budget allows', async () => {
+    const four = [1, 2, 3, 4].map((i) => `https://rpc${i}.example/v2/SECRETKEY`).join(',')
+    const { ssm } = fakeSsm({ ...PARAMETERS, '/bw/rpc/arbitrum': four })
+    const { logger } = fakeLogger()
+    const failure = createApiRuntime(logger, { env, ssm, doc: fakeDoc([], []), sqs: fakeSqs([]) })
+    await expect(failure).rejects.toThrow('parameter /bw/rpc/arbitrum holds 4 RPC URLs')
+    await expect(failure).rejects.not.toThrow('SECRETKEY')
+  })
+
   it('refuses a cold start whose session secret is too short to key HS256', async () => {
     const { ssm } = fakeSsm({ ...PARAMETERS, '/bw/session': 'short' })
     const { logger } = fakeLogger()
@@ -162,7 +185,7 @@ describe('createApiRuntime', () => {
     expect(consoleError).not.toHaveBeenCalled()
   })
 
-  it('wires health to the configured table, chains and delivery queue', async () => {
+  it('wires health to the configured table, chains and all three queues', async () => {
     const { ssm } = fakeSsm(PARAMETERS)
     const { logger } = fakeLogger()
     const docAsked: unknown[] = []
@@ -186,9 +209,16 @@ describe('createApiRuntime', () => {
     const body = JSON.parse(result.body ?? '{}') as { chains: Record<string, unknown>; queues: unknown }
     expect(body.chains['8453']).toEqual({ durableBlock: null, fastBlock: null, cursorAgeSeconds: null })
     expect(body.chains['42161']).toMatchObject({ durableBlock: '10', fastBlock: '12' })
-    expect(body.queues).toEqual({ delivery: { visible: 4, inFlight: 1 } })
+    expect(body.queues).toEqual({
+      delivery: { visible: 4, inFlight: 1 },
+      deadLetter: { visible: 7, inFlight: 0 },
+      streamFailure: { visible: 2, inFlight: 3 },
+    })
+    const depth = ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']
     expect(sqsAsked).toEqual([
-      { QueueUrl: QUEUE, AttributeNames: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'] },
+      { QueueUrl: QUEUE, AttributeNames: depth },
+      { QueueUrl: DLQ, AttributeNames: depth },
+      { QueueUrl: STREAM_FAILURES, AttributeNames: depth },
     ])
   })
 

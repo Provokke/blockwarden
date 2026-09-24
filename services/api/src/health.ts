@@ -73,7 +73,10 @@ async function queueHealth(deps: HealthDeps, name: string, url: string): Promise
     )
     const visible = Number(result.Attributes?.ApproximateNumberOfMessages)
     const inFlight = Number(result.Attributes?.ApproximateNumberOfMessagesNotVisible)
-    if (!Number.isFinite(visible) || !Number.isFinite(inFlight)) return null
+    if (!Number.isFinite(visible) || !Number.isFinite(inFlight)) {
+      deps.log('health could not read a queue', { queue: name, error: 'no queue depth in the answer' }, 'warn')
+      return null
+    }
     return { visible, inFlight }
   } catch (err) {
     deps.log('health could not read a queue', { queue: name, error: describeError(err) }, 'warn')
