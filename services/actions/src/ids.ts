@@ -45,7 +45,9 @@ export function actionId(action: unknown): string {
   return `a_${sha256Hex(canonicalJson(action)).slice(0, 16)}`
 }
 
-// the newline cannot appear in either half, so no pair of different halves gives the same input
+// A subject can carry a newline: an outbound request id is the caller's own string. The sort key cannot — it is
+// DELIVERY#, an a_ hex id, an event name from a fixed set and four digits — so the last newline in the joined
+// text is always the join, and no pair of different halves gives the same input.
 export function deliveryId(subject: string, sk: string): string {
   return `dlv_${sha256Hex(`${subject}\n${sk}`).slice(0, 32)}`
 }
