@@ -1,10 +1,16 @@
-import { checkDestinationUrl, DEFAULT_DELIVERY_HEADER, DEFAULT_SIGNATURE_HEADER, headerName } from '@blockwarden/core'
+import {
+  checkDestinationUrl,
+  DEFAULT_DELIVERY_HEADER,
+  DEFAULT_SIGNATURE_HEADER,
+  headerName,
+  parameterName,
+} from '@blockwarden/core'
 import type { SQSBatchResponse } from 'aws-lambda'
 import { z } from 'zod'
-import { actionId, deliveryId } from './ids.js'
+import { actionId, canonicalJson, deliveryId } from './ids.js'
 import { keys } from './keys.js'
 import type { DeliveryQueue } from './queue.js'
-import { MAX_PAYLOAD_BYTES, type Log, type NewDelivery } from './records.js'
+import { MAX_PAYLOAD_BYTES, truncate, type Log, type NewDelivery } from './records.js'
 import type { DeliveryStore } from './store.js'
 
 export const outboundRequestSchema = z
@@ -15,10 +21,18 @@ export const outboundRequestSchema = z
       const checked = checkDestinationUrl(raw)
       if (!checked.ok) ctx.addIssue({ code: 'custom', message: checked.reason })
     }),
-    secretParameter: z.string().startsWith('/').max(1011),
+    // the same name rule a rule's own webhook action uses; this is the field that picks the secret bytes
+    secretParameter: parameterName,
     signatureHeader: headerName.optional(),
     deliveryHeader: headerName.optional(),
-    eventId: z.string().min(1).max(200).optional(),
+    // this becomes a header value: anything outside printable ASCII makes Node throw on the write, which the
+    // sender reads as worth retrying, and a delivery that can never succeed burns every attempt it has
+    eventId: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[\x20-\x7e]+$/, 'expected printable ASCII')
+      .optional(),
     // an object is serialised; a string is signed exactly as it arrived
     body: z.union([z.string(), z.looseObject({})]),
   })
@@ -33,8 +47,25 @@ export const outboundRequestSchema = z
 
 export type OutboundRequest = z.infer<typeof outboundRequestSchema>
 
+// the fields that decide where the bytes go and which secret signs them
+type Destination = { url: string; secretParameter?: string; signatureHeader?: string; deliveryHeader?: string }
+
+// two requests mean the same destination when the sender would do the same thing with them: the same URL as it
+// would send it, the same parameter, and the same header names, which are case-insensitive and have defaults
+function destinationOf(d: Destination): string {
+  const url = new URL(d.url)
+  return canonicalJson({
+    // rebuilt from the parts, so an empty query or fragment and a default port drop out
+    url: `${url.protocol}//${url.host}${url.pathname}${url.search}${url.hash}`,
+    secretParameter: d.secretParameter,
+    signatureHeader: (d.signatureHeader ?? DEFAULT_SIGNATURE_HEADER).toLowerCase(),
+    deliveryHeader: (d.deliveryHeader ?? DEFAULT_DELIVERY_HEADER).toLowerCase(),
+  })
+}
+
 export type OutboundDeps = {
-  store: DeliveryStore
+  // only what accepting a request needs; the fakes stay compile-time bound to the real store
+  store: Pick<DeliveryStore, 'create' | 'get' | 'markQueued'>
   queue: DeliveryQueue
   now: () => Date
   log: Log
@@ -49,8 +80,9 @@ export async function acceptOutbound(
   const batchItemFailures: SQSBatchResponse['batchItemFailures'] = []
   for (const message of messages) {
     const refuse = (reason: string) => {
-      // the reason names the field, never the body or the secret's value
-      deps.log('outbound request refused', { messageId: message.messageId, reason }, 'error')
+      // the reason names the field, never the body or the secret's value, and it is built from what the caller
+      // sent, so it is capped like every other error string here rather than letting a caller size the log line
+      deps.log('outbound request refused', { messageId: message.messageId, reason: truncate(reason) }, 'error')
       batchItemFailures.push({ itemIdentifier: message.messageId })
     }
     let parsed: OutboundRequest
@@ -64,7 +96,10 @@ export async function acceptOutbound(
       )
       continue
     }
-    if (!deps.allowedSecretPrefixes.some((prefix) => parsed.secretParameter.startsWith(prefix))) {
+    // a prefix names a level of the hierarchy, not a run of characters: /billwarden must not admit
+    // /billwardenX, which is somebody else's parameter, so the comparison is made against the level separator
+    const under = (prefix: string) => parsed.secretParameter.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`)
+    if (!deps.allowedSecretPrefixes.some(under)) {
       refuse(`secretParameter is not under an allowed prefix`)
       continue
     }
@@ -75,15 +110,9 @@ export async function acceptOutbound(
     }
 
     const subject = keys.outboundSubject(parsed.requestId)
-    // the id covers the destination, so re-pointing a request id at another URL is a different delivery rather
-    // than a silent no-op
-    const id = actionId({
-      type: 'webhook',
-      url: parsed.url,
-      secretParameter: parsed.secretParameter,
-      signatureHeader: parsed.signatureHeader,
-      deliveryHeader: parsed.deliveryHeader,
-    })
+    // the request id alone is the key: the same id is the same delivery, for ever. Folding the destination in
+    // would make a re-pointed id a second delivery, and the caller's idempotency key would stop being one.
+    const id = actionId({ type: 'outbound', requestId: parsed.requestId })
     const { SK } = keys.delivery(subject, id, 'outbound', 0)
     const delivery: NewDelivery = {
       deliveryId: deliveryId(subject, SK),
@@ -106,6 +135,18 @@ export async function acceptOutbound(
     try {
       const created = await deps.store.create(delivery, deps.now())
       if (!created) {
+        // the id is taken. If it was taken by this same destination the request is an ordinary repeat; if it
+        // was taken by another one the caller has reused an idempotency key, which no retry can fix, so it is
+        // refused rather than delivered twice or quietly sent somewhere else.
+        const existing = await deps.store.get({ subject, sk: SK })
+        if (
+          existing &&
+          existing.target.channel === 'webhook' &&
+          destinationOf(existing.target) !== destinationOf(parsed)
+        ) {
+          refuse('requestId was already accepted for another destination')
+          continue
+        }
         deps.log('outbound request already accepted', { requestId: parsed.requestId })
         continue
       }
