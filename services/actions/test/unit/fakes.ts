@@ -35,7 +35,7 @@ export function fakeLookup(rules: Record<string, CompiledRuleView>, signers: Rec
 // the real store a compile error rather than something a test quietly proves nothing about
 export type FakeDeliveryStore = Pick<
   DeliveryStore,
-  'create' | 'get' | 'markQueued' | 'markDead' | 'listDue' | 'listDuePage'
+  'create' | 'get' | 'markQueued' | 'claim' | 'markDelivered' | 'scheduleRetry' | 'markDead' | 'listDue' | 'listDuePage'
 >
 
 // where a page of the fake's due index stopped: the real store keeps the last item's keys per shard, and the
@@ -94,9 +94,36 @@ export function fakeStore(): { store: FakeDeliveryStore; items: Map<string, Deli
     async markQueued(delivery, nowMs) {
       return save({ ...delivery, status: 'queued', nextAttemptAt: nowMs + REAPER_GRACE_MS }, delivery, nowMs)
     },
-    async markDead(delivery, nowMs, error) {
+    // mirrors store.ts: the claim is the lease, so the due time moves out by leaseMs. A fake that ignored the
+    // lease would let a caller pass one that leaves the reaper racing the attempt and no test would notice
+    async claim(delivery, nowMs, leaseMs) {
+      return save(
+        {
+          ...delivery,
+          status: 'delivering',
+          attempts: delivery.attempts + 1,
+          firstAttemptAt: delivery.firstAttemptAt ?? nowMs,
+          lastAttemptAt: nowMs,
+          nextAttemptAt: nowMs + leaseMs,
+        },
+        delivery,
+        nowMs,
+      )
+    },
+    async markDelivered(delivery, nowMs, statusCode) {
+      const { nextAttemptAt: _dropped, lastError: _cleared, ...rest } = delivery
+      return save({ ...rest, status: 'delivered', ...codeOf(statusCode) }, delivery, nowMs)
+    },
+    async scheduleRetry(delivery, nowMs, nextAttemptAt, error, statusCode) {
+      return save(
+        { ...delivery, status: 'failed', nextAttemptAt, lastError: truncate(error), ...codeOf(statusCode) },
+        delivery,
+        nowMs,
+      )
+    },
+    async markDead(delivery, nowMs, error, statusCode) {
       const { nextAttemptAt: _dropped, ...rest } = delivery
-      return save({ ...rest, status: 'dead', lastError: truncate(error) }, delivery, nowMs)
+      return save({ ...rest, status: 'dead', lastError: truncate(error), ...codeOf(statusCode) }, delivery, nowMs)
     },
     async listDue(nowMs, limit) {
       return (await store.listDuePage(nowMs, limit)).deliveries
@@ -118,4 +145,8 @@ export function fakeStore(): { store: FakeDeliveryStore; items: Map<string, Deli
     },
   }
   return { store, items }
+}
+
+function codeOf(statusCode?: number): { lastStatusCode?: number } {
+  return statusCode === undefined ? {} : { lastStatusCode: statusCode }
 }
