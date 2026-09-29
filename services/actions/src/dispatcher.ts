@@ -202,10 +202,13 @@ export async function sweepDue(
     for (const delivery of due.deliveries) {
       try {
         if (delivery.attempts >= MAX_ATTEMPTS) {
-          await deps.store.markDead(delivery, nowMs, 'every attempt was used and no sender finished it')
-          // the same copy the sender writes: the alarm watches the dead-letter queue's depth, so a delivery that
-          // died here rather than on an attempt has to reach it too or it dies where nobody is looking
+          // Send the copy before marking the delivery dead - the other way round from the sender's own path.
+          // markDead drops the delivery from the due index, and once that commits nothing brings the delivery
+          // back if the copy then fails to land. Sending first means a failed copy leaves the delivery due and
+          // otherwise untouched, so the next sweep tries both steps again; a duplicate copy that does land costs
+          // nothing (the alarm only watches the dead-letter queue's depth), but a missing one costs the alarm.
           await deps.deadLetters.send(refOf(delivery), 0)
+          await deps.store.markDead(delivery, nowMs, 'every attempt was used and no sender finished it')
           dead++
           continue
         }
@@ -213,9 +216,10 @@ export async function sweepDue(
         await deps.queue.send(refOf(queued), 0)
         requeued++
       } catch (err) {
-        // one delivery's conflict is another sender working on it; the sweep moves on
+        // one delivery's conflict is another sender working on it; a dead-letter copy that hasn't landed yet
+        // leaves the delivery due and unchanged either way, so the sweep just moves on and tries again next time
         deps.log(
-          'could not requeue a delivery',
+          'could not process a due delivery',
           { deliveryId: delivery.deliveryId, error: (err as Error).message },
           'warn',
         )
