@@ -53,7 +53,9 @@ export function fakeStore(): { store: FakeDeliveryStore; items: Map<string, Deli
   function save(next: DeliveryRecord, previous: DeliveryRecord, nowMs: number): DeliveryRecord {
     const key = keyOf(previous)
     const stored = items.get(key)
-    if (stored && stored.version !== previous.version) throw new DeliveryConflictError(previous.deliveryId)
+    // mirrors the real condition, #version = :version: an item that is no longer there fails it too, the same
+    // as one whose version moved on, rather than letting a write to a vanished item quietly succeed
+    if (!stored || stored.version !== previous.version) throw new DeliveryConflictError(previous.deliveryId)
     const saved = { ...next, version: previous.version + 1, updatedAt: new Date(nowMs).toISOString() }
     items.set(key, saved)
     return saved
