@@ -8,7 +8,7 @@ const mid = () => 0.5
 describe('nextDelaySeconds', () => {
   it('triples each time and stops at fifteen minutes', () => {
     expect([1, 2, 3, 4, 5, 6, 7].map((n) => nextDelaySeconds(n, undefined, mid))).toEqual([
-      10, 30, 90, 270, 810, 900, 900,
+      10, 30, 90, 270, 738, 720, 720,
     ])
   })
 
@@ -29,12 +29,23 @@ describe('nextDelaySeconds', () => {
     )
   })
 
+  it('spreads the attempts at the cap under it rather than piling them on it', () => {
+    // a band centred on 900 and clamped puts every draw in its top half on exactly 900, and a herd that failed
+    // together comes back together; the whole band has to fit below the cap instead
+    for (const attempt of [5, 6, 7, 8]) {
+      const draws = Array.from({ length: 21 }, (_, i) => nextDelaySeconds(attempt, undefined, () => i / 20))
+      expect(Math.max(...draws)).toBe(900)
+      expect(draws.filter((d) => d === 900)).toHaveLength(1)
+      expect(Math.min(...draws)).toBeLessThan(600)
+    }
+  })
+
   it('lets a retry-after lengthen a wait', () => {
     expect(nextDelaySeconds(1, 120, mid)).toBe(120)
   })
 
   it('does not let a retry-after shorten one', () => {
-    expect(nextDelaySeconds(5, 1, mid)).toBe(810)
+    expect(nextDelaySeconds(5, 1, mid)).toBe(738)
   })
 
   it('ignores a retry-after that is not a sane number', () => {
