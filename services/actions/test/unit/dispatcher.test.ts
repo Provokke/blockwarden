@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { dispatchRecords, MAX_ATTEMPTS, MAX_SWEEP_PAGES, sweepDue } from '../../src/dispatcher.js'
 import type { CompiledRuleView } from '../../src/lookup.js'
-import { keys } from '../../src/keys.js'
+import { keys, refOf } from '../../src/keys.js'
 import { MAX_PAYLOAD_BYTES } from '../../src/records.js'
 import type { DueCursor } from '../../src/store.js'
 import { matchRow, streamRecord, txRow } from '../helpers/images.js'
@@ -23,17 +23,20 @@ const webhookRule = (
 const deps = (rules: Record<string, CompiledRuleView>, signers = {}) => {
   const { store, items } = fakeStore()
   const { queue, sent } = fakeQueue()
+  const { queue: deadLetters, sent: dead } = fakeQueue()
   const log = vi.fn()
   return {
     deps: {
       store,
       lookup: fakeLookup(rules, signers),
       queue,
+      deadLetters,
       now: () => new Date(1_000),
       log,
     },
     items,
     sent,
+    dead,
     log,
   }
 }
@@ -369,6 +372,10 @@ describe('the reaper', () => {
     d.sent.length = 0
     expect(await sweepDue(d.deps, 121_500, 10)).toEqual({ requeued: 0, dead: 1 })
     expect(d.sent).toHaveLength(0)
-    expect([...d.items.values()][0]!.status).toBe('dead')
+    const item = [...d.items.values()][0]!
+    expect(item.status).toBe('dead')
+    // dead has to mean the same on both paths, or a delivery exhausted by crashes dies where the alarm that
+    // watches the dead-letter queue's depth cannot see it
+    expect(d.dead).toEqual([{ ref: refOf(item), delaySeconds: 0 }])
   })
 })

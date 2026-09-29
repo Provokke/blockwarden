@@ -2,7 +2,7 @@ import type { ActionInput } from '@blockwarden/core'
 import type { DynamoDBBatchResponse, DynamoDBRecord } from 'aws-lambda'
 import { changesFor, type Change } from './events.js'
 import { actionId, deliveryId } from './ids.js'
-import { DeliverySeqRangeError, keys } from './keys.js'
+import { DeliverySeqRangeError, keys, refOf } from './keys.js'
 import type { Lookup } from './lookup.js'
 import type { DeliveryQueue } from './queue.js'
 import { matchEventData, renderEvent, txEventData } from './render.js'
@@ -33,6 +33,8 @@ export type DispatcherDeps = {
   store: DispatcherStore
   lookup: Lookup
   queue: DeliveryQueue
+  // the reaper kills a delivery too, and dead has to mean the same thing whichever path got there
+  deadLetters: DeliveryQueue
   now: () => Date
   log: Log
 }
@@ -146,13 +148,7 @@ export async function dispatchRecords(deps: DispatcherDeps, records: DynamoDBRec
           // already created by an earlier delivery of this record; its message was sent then, and the reaper
           // covers the case where it was not
           if (!created) continue
-          await deps.queue.send(
-            {
-              subject: created.subject,
-              sk: keys.delivery(created.subject, created.actionId, created.event, created.seq).SK,
-            },
-            0,
-          )
+          await deps.queue.send(refOf(created), 0)
           await deps.store.markQueued(created, deps.now().getTime())
         }
       }
@@ -207,14 +203,14 @@ export async function sweepDue(
       try {
         if (delivery.attempts >= MAX_ATTEMPTS) {
           await deps.store.markDead(delivery, nowMs, 'every attempt was used and no sender finished it')
+          // the same copy the sender writes: the alarm watches the dead-letter queue's depth, so a delivery that
+          // died here rather than on an attempt has to reach it too or it dies where nobody is looking
+          await deps.deadLetters.send(refOf(delivery), 0)
           dead++
           continue
         }
         const queued = await deps.store.markQueued(delivery, nowMs)
-        await deps.queue.send(
-          { subject: queued.subject, sk: keys.delivery(queued.subject, queued.actionId, queued.event, queued.seq).SK },
-          0,
-        )
+        await deps.queue.send(refOf(queued), 0)
         requeued++
       } catch (err) {
         // one delivery's conflict is another sender working on it; the sweep moves on
