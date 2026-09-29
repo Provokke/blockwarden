@@ -42,11 +42,13 @@ afterAll(async () => {
 describe('against a real table', () => {
   it('creates a delivery once for a record delivered twice, and the reaper finishes an unenqueued one', async () => {
     const { queue, sent } = fakeQueue()
+    const { queue: deadLetters } = fakeQueue()
     const log = () => {}
     const deps = {
       store: h.store,
       lookup: createLookup(dynamo.doc, h.tableName),
       queue,
+      deadLetters,
       now: () => new Date(1_000),
       log,
     }
