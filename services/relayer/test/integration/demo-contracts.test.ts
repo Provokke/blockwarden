@@ -43,6 +43,8 @@ const API_KEY = 'bw_demo_key'
 const SIGNER_ID = 'demo'
 const ETH = 10n ** 18n
 const FORWARDED_GAS = 100_000n
+// how long a signed forward request stays valid; unrelated to the vault's cooldown
+const REQUEST_VALID_FOR_SECONDS = 3600
 
 // relayer-client -> HTTP -> API handler -> DynamoDB Local + SQS FIFO on moto -> signer -> Anvil -> sweeper, with
 // the demo contracts deployed through the same CREATE2 path as script/Deploy.s.sol
@@ -74,7 +76,7 @@ describe('the relayer against the demo contracts', () => {
       address: vault,
       abi: demo.abis.vault,
       functionName: 'fund',
-      args: [1000n],
+      args: [2n * demo.params.topUpAmount],
     })
     await anvil.publicClient.waitForTransactionReceipt({ hash: funded })
 
@@ -90,7 +92,7 @@ describe('the relayer against the demo contracts', () => {
         chainIds: [anvil.chainId],
         policy: {
           ...signerRecord().policy,
-          // the narrowest policy the demo needs: execute on the forwarder, topUp on the vault, nothing else
+          // the policy sees only the outer target and selector: the forwarder's execute admits a request to any contract that trusts the forwarder, and topUp is admitted only on the vault
           allowedTo: [
             {
               address: forwarder,
@@ -166,7 +168,9 @@ describe('the relayer against the demo contracts', () => {
   }
   const toppedUpIn = async (hash: Hex) => {
     const receipt = await anvil.publicClient.getTransactionReceipt({ hash })
-    return parseEventLogs({ abi: demo.abis.vault, logs: receipt.logs, eventName: 'ToppedUp' }).map((log) => log.args)
+    // the event's topic alone would match any contract emitting the same signature
+    const fromVault = receipt.logs.filter((log) => log.address.toLowerCase() === demo.addresses.vault.toLowerCase())
+    return parseEventLogs({ abi: demo.abis.vault, logs: fromVault, eventName: 'ToppedUp' }).map((log) => log.args)
   }
   const balanceOf = (account: Address) =>
     anvil.publicClient.readContract({
@@ -194,7 +198,7 @@ describe('the relayer against the demo contracts', () => {
         to: vault,
         data: encodeFunctionData({ abi: demo.abis.vault, functionName: 'topUp', args: [requester.address] }),
         gas: FORWARDED_GAS,
-        deadline: Number(timestamp) + 3600,
+        deadline: Number(timestamp) + REQUEST_VALID_FOR_SECONDS,
         nonce,
       },
     )
@@ -210,10 +214,12 @@ describe('the relayer against the demo contracts', () => {
     const confirmed = await confirm(queued.txId)
     expect(confirmed).toMatchObject({ status: 'confirmed', receiptStatus: 'success', from: relayer.address })
     expect(await toppedUpIn(confirmed.hash!)).toEqual([
-      { account: requester.address, by: requester.address, amount: 500n },
+      { account: requester.address, by: requester.address, amount: demo.params.topUpAmount },
     ])
-    expect(await balanceOf(requester.address)).toBe(500n)
+    expect(await balanceOf(requester.address)).toBe(demo.params.topUpAmount)
 
+    const noncePending = () => anvil.publicClient.getTransactionCount({ address: relayer.address, blockTag: 'pending' })
+    const relayerNonce = await noncePending()
     // a new idempotency key, so the relayer treats it as a new request rather than returning the first one
     const replay = await relay(client, {
       signerId: SIGNER_ID,
@@ -245,7 +251,10 @@ describe('the relayer against the demo contracts', () => {
       errorName: 'ERC2771ForwarderInvalidSigner',
       args: [recovered, requester.address],
     })
-    expect(await balanceOf(requester.address)).toBe(500n)
+    // refused at the estimate: no record for the key, and the relayer's account nonce did not move
+    expect(await store.getIdempotency(hashApiKey(API_KEY), 'meta-top-up-again')).toBeUndefined()
+    expect(await noncePending()).toBe(relayerNonce)
+    expect(await balanceOf(requester.address)).toBe(demo.params.topUpAmount)
   })
 
   it('carries the fixed topUp call a rule relays, within the schema cap, and relays it as the signer', async () => {
@@ -273,7 +282,9 @@ describe('the relayer against the demo contracts', () => {
     const confirmed = await confirm(queued.txId)
     expect(confirmed).toMatchObject({ status: 'confirmed', receiptStatus: 'success' })
     // a direct call, so the vault names the relayer's own address as the one who topped up
-    expect(await toppedUpIn(confirmed.hash!)).toEqual([{ account: demoAccount, by: relayer.address, amount: 500n }])
+    expect(await toppedUpIn(confirmed.hash!)).toEqual([
+      { account: demoAccount, by: relayer.address, amount: demo.params.topUpAmount },
+    ])
 
     // the same fixed call fires again inside the cooldown: refused before it reaches the queue
     const again = await relay(client, {
@@ -292,7 +303,7 @@ describe('the relayer against the demo contracts', () => {
     })) as bigint
     expect(decodeErrorResult({ abi: demo.abis.vault, data: (again as RelayerApiError).revertData! })).toMatchObject({
       errorName: 'CooldownActive',
-      args: [demoAccount, lastTopUp + 3600n],
+      args: [demoAccount, lastTopUp + demo.params.cooldown],
     })
   })
 })
