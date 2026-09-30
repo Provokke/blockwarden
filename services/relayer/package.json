@@ -25,6 +25,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@blockwarden/contracts": "workspace:*",
     "@types/aws-lambda": "8.10.163",
     "esbuild": "0.28.2",
     "solc": "0.8.37",

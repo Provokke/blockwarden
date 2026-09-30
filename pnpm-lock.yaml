@@ -465,6 +465,9 @@ importers:
         specifier: 4.6.5
         version: 4.6.5
     devDependencies:
+      '@blockwarden/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
       '@types/aws-lambda':
         specifier: 8.10.163
         version: 8.10.163
