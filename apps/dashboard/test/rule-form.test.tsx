@@ -1,8 +1,13 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RuleForm, type RuleBody } from '../src/components/RuleForm.js'
 import { apiError, json, parseCall, type Call } from './support.js'
+
+vi.mock('next/link', () => ({
+  default: ({ href, children }: { href: string; children: ReactNode }) => <a href={href}>{children}</a>,
+}))
 
 const ADDRESS = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'
 const TRANSFER = 'event Transfer(address indexed from, address indexed to, uint256 value)'
@@ -143,6 +148,65 @@ describe('RuleForm', () => {
     release(json(201, { ruleId: 'r-1', active: true }))
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
     expect(calls).toHaveLength(1)
+  })
+
+  it('sends one request for two clicks in the same tick, before the disabled button has rendered', async () => {
+    let release: (response: Response) => void = () => {}
+    respond = () => new Promise<Response>((resolve) => (release = resolve))
+    const onSaved = vi.fn()
+    render(<RuleForm onSaved={onSaved} />)
+    await fillBasics()
+    const submit = screen.getByRole('button', { name: 'Create rule' })
+    act(() => {
+      fireEvent.click(submit)
+      fireEvent.click(submit)
+    })
+    release(json(201, { ruleId: 'r-1', active: true }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
+    expect(calls).toHaveLength(1)
+  })
+
+  it('offers a way to sign in when the session has ended, instead of a bare message', async () => {
+    respond = () => apiError(401, 'unauthorized', 'sign in required')
+    render(<RuleForm onSaved={() => {}} />)
+    await fillBasics()
+    await userEvent.click(screen.getByRole('button', { name: 'Create rule' }))
+    const link = await screen.findByRole('link', { name: /sign in/i })
+    expect(link.getAttribute('href')).toBe('/')
+    expect(screen.getByLabelText('Event signature')).toHaveProperty('value', TRANSFER)
+  })
+
+  it('does not hand the errors of a removed action to the action that shifts up', async () => {
+    render(<RuleForm onSaved={() => {}} />)
+    await fillBasics()
+    await userEvent.click(screen.getByRole('button', { name: 'Add action' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add action' }))
+    const urls = screen.getAllByLabelText('URL')
+    await userEvent.type(urls[0]!, 'http://169.254.169.254/x')
+    await userEvent.type(urls[1]!, 'https://example.com/ok')
+    await userEvent.click(screen.getByRole('button', { name: 'Create rule' }))
+    await waitFor(() => expect(describedBy(screen.getAllByLabelText('URL')[0]!)).toMatch(/link-local/))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Remove action 1' }))
+    const remaining = screen.getByLabelText('URL')
+    expect(remaining).toHaveProperty('value', 'https://example.com/ok')
+    expect(describedBy(remaining)).toBe('')
+    expect(remaining.getAttribute('aria-invalid')).toBeNull()
+  })
+
+  it('clears the errors of an action when its type changes, since they named fields of the old type', async () => {
+    render(<RuleForm onSaved={() => {}} />)
+    await fillBasics()
+    await userEvent.click(screen.getByRole('button', { name: 'Add action' }))
+    await userEvent.type(screen.getByLabelText('URL'), 'http://169.254.169.254/x')
+    await userEvent.click(screen.getByRole('button', { name: 'Create rule' }))
+    await waitFor(() => expect(describedBy(screen.getByLabelText('URL'))).toMatch(/link-local/))
+
+    await userEvent.selectOptions(screen.getByLabelText('Action 1 type'), 'webhook')
+    await userEvent.selectOptions(screen.getByLabelText('Action 1 type'), 'telegram')
+    await userEvent.selectOptions(screen.getByLabelText('Action 1 type'), 'webhook')
+    expect(describedBy(screen.getByLabelText('URL'))).toBe('')
+    expect(document.querySelector('.field-error')).toBeNull()
   })
 
   it('creates a rule with a POST of the fields as typed', async () => {

@@ -38,7 +38,10 @@ const CHAIN_COLUMNS: Column<ChainRow>[] = [
     cell: (row) =>
       row.health
         ? row.health.cursorAgeSeconds === null
-          ? NOT_STARTED
+          ? // the row exists but carries no readable write time: not the same as a monitor that never ran
+            row.health.durableBlock !== null || row.health.fastBlock !== null
+            ? 'unknown'
+            : NOT_STARTED
           : formatAge(row.health.cursorAgeSeconds)
         : UNAVAILABLE,
   },
