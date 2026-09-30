@@ -52,7 +52,7 @@ export function error(
   return { status, body: { error: { code, message, ...extra } } satisfies ErrorBody }
 }
 
-// src/api.ts imports hashApiKey from here; keep the re-export instead of chasing it to core
+// src/api.ts imports hashApiKey from here, so it is re-exported rather than moved at its call site
 export { hashApiKey }
 
 type RelayRequest = z.infer<typeof relayRequestSchema>

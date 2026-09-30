@@ -54,8 +54,8 @@ export interface RelayerChain {
   send(raw: Hex): Promise<SendOutcome>
 }
 
-// the relayer's modules and tests import describeError and short from here; keep the re-export instead of chasing
-// them to core
+// the relayer's modules and tests import describeError and short from here, so they are re-exported rather than
+// moved at every call site
 export { describeError, short }
 
 // -32005 is the JSON-RPC limit-exceeded code; some providers put 429 in the body as the code instead

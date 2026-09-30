@@ -62,7 +62,7 @@ export async function drainRedriven(
   return deleted
 }
 
-// This command mutates production state, so the two selectors cannot both be honoured: "--id x --all" used to
+// This command mutates production state, so the two selectors cannot both be honoured: "--id x --all" would
 // redrive everything while the named id went unchecked.
 export function checkRedriveArgs(values: RedriveArgs): string | undefined {
   if (!values.table) return 'pass --table <name> or set TABLE_NAME'

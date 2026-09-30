@@ -11,7 +11,7 @@ export function rpcAnswer(err: unknown): RpcRequestError | undefined {
 }
 
 // A node's answer is stored on the transaction item and logged, and some echo the whole raw transaction back, so
-// this is as much of one as either can afford. The 1 KB the reviewer measured put a full item at 392 KB.
+// this is as much of one as either can afford: at 1 KB each, a full item held 392 KB of a 400 KB limit.
 const MAX_ERROR_CHARS = 256
 
 export function short(text: string): string {
