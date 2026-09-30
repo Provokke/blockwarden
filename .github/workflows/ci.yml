@@ -33,6 +33,8 @@ jobs:
       - run: pnpm --filter @blockwarden/actions run build
       - name: Build the dashboard
         run: pnpm --filter @blockwarden/dashboard run build
+      - name: Check the dashboard export against the CSP
+        run: pnpm --filter @blockwarden/dashboard run csp
       - run: node scripts/pack-check.mjs
 
   terraform:

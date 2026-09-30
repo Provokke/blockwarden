@@ -9,5 +9,6 @@ coverage/
 .env
 .next/
 out/
+site.auto.tfvars.json
 next-env.d.ts
 *.tsbuildinfo

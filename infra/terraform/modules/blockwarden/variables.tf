@@ -142,6 +142,8 @@ variable "api" {
     site_origin = optional(string)
     # the host of site_origin when left out, which is the only value the API accepts
     siwe_domain = optional(string)
+    # from apps/dashboard/scripts/csp-hashes.mjs for the build being uploaded
+    site_script_hashes = optional(list(string), [])
   })
   default = null
 
@@ -164,6 +166,11 @@ variable "api" {
       !can(regex("(^https://|[.])([0-9]+|0x[0-9a-f]*)$", var.api.site_origin))
     )
     error_message = "api.site_origin must be https:// then a lowercase host name, with no port, path or trailing slash."
+  }
+
+  validation {
+    condition     = var.api == null ? true : alltrue([for h in var.api.site_script_hashes : can(regex("^sha256-[A-Za-z0-9+/]{43}=$", h))])
+    error_message = "every api.site_script_hashes entry must be sha256- then 43 base64 characters and a =."
   }
 
   validation {

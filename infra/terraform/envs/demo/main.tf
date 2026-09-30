@@ -36,6 +36,19 @@ variable "site_origin" {
   default     = null
 }
 
+# Written by `node scripts/csp-hashes.mjs --out` in apps/dashboard to site.auto.tfvars.json beside this file, which
+# Terraform loads by itself. Empty until then, and a dashboard uploaded against an empty list never hydrates.
+variable "site_script_hashes" {
+  description = "sha256 hashes of the dashboard export's inline scripts."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for h in var.site_script_hashes : can(regex("^sha256-[A-Za-z0-9+/]{43}=$", h))])
+    error_message = "every site_script_hashes entry must be sha256- then 43 base64 characters and a =."
+  }
+}
+
 provider "aws" {
   region = var.region
 
@@ -82,6 +95,8 @@ module "blockwarden" {
     source_dir      = "${path.root}/../../../../services/api/dist"
     allowed_wallets = var.allowed_wallets
     site_origin     = var.site_origin
+
+    site_script_hashes = var.site_script_hashes
   }
 }
 
