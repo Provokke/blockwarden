@@ -14,12 +14,32 @@ let base: string
 const apiSeen: Seen[] = []
 const nextSeen: Seen[] = []
 
-function freePort(): Promise<number> {
-  return new Promise((resolve) => {
-    const probe = createServer()
-    probe.listen(0, '127.0.0.1', () => {
-      const port = (probe.address() as AddressInfo).port
-      probe.close(() => resolve(port))
+// the probes stay open until every port is handed out, so no two calls can be given the same one
+async function freePorts(count: number): Promise<number[]> {
+  const probes = await Promise.all(
+    Array.from({ length: count }, () => {
+      const probe = createServer()
+      return new Promise<Server>((resolve) => probe.listen(0, '127.0.0.1', () => resolve(probe)))
+    }),
+  )
+  const ports = probes.map((probe) => (probe.address() as AddressInfo).port)
+  await Promise.all(probes.map((probe) => new Promise((resolve) => probe.close(resolve))))
+  return ports
+}
+
+const PROXY_SCRIPT = fileURLToPath(new URL('../scripts/dev-proxy.mjs', import.meta.url))
+
+// resolves once the proxy says it is listening, and rejects if it exits first so a crash is not a timeout
+function startProxy(env: Record<string, string>): Promise<ChildProcess> {
+  const child = spawn(process.execPath, [PROXY_SCRIPT], {
+    env: { ...process.env, ...env },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  })
+  return new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code) => reject(new Error(`dev proxy exited with ${code}`)))
+    child.stdout!.on('data', (d: Buffer) => {
+      if (d.toString().includes('listening')) resolve(child)
     })
   })
 }
@@ -82,23 +102,11 @@ beforeAll(async () => {
     )
   const apiPort = await listen(api)
   const nextPort = await listen(next)
-  const proxyPort = await freePort()
-
-  proxy = spawn(process.execPath, [fileURLToPath(new URL('../scripts/dev-proxy.mjs', import.meta.url))], {
-    env: {
-      ...process.env,
-      PROXY_PORT: String(proxyPort),
-      API_PORT: String(apiPort),
-      NEXT_PORT: String(nextPort),
-    },
-    stdio: ['ignore', 'pipe', 'inherit'],
-  })
-  await new Promise<void>((resolve, reject) => {
-    proxy.once('error', reject)
-    proxy.once('exit', (code) => reject(new Error(`dev proxy exited with ${code}`)))
-    proxy.stdout!.on('data', (d: Buffer) => {
-      if (d.toString().includes('listening')) resolve()
-    })
+  const [proxyPort] = await freePorts(1)
+  proxy = await startProxy({
+    PROXY_PORT: String(proxyPort),
+    API_PORT: String(apiPort),
+    NEXT_PORT: String(nextPort),
   })
   base = `http://localhost:${proxyPort}`
 })
@@ -160,17 +168,13 @@ describe('dev proxy', () => {
   })
 
   it('answers 502 rather than hanging when the upstream is down', async () => {
-    const dead = await freePort()
-    const port = await freePort()
-    const child = spawn(process.execPath, [fileURLToPath(new URL('../scripts/dev-proxy.mjs', import.meta.url))], {
-      env: { ...process.env, PROXY_PORT: String(port), API_PORT: String(dead), NEXT_PORT: String(dead) },
-      stdio: ['ignore', 'pipe', 'inherit'],
-    })
+    const [dead, port] = await freePorts(2)
+    const child = await startProxy({ PROXY_PORT: String(port), API_PORT: String(dead), NEXT_PORT: String(dead) })
     try {
-      await new Promise<void>((resolve) => child.stdout!.on('data', () => resolve()))
       const res = await fetch(`http://localhost:${port}/v1/rules`)
       expect(res.status).toBe(502)
     } finally {
+      child.removeAllListeners('exit')
       child.kill()
     }
   })

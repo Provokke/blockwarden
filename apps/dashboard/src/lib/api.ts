@@ -21,7 +21,8 @@ export type ApiInit = { method?: string; body?: unknown }
 // Paths are relative on purpose: the origin is whatever served the page, which is what keeps the session
 // cookie same-site. An absolute URL would send it (credentials: 'include') somewhere else.
 export async function apiFetch<T = unknown>(path: string, init: ApiInit = {}): Promise<T> {
-  if (!path.startsWith('/') || path.startsWith('//')) throw new Error(`apiFetch takes a same-origin path, got ${path}`)
+  // every API path is under /v1/; browsers treat a backslash as a slash, so '/\evil.example' would leave the origin
+  if (!path.startsWith('/v1/')) throw new Error(`apiFetch takes a /v1/ path, got ${path}`)
 
   const hasBody = init.body !== undefined
   const res = await fetch(path, {
@@ -32,7 +33,12 @@ export async function apiFetch<T = unknown>(path: string, init: ApiInit = {}): P
 
   if (res.ok) {
     if (res.status === 204) return undefined as T
-    return (await res.json()) as T
+    try {
+      return (await res.json()) as T
+    } catch {
+      // a 200 that is not JSON is a misrouted path answering with the site's HTML, not a parse crash
+      throw new ApiError(res.status, 'bad_response', `the API answered ${res.status} with a body that is not JSON`)
+    }
   }
 
   // the authorizer answers 401 before the API's own envelope exists, so the body may be empty or not ours

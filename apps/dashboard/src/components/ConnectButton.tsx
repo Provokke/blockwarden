@@ -1,17 +1,18 @@
 'use client'
 
-import { useAccount, useConnect, useDisconnect, useSwitchChain } from 'wagmi'
-import { chains } from '../lib/wagmi'
+import { useConnect, useConnection, useConnectors, useDisconnect, useSwitchChain } from 'wagmi'
+import { chains } from '../lib/chains'
 
 export function shorten(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`
 }
 
 export function ConnectButton() {
-  const { address, chainId, isConnected } = useAccount()
-  const { connectors, connect, error: connectError } = useConnect()
-  const { disconnect } = useDisconnect()
-  const { switchChain } = useSwitchChain()
+  const { address, chainId, isConnected } = useConnection()
+  const connectors = useConnectors()
+  const { mutate: connect, error: connectError } = useConnect()
+  const { mutate: disconnect } = useDisconnect()
+  const { mutate: switchChain } = useSwitchChain()
 
   if (!isConnected || !address) {
     const wallet = connectors[0]
