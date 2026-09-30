@@ -282,9 +282,8 @@ resource "aws_apigatewayv2_authorizer" "session" {
   authorizer_uri                    = aws_lambda_function.api["authorizer"].invoke_arn
   authorizer_payload_format_version = "2.0"
   enable_simple_responses           = true
-  # A cached answer would be keyed on the cookie and keep admitting a session after logout, so every request asks.
-  # With no cache there is no identity source either: API Gateway answers 401 itself when a named source is
-  # missing, and a caller brings a cookie or a bearer key, never both.
+  # Caching needs an identity source, and API Gateway answers 401 itself when a named source is missing, while a
+  # caller brings a cookie or a bearer key, never both. So there is no cache and every request asks.
   authorizer_result_ttl_in_seconds = 0
 }
 

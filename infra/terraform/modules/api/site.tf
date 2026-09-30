@@ -106,6 +106,9 @@ resource "aws_s3_bucket_logging" "site" {
   bucket        = aws_s3_bucket.site.id
   target_bucket = aws_s3_bucket.logs.id
   target_prefix = "s3/site/"
+
+  # S3 checks it can write to the target when logging is enabled, and the grant is the bucket policy
+  depends_on = [aws_s3_bucket_policy.logs]
 }
 
 # Only this distribution may read. A statement naming the CloudFront service principal without the SourceArn
