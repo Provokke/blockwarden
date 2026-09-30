@@ -1,0 +1,67 @@
+:root {
+  --bg: #fff;
+  --fg: #16181d;
+  --muted: #5b6270;
+  --line: #d9dce3;
+  --accent: #2a4bd7;
+  --danger: #b3261e;
+  --space: 1rem;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161b;
+    --fg: #e9ebf0;
+    --muted: #9aa2b1;
+    --line: #2c303a;
+    --accent: #8ea2ff;
+    --danger: #ff8a80;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    16px/1.5 system-ui,
+    sans-serif;
+}
+
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: var(--space);
+}
+
+button {
+  font: inherit;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+[role='alert'] {
+  color: var(--danger);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
