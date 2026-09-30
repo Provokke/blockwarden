@@ -36,7 +36,7 @@ export type FinalizedFault = 'rpc-error' | 'transport' | 'stale'
 
 export class FakeChain implements ChainReader {
   blocks: FakeBlock[] = []
-  // the highest block that has ever been finalized; nothing at or below it may change
+  // the highest block ever finalized; nothing at or below it may change
   finalizedFloor = 0
   finalizedFault: (() => FinalizedFault | undefined) | undefined
   staleHeadBy = 0

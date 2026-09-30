@@ -241,8 +241,8 @@ describe('handler', () => {
     },
   )
 
-  // a rule that stops matching, or stops delivering part of what it says, is silent otherwise: these two are
-  // what an alarm can watch
+  // a rule that stops matching, or stops delivering part of what it says, is silent otherwise:
+  // these two are what an alarm can watch
   it('publishes the rule counters only when a rule was skipped or polled with something dropped', async () => {
     const observed = { ...BUSY, status: 'ok' as const, head: 100, finalized: 36, durableBlock: 30, durableLag: 6 }
     vi.mocked(runCycle).mockResolvedValueOnce({ ...observed, ruleSkips: 1, ruleWarnings: 2 })

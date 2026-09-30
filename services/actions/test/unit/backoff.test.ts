@@ -30,8 +30,8 @@ describe('nextDelaySeconds', () => {
   })
 
   it('spreads the attempts at the cap under it rather than piling them on it', () => {
-    // a band centred on 900 and clamped puts every draw in its top half on exactly 900, and a herd that failed
-    // together comes back together; the whole band has to fit below the cap instead
+    // a band centred on 900 and clamped puts the top half on exactly 900 and a herd comes back
+    // together; the whole band has to fit below the cap
     for (const attempt of [5, 6, 7, 8]) {
       const draws = Array.from({ length: 21 }, (_, i) => nextDelaySeconds(attempt, undefined, () => i / 20))
       expect(Math.max(...draws)).toBe(900)

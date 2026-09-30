@@ -20,18 +20,15 @@ export type ActionsConfig = {
 
 type Env = Record<string, string | undefined>
 
-// Everything below fails at load, which is the container's first invocation, rather than at the first delivery
-// that happens to read the setting: a typo in Terraform should surface as a cold-start error on every
-// invocation, not as one dead delivery an hour later.
+// Everything below fails at load (the first invocation), so a Terraform typo shows up as a
+// cold-start error, not one dead delivery later.
 
 const url = z.url()
-// the API key travels in a header on every relay: plain http would put it on the wire and there is no reason
-// for a relayer to be reached that way
+// The API key goes in a header, so no plain http.
 const httpsUrl = z.url().refine((value) => value.startsWith('https://'), 'expected an https URL')
 
-// The two services a delivery target can name. The sender refuses anything else when it sends, but an entry
-// that can never match is an allowlist that silently grants nothing. The queue name takes the same shape as
-// packages/core's sqs action: at most 80 characters, ".fifo" counting towards them.
+// The two services a target can name. An entry that can never match is an allowlist that grants
+// nothing. Queue names follow packages/core's sqs action (max 80 chars, ".fifo" counts).
 const targetArn = z
   .string()
   .regex(
@@ -42,7 +39,7 @@ const targetArn = z
 export function loadConfig(env: Env): ActionsConfig {
   const relayerApiUrl = checked(env, 'RELAYER_API_URL', httpsUrl)
   const relayerApiKeyParameter = checked(env, 'RELAYER_API_KEY_PARAMETER', parameterName)
-  // half a relayer is worse than none: a rule would fail at send time instead of at deploy time
+  // half a relayer is worse than none: fail at deploy time, not send time
   if (relayerApiUrl && !relayerApiKeyParameter)
     throw new Error('RELAYER_API_KEY_PARAMETER is required with RELAYER_API_URL')
   if (relayerApiKeyParameter && !relayerApiUrl)
@@ -84,7 +81,7 @@ function requiredChecked<T>(env: Env, key: string, schema: z.ZodType<T>): T {
 
 function parse<T>(schema: z.ZodType<T>, value: string, key: string): T {
   const result = schema.safeParse(value)
-  // the name of the setting and the value that failed it, so an operator can find it in the plan
+  // Name the setting and the bad value so it's findable in the plan.
   if (!result.success) throw new Error(`${key}: "${value}" ${result.error.issues[0]?.message ?? 'is invalid'}`)
   return result.data
 }
@@ -104,9 +101,8 @@ function checkedList(env: Env, key: string, schema: z.ZodType<string>): string[]
   return list(env[key]).map((entry) => parse(schema, entry, key))
 }
 
-// A prefix names a level of the hierarchy, so it is a parameter name with an optional trailing slash. "/" alone
-// is not a prefix: the guard would then admit every parameter in the account, which is the secret guard switched
-// off by one character in Terraform.
+// A prefix is a parameter name with an optional trailing slash. "/" alone isn't one, it would admit
+// every parameter in the account.
 function secretPrefixes(env: Env, key: 'OUTBOUND_SECRET_PREFIXES' | 'RULE_SECRET_PREFIXES'): string[] {
   return list(env[key]).map((prefix) => {
     if (!prefix.startsWith('/')) throw new Error(`${key} entry "${prefix}" must start with /`)
@@ -118,9 +114,8 @@ function secretPrefixes(env: Env, key: 'OUTBOUND_SECRET_PREFIXES' | 'RULE_SECRET
   })
 }
 
-// A prefix names a level of the hierarchy, not a run of characters: /billwarden must not admit /billwardenX,
-// which is somebody else's parameter, so the comparison is made against the level separator. The IAM grant in
-// modules/actions is built to match, prefix + "/" + "*".
+// Compare against the level separator so /billwarden doesn't admit /billwardenX. The IAM grant in
+// modules/actions matches (prefix + "/" + "*").
 export function underAnyPrefix(prefixes: readonly string[], name: string): boolean {
   return prefixes.some((prefix) => name.startsWith(prefix.endsWith('/') ? prefix : `${prefix}/`))
 }

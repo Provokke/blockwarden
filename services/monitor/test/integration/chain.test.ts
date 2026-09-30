@@ -336,7 +336,8 @@ describe('createChainReader against a stub RPC server', () => {
 
   it('stops the durable scan when the batch head reaches the range end but the pre-read head does not', async () => {
     const to = 500
-    // a node that runs batch entries concurrently can answer the head after it caught up and the logs before
+    // a node running batch entries concurrently can answer the head after it caught up and the logs
+    // before
     const server = await stub('chain', { head: to, preReadHead: to - 1, finalized: to, logs: [] })
     const reader = createChainReader([server.url])
     const store = new InMemoryStore()
@@ -440,7 +441,8 @@ describe('createChainReader against a stub RPC server', () => {
     expect(primary.oversizedBytesSent()).toHaveLength(1)
     expect(backup.httpRequestCount()).toBe(0)
 
-    // finalized is unavailable, so only the fast scan reads: 99..100, then 99..99, which it cannot halve further
+    // finalized is unavailable, so only the fast scan reads: 99..100, then 99..99, which it can't
+    // halve further
     const store = new InMemoryStore()
     store.rules.push(pingRule('fast', { mode: 'fast' }))
     await expect(
@@ -454,11 +456,11 @@ describe('createChainReader against a stub RPC server', () => {
       }),
     ).rejects.toBeInstanceOf(ResponseBodyTooLargeError)
     expect(primary.oversizedBytesSent()).toHaveLength(3)
-    // the backup still answers the finalized block the primary refuses, but never a log request
+    // the backup answers the finalized block the primary refuses, but never a log request
     expect(backup.oversizedBytesSent()).toHaveLength(0)
   }, 30_000)
 
-  // viem backs off 150 ms before its first retry, or for as long as Retry-After asks
+  // viem backs off 150 ms before its first retry, or as long as Retry-After asks
   it.each([
     [
       'an invalid-params error, without retrying it',
@@ -506,8 +508,8 @@ describe('createChainReader against a stub RPC server', () => {
     const elapsed = Date.now() - started
 
     expect((outcome as { rejected: unknown }).rejected).toBeInstanceOf(DeadlineError)
-    // the primary's retry backs off 150 ms before it is refused; walking on would wait that long again for each
-    // backup, which also refuses without sending anything, so six backups would add 900 ms
+    // the primary's retry backs off 150 ms before it's refused; walking on would wait that long
+    // again per backup, so six backups would add 900 ms
     expect(elapsed).toBeLessThan(1_100)
     for (const backup of backups) expect(backup.httpRequestCount()).toBe(0)
   }, 20_000)
@@ -534,7 +536,7 @@ describe('createChainReader against a stub RPC server', () => {
       expect((outcome as { rejected: unknown }).rejected).toBeInstanceOf(DeadlineError)
     }
     expect(backup.httpRequestCount()).toBe(0)
-    // one request per call reached the node before the hard stop aborted it, and nothing was sent after it
+    // one request per call reached the node before the hard stop aborted it, and nothing after
     expect(primary.httpRequestCount()).toBe(4)
   }, 20_000)
 
@@ -568,9 +570,7 @@ describe('createChainReader against a stub RPC server', () => {
 
     await expect(reader.getHead()).rejects.toBeTruthy()
 
-    // fallback's own retryCount: 0 means the URL list is walked exactly once;
-    // each http() transport keeps its baked-in retryCount: 1, so each of the
-    // 2 URLs is attempted twice. 2 URLs * 2 attempts = 4.
+    // fallback's retryCount: 0 means the URL list is walked once; each http() transport keeps its retryCount: 1, so each of the 2 URLs is tried twice. 2 * 2 = 4.
     expect(a.requestCount() + b.requestCount()).toBe(4)
   })
 })

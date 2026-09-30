@@ -22,7 +22,7 @@ describe.skipIf(!keyId)('toKmsAccount against a real KMS key', () => {
     const typedSignature = await account.signTypedData(typed)
     expect(await verifyTypedData({ ...typed, address: account.address, signature: typedSignature })).toBe(true)
 
-    // a few signatures, so both recovery ids and both halves of s are likely to be exercised
+    // a few signatures, so both recovery ids and both halves of s are likely to get exercised
     for (let nonce = 0; nonce < 8; nonce++) {
       const serialized = await account.signTransaction({
         type: 'eip1559',

@@ -16,18 +16,18 @@ import type { DeliveryStore } from './store.js'
 
 export const outboundRequestSchema = z
   .strictObject({
-    // the caller's own idempotency key: the same id is the same delivery for ever
+    // the caller's own idempotency key: same id, same delivery, for ever
     requestId: z.string().min(1).max(200),
     url: z.string().superRefine((raw, ctx) => {
       const checked = checkDestinationUrl(raw)
       if (!checked.ok) ctx.addIssue({ code: 'custom', message: checked.reason })
     }),
-    // the same name rule a rule's own webhook action uses; this is the field that picks the secret bytes
+    // same name rule as a rule's webhook action; this picks the secret bytes
     secretParameter: parameterName,
     signatureHeader: headerName.optional(),
     deliveryHeader: headerName.optional(),
-    // this becomes a header value: anything outside printable ASCII makes Node throw on the write, which the
-    // sender reads as worth retrying, and a delivery that can never succeed burns every attempt it has
+    // becomes a header value: non-ASCII makes Node throw, which the sender would retry for every
+    // attempt
     eventId: z
       .string()
       .min(1)
@@ -37,8 +37,8 @@ export const outboundRequestSchema = z
     // an object is serialised; a string is signed exactly as it arrived
     body: z.union([z.string(), z.looseObject({})]),
   })
-  // the same rule a webhook action's schema enforces: one name for both headers means one of them wins and, if
-  // it is the signature that loses, the request goes out unsigned
+  // same rule as a webhook action's schema: if both headers share a name and the signature loses,
+  // the request goes out unsigned
   .refine(
     (request) =>
       (request.signatureHeader ?? DEFAULT_SIGNATURE_HEADER).toLowerCase() !==
@@ -51,12 +51,12 @@ export type OutboundRequest = z.infer<typeof outboundRequestSchema>
 // the fields that decide where the bytes go and which secret signs them
 type Destination = { url: string; secretParameter?: string; signatureHeader?: string; deliveryHeader?: string }
 
-// two requests mean the same destination when the sender would do the same thing with them: the same URL as it
-// would send it, the same parameter, and the same header names, which are case-insensitive and have defaults
+// two requests are the same destination when the sender would treat them the same: same URL as
+// sent, same parameter, same header names (case-insensitive, with defaults)
 function destinationOf(d: Destination): string {
   const url = new URL(d.url)
   return canonicalJson({
-    // rebuilt from the parts, so an empty query or fragment and a default port drop out
+    // rebuilt from parts so an empty query/fragment and a default port drop out
     url: `${url.protocol}//${url.host}${url.pathname}${url.search}${url.hash}`,
     secretParameter: d.secretParameter,
     signatureHeader: (d.signatureHeader ?? DEFAULT_SIGNATURE_HEADER).toLowerCase(),
@@ -65,7 +65,7 @@ function destinationOf(d: Destination): string {
 }
 
 export type OutboundDeps = {
-  // only what accepting a request needs; the fakes stay compile-time bound to the real store
+  // only what accepting a request needs; fakes stay bound to the real store
   store: Pick<DeliveryStore, 'create' | 'get' | 'markQueued'>
   queue: DeliveryQueue
   now: () => Date
@@ -81,8 +81,8 @@ export async function acceptOutbound(
   const batchItemFailures: SQSBatchResponse['batchItemFailures'] = []
   for (const message of messages) {
     const refuse = (reason: string) => {
-      // the reason names the field, never the body or the secret's value, and it is built from what the caller
-      // sent, so it is capped like every other error string here rather than letting a caller size the log line
+      // the reason names the field, never the body or secret, and is capped like other error
+      // strings
       deps.log('outbound request refused', { messageId: message.messageId, reason: truncate(reason) }, 'error')
       batchItemFailures.push({ itemIdentifier: message.messageId })
     }
@@ -108,8 +108,8 @@ export async function acceptOutbound(
     }
 
     const subject = keys.outboundSubject(parsed.requestId)
-    // the request id alone is the key: the same id is the same delivery, for ever. Folding the destination in
-    // would make a re-pointed id a second delivery, and the caller's idempotency key would stop being one.
+    // The request id alone is the key. Folding the destination in would make a re-pointed id a
+    // second delivery.
     const id = actionId({ type: 'outbound', requestId: parsed.requestId })
     const { SK } = keys.delivery(subject, id, 'outbound', 0)
     const delivery: NewDelivery = {
@@ -133,9 +133,8 @@ export async function acceptOutbound(
     try {
       const created = await deps.store.create(delivery, deps.now())
       if (!created) {
-        // the id is taken. If it was taken by this same destination the request is an ordinary repeat; if it
-        // was taken by another one the caller has reused an idempotency key, which no retry can fix, so it is
-        // refused rather than delivered twice or quietly sent somewhere else.
+        // If the id is taken by this same destination it's an ordinary repeat. A different
+        // destination means a reused idempotency key, which no retry fixes, so refuse it.
         const existing = await deps.store.get({ subject, sk: SK })
         if (
           existing &&

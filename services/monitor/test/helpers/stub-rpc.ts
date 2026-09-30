@@ -1,7 +1,8 @@
 import { createServer, type Server } from 'node:http'
 
-// chain answers eth_blockNumber, eth_getLogs and the finalized block from StubRpcOptions, with STUB_HEAD and an
-// empty log list by default; stalled-body sends the headers and the start of a body, then never finishes it
+// chain answers eth_blockNumber, eth_getLogs and the finalized block from StubRpcOptions (STUB_HEAD
+// and no logs by default); stalled-body sends the headers and the start of a body, then never
+// finishes
 export type StubRpcMode = 'http-500' | 'rpc-error' | 'chain' | 'stalled-body'
 
 export type JsonRpcErrorBody = { code: number; message: string }
@@ -11,9 +12,9 @@ export type StubRpcOptions = {
   head?: number
   // chain mode only: the head answered when eth_blockNumber is the only call in the request, as a pre-read is
   preReadHead?: number
-  // chain mode only: answer a request whose only call is eth_blockNumber with this result or error instead
+  // chain mode only: answer a request whose only call is eth_blockNumber with this result or error
   preReadAnswer?: { result: unknown } | { error: JsonRpcErrorBody }
-  // chain mode only: answer eth_blockNumber inside a batch with this result or error instead
+  // chain mode only: answer eth_blockNumber inside a batch with this result or error
   batchHeadAnswer?: { result: unknown } | { error: JsonRpcErrorBody }
   // chain mode only: return these logs, or reject eth_getLogs with this JSON-RPC error
   logs?: unknown[] | JsonRpcErrorBody
@@ -21,14 +22,14 @@ export type StubRpcOptions = {
   finalized?: number
   // answer the first N HTTP requests with HTTP 500, whatever the mode
   failFirst?: number
-  // answer the first N HTTP requests that carry eth_getLogs with HTTP 500
+  // answer the first N requests that carry eth_getLogs with HTTP 500
   failFirstBatches?: number
-  // chain mode only: answer a request that carries eth_getLogs with a body of this many bytes, sent as fast as
-  // the client reads it, with or without a content-length header
+  // chain mode only: answer a request that carries eth_getLogs with a body of this many bytes, as
+  // fast as the client reads it, with or without content-length
   oversizedLogs?: { bytes: number; declareLength: boolean }
   // http-500 mode only: answer with this status and these headers instead of a plain 500
   failWith?: { status: number; headers?: Record<string, string> }
-  // wait this long after a request arrives before answering it, whatever the mode
+  // wait this long after a request arrives before answering, whatever the mode
   delayMs?: number
 }
 
@@ -70,7 +71,8 @@ export function startStubRpc(
     let carriesLogs = false
     let nth = 0
     let nthLogBatch = 0
-    // counted on arrival, so a request the client aborts while delayMs holds it back still counts as an attempt
+    // counted on arrival, so a request the client aborts while delayMs holds it still counts as an
+    // attempt
     req.on('end', () => {
       try {
         body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
@@ -79,8 +81,8 @@ export function startStubRpc(
       }
       nth = ++httpCount
       seen.push(body)
-      // viem may batch several JSON-RPC calls into one HTTP request; each
-      // entry in that batch is still one RPC attempt, so count them all.
+      // viem may batch several JSON-RPC calls into one HTTP request; each entry is still one RPC
+      // attempt, so count them all
       batch = (Array.isArray(body) ? body : [body]) as (JsonRpcRequest | null)[]
       count += batch.length
       carriesLogs = batch.some((entry) => entry?.method === 'eth_getLogs')

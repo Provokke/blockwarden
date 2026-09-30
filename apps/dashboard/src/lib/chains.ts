@@ -7,8 +7,8 @@ const KNOWN: Record<number, Chain> = Object.fromEntries(
 
 const DEFAULT_CHAIN_IDS = '1,8453,42161'
 
-// A dropped id would leave a wallet on a chain the deployment monitors unable to sign in, and nothing would
-// say why, so anything that is not a known chain id stops the build.
+// A dropped id would leave a wallet on a monitored chain unable to sign in with no hint why, so
+// anything that isn't a known chain id stops the build.
 export function parseChainIds(raw: string | undefined = DEFAULT_CHAIN_IDS): readonly [Chain, ...Chain[]] {
   const chains: Chain[] = []
   for (const part of raw.split(',')) {
@@ -21,12 +21,12 @@ export function parseChainIds(raw: string | undefined = DEFAULT_CHAIN_IDS): read
   return chains as unknown as readonly [Chain, ...Chain[]]
 }
 
-// The static export has no server, so the chain list is fixed at build time. It must be a subset of the API's
-// CHAINS: the API refuses a SIWE message that names a chain it does not monitor.
-// The literal process.env.NEXT_PUBLIC_* form is what Next inlines into the bundle.
+// The static export has no server, so the chain list is fixed at build time. It must be a subset of
+// the API's CHAINS, which refuses a SIWE message naming a chain it doesn't monitor. The literal
+// process.env.NEXT_PUBLIC_* form is what Next inlines.
 export const chains = parseChainIds(process.env.NEXT_PUBLIC_CHAIN_IDS)
 
-// a rule or a signer may name a chain this build was not configured with; the id is still the truth
+// a rule or signer may name a chain this build wasn't configured with; the id is still the truth
 export function chainName(chainId: number): string {
   return chains.find((chain) => chain.id === chainId)?.name ?? String(chainId)
 }

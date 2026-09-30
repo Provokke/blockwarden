@@ -5,10 +5,13 @@ import type { MatchRow, MatchStore } from './store.js'
 const MAX_PAGE = 100
 const STATUSES = new Set(['provisional', 'final', 'dropped'])
 
-// GSI1's own LastEvaluatedKey for a matches-by-rule query is always exactly these four string attributes, as
-// the integration test reads back from DynamoDB Local. The cursor is unsigned base64, so any caller can hand
-// back a crafted key; anything of another shape must never reach ExclusiveStartKey, where DynamoDB answers a
-// bad key with a ValidationException that has no route-level catch
+// GSI1's LastEvaluatedKey for a matches-by-rule query is always exactly these four string
+// attributes (see the
+// integration test against DynamoDB Local). The cursor is unsigned base64, so a caller can hand
+// back a crafted key,
+// and anything of another shape must never reach ExclusiveStartKey: DynamoDB answers a bad key with
+// a
+// ValidationException that nothing catches at route level
 const MATCH_LIST_KEY_ATTRS = ['PK', 'SK', 'GSI1PK', 'GSI1SK'] as const
 
 function isMatchListKey(

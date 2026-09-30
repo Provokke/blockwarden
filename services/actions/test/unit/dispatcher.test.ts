@@ -65,8 +65,8 @@ describe('matches', () => {
     expect(JSON.parse(delivery.payload).data.eventName).toBe('Transfer')
   })
 
-  // compileRule drops an action it would have refused and the lookup hands over what is left, so a rule that is
-  // half valid still delivers its good half and nothing is created for the dropped one
+  // compileRule drops an action it would refuse and lookup hands over the rest, so a half-valid
+  // rule still delivers its good half
   it('delivers the actions a half-valid rule kept, and nothing at all when every action was dropped', async () => {
     const row = matchRow({ status: 'final' })
     const record = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
@@ -87,8 +87,8 @@ describe('matches', () => {
     expect(none.dead).toEqual([])
   })
 
-  // the sender reads whatever parameter the action names and signs the rule's own body with it, so a rule that
-  // could name any parameter in the account is a signing oracle. The outbound queue has always had this check.
+  // the sender reads whatever parameter the action names and signs with it, so a rule that can name
+  // any parameter in the account is a signing oracle
   it('refuses to build a delivery whose action names a secret parameter outside the allowed prefixes', async () => {
     const row = matchRow({ status: 'final' })
     const record = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
@@ -143,7 +143,7 @@ describe('matches', () => {
     await dispatchRecords(d.deps, [record])
     await dispatchRecords(d.deps, [record])
     expect(d.items.size).toBe(1)
-    // the message is sent once: a delivery that already exists is not re-enqueued from the stream
+    // sent once: a delivery that already exists isn't re-enqueued from the stream
     expect(d.sent).toHaveLength(1)
   })
 
@@ -263,7 +263,7 @@ describe('failures', () => {
     const row = matchRow({ status: 'final' })
     const record = streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })
     delete record.dynamodb!.SequenceNumber
-    // an empty identifier is a response Lambda refuses outright, so it must never be one of the shapes we emit
+    // an empty identifier is a response Lambda refuses outright, so we must never emit one
     await expect(dispatchRecords(failing, [record])).rejects.toThrow('ProvisionedThroughputExceededException')
   })
 
@@ -293,7 +293,7 @@ describe('a record no retry can fix', () => {
     const response = await dispatchRecords(d.deps, [poison, good()])
     expect(response.batchItemFailures).toEqual([])
     expect(d.log).toHaveBeenCalledWith('record skipped; nothing about it can succeed', expect.anything(), 'error')
-    // the record behind the poison one still went through, which is the whole point
+    // the record behind the poison one still went through, which is the point
     expect(d.items.size).toBe(1)
   })
 
@@ -342,7 +342,7 @@ describe('the reaper', () => {
     const row = matchRow({ status: 'final' })
     await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
     const [first, second, third] = [...d.items.values()]
-    // the real store merges four shards on the due time, so the sweep always sees the backlog oldest first
+    // the real store merges four shards on due time, so the sweep sees the backlog oldest first
     first!.nextAttemptAt = 300_000
     second!.nextAttemptAt = 100_000
     third!.nextAttemptAt = 200_000
@@ -357,7 +357,8 @@ describe('the reaper', () => {
     const d = deps({ 'rule-1': webhookRule('finalized') })
     const row = matchRow({ status: 'final' })
     await dispatchRecords(d.deps, [streamRecord('INSERT', { PK: row.PK as string, SK: 'META' }, { newImage: row })])
-    // what the sweep read, and then the item moving on underneath it: the version condition refuses the write
+    // what the sweep read, then the item moving on underneath it: the version condition refuses the
+    // write
     const stale = { ...[...d.items.values()][0]! }
     for (const item of d.items.values()) item.version += 1
     const store = { ...d.deps.store, listDuePage: async () => ({ deliveries: [stale] }) }
@@ -385,7 +386,8 @@ describe('the reaper', () => {
         return d.deps.store.listDuePage(nowMs, limit, cursor)
       },
     }
-    // a limit of one puts the second delivery on a second page, which is only reached by feeding the cursor back
+    // a limit of one puts the second delivery on a second page, reached only by feeding the cursor
+    // back
     expect(await sweepDue({ ...d.deps, store }, 121_500, 1)).toEqual({ requeued: 2, dead: 0 })
     expect(cursors).toHaveLength(2)
     expect(cursors[0]).toBeUndefined()
@@ -398,7 +400,7 @@ describe('the reaper', () => {
     let pages = 0
     const store = {
       ...d.deps.store,
-      // a backlog that never drains, which is what the cap is there for: the sweep is on a schedule and has to end
+      // a backlog that never drains: the sweep is scheduled and has to end
       listDuePage: async () => {
         pages++
         return { deliveries: [], cursor: { 0: { page: pages } } }
@@ -418,8 +420,8 @@ describe('the reaper', () => {
     expect(d.sent).toHaveLength(0)
     const item = [...d.items.values()][0]!
     expect(item.status).toBe('dead')
-    // dead has to mean the same on both paths, or a delivery exhausted by crashes dies where the alarm that
-    // watches the dead-letter queue's depth cannot see it
+    // dead has to mean the same on both paths, or a delivery exhausted by crashes dies where the
+    // dead-letter alarm can't see it
     expect(d.dead).toEqual([{ ref: refOf(item), delaySeconds: 0 }])
   })
 
@@ -431,13 +433,13 @@ describe('the reaper', () => {
     d.sent.length = 0
     const flaky = { send: vi.fn().mockRejectedValueOnce(new Error('SQS is unavailable')).mockResolvedValue(undefined) }
 
-    // the copy fails on the first sweep; if markDead had already committed, the delivery would have left the
-    // due index with no pointer in the dead-letter queue, and no later sweep would ever see it again
+    // the copy fails on the first sweep; if markDead had already committed, the delivery would
+    // leave the due index with no pointer in the dead-letter queue
     expect(await sweepDue({ ...d.deps, deadLetters: flaky }, 121_500, 10)).toEqual({ requeued: 0, dead: 0 })
     expect([...d.items.values()][0]!.status).not.toBe('dead')
     expect(d.log).toHaveBeenCalledWith('could not process a due delivery', expect.anything(), 'warn')
 
-    // still due, so the next sweep tries both steps again and this time the copy lands
+    // still due, so the next sweep tries both steps again and the copy lands
     expect(await sweepDue({ ...d.deps, deadLetters: flaky }, 121_500, 10)).toEqual({ requeued: 0, dead: 1 })
     expect([...d.items.values()][0]!.status).toBe('dead')
     expect(flaky.send).toHaveBeenCalledTimes(2)

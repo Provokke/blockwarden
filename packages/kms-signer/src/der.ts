@@ -7,8 +7,8 @@ export class InvalidSignatureError extends Error {
   }
 }
 
-// KMS returns ECDSA signatures as DER: SEQUENCE { INTEGER r, INTEGER s }. Anything looser is refused,
-// because a lenient parser can read a different (r, s) out of a malformed body.
+// KMS returns ECDSA signatures as DER: SEQUENCE { INTEGER r, INTEGER s }. Anything looser is
+// refused, since a lenient parser can read a different (r, s) out of a malformed body.
 export function parseDerSignature(der: Uint8Array): { r: bigint; s: bigint } {
   if (der.length < 8 || der[0] !== 0x30) throw new InvalidSignatureError('expected a DER sequence')
   if (der[1] !== der.length - 2) throw new InvalidSignatureError('DER sequence length does not match the body')

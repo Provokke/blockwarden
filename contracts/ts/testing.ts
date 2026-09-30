@@ -16,8 +16,8 @@ import {
 import { privateKeyToAccount } from 'viem/accounts'
 import { foundry } from 'viem/chains'
 
-// Every value below mirrors script/DemoConfig.sol; test-ts/deploy.test.ts deploys through both and fails if the
-// addresses differ, which is the only thing that would show the two drifting apart.
+// Every value below mirrors script/DemoConfig.sol; test-ts/deploy.test.ts deploys through both and
+// fails if the addresses differ, the only thing that would show them drifting apart.
 export const CREATE2_FACTORY: Address = '0x4e59b44847b379578588920cA78FbF26c0B4956C'
 export const FORWARDER_NAME = 'BlockwardenForwarder'
 export const SALTS = {
@@ -27,7 +27,8 @@ export const SALTS = {
 } as const
 export const DEFAULT_VAULT = { threshold: 100n, topUpAmount: 500n, cooldown: 3600n } as const
 
-// Anvil's first default account; it only exists on a local test chain. It deploys, and it owns the vault.
+// Anvil's first default account; only exists on a local test chain. It deploys, and it owns the
+// vault.
 export const ANVIL_OWNER_KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 
 export type ContractName = 'ERC2771Forwarder' | 'DemoEmitter' | 'TopUpVault'
@@ -92,7 +93,7 @@ export function predictDemoAddresses(params: VaultParams = defaultVaultParams())
   }
 }
 
-// The transaction Deploy.s.sol sends for each contract: the salt followed by the init code, to the factory Anvil
+// The transaction Deploy.s.sol sends for each contract: salt then init code, to the factory Anvil
 // deploys at genesis. An address that already has code is left alone, as the script leaves it.
 export async function deployDemo(
   rpcUrl: string,
@@ -130,8 +131,8 @@ export async function deployDemo(
   }
 }
 
-// EIP-712 types for OpenZeppelin 5.6.1's ERC2771Forwarder. The nonce is signed but is not a field of the request
-// sent to execute, which reads it from the forwarder at execution time.
+// EIP-712 types for OpenZeppelin 5.6.1's ERC2771Forwarder. The nonce is signed but isn't a field of
+// the request sent to execute, which reads it from the forwarder at execution time.
 export const FORWARD_REQUEST_TYPES = {
   ForwardRequest: [
     { name: 'from', type: 'address' },

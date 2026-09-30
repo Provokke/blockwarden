@@ -5,8 +5,8 @@ import {ERC2771Forwarder} from "@openzeppelin/contracts/metatx/ERC2771Forwarder.
 import {CommonBase} from "forge-std/Base.sol";
 import {FORWARDER_NAME} from "../../script/DemoConfig.sol";
 
-/// @notice Signs forward requests the way a wallet does, from the domain written out here rather than the one the
-/// forwarder reports, so a forwarder deployed under the wrong name fails these tests instead of agreeing with them.
+/// @notice Signs forward requests like a wallet does, from the domain written out here rather than
+/// the one the forwarder reports, so a forwarder deployed under the wrong name fails these tests.
 abstract contract ForwardRequests is CommonBase {
     bytes32 private constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");

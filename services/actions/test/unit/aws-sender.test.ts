@@ -115,7 +115,7 @@ describe('sendSqs', () => {
     const outcome = await sendSqs(deps(send, [crossRegion]), delivery({ channel: 'sqs', queueArn: crossRegion }))
     expect(outcome).toMatchObject({ kind: 'permanent' })
     expect(outcome.kind === 'permanent' && outcome.error).toContain('another region')
-    // proves this goes through the sender, not just the helper: nothing was ever sent
+    // proves this goes through the sender, not just the helper: nothing was sent
     expect(send).not.toHaveBeenCalled()
   })
 
@@ -139,7 +139,7 @@ describe('sendSqs', () => {
       throw new SQSServiceException({ name: 'RequestThrottled', $fault: 'client', $metadata: {} })
     })
     expect((await sendSqs(deps(throttled), delivery({ channel: 'sqs', queueArn: QUEUE }))).kind).toBe('retry')
-    // the shared, unmodeled name every AWS API's auth layer answers a denied policy with
+    // the shared, unmodeled name every AWS API's auth layer uses for a denied policy
     const denied = vi.fn(async () => {
       throw new SQSServiceException({ name: 'AccessDeniedException', $fault: 'client', $metadata: {} })
     })

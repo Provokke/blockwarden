@@ -10,8 +10,8 @@ import { BASE_DIRECTIVES, POLICY_LIMIT, assertFits, buildPolicy, collect } from 
 const SCRIPT = fileURLToPath(new URL('../scripts/csp-hashes.mjs', import.meta.url))
 const TERRAFORM = fileURLToPath(new URL('../../../infra/terraform/', import.meta.url))
 
-// The expected hashes are literals, computed with a different tool: printf '<content>' | openssl dgst -sha256
-// -binary | openssl base64. None of them comes from the code under test.
+// The expected hashes are literals computed with a different tool (printf '<content>' | openssl
+// dgst -sha256 -binary | openssl base64), so none comes from the code under test.
 const HASH_OF_SIMPLE = 'sha256-lyTN6OpbNBmA84UPafLhT+mqPgMl6Zh8SXt5ZSZ/s1g=' // window.__x = 1;
 const HASH_OF_PADDED = 'sha256-829G1b/jnY3cTLxS5Es0/1BjdhmZWwB2IJqt0Kez49E=' // "\n  self.__next_f = [];\n"
 const HASH_OF_JSON = 'sha256-AVq9f1zFei3ZS3WQ8ErYCEJzkF7jPsXOvq5iJ2qX+GI=' // {"a":1}
@@ -191,8 +191,8 @@ describe('--check', () => {
     expect(cli.stderr).toContain(`1 script hashes, policy ${buildPolicy([HASH_OF_SIMPLE]).length} of ${POLICY_LIMIT}`)
   })
 
-  // hashes are fixed width, so no export lands exactly on the limit; the boundary is checked on the function the
-  // command uses
+  // hashes are fixed width, so no export lands exactly on the limit; check the boundary on the
+  // function the command uses
   it('passes a policy of exactly the limit and fails one character more', () => {
     expect(() => assertFits('x'.repeat(POLICY_LIMIT), 3)).not.toThrow()
     expect(() => assertFits('x'.repeat(POLICY_LIMIT + 1), 3)).toThrow(
@@ -263,7 +263,7 @@ describe('the Terraform policy', () => {
     const apiObject = block(blockwardenVariables, /variable "api" \{/)
     expect(api).toMatch(check)
     expect(demo).toMatch(check)
-    // the object's own validation sits in the api variable's block, and names the field it checks
+    // the object's own validation sits in the api variable's block and names the field it checks
     expect(apiObject).toMatch(check)
     expect(apiObject).toContain('var.api.site_script_hashes')
     expect(apiObject).toMatch(/site_script_hashes\s*=\s*optional\(list\(string\), \[\]\)/)

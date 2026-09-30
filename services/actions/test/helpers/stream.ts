@@ -7,8 +7,8 @@ import {
 import { DescribeTableCommand, type DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import type { DynamoDBRecord } from 'aws-lambda'
 
-// DynamoDB Local serves the Streams API on the same endpoint as the table, and re-reading from TRIM_HORIZON
-// returns the whole history every time, so the reader keeps its own position by sequence number
+// DynamoDB Local serves Streams on the same endpoint as the table, and re-reading from TRIM_HORIZON
+// returns the whole history, so the reader tracks its own position by sequence number
 export async function streamReader(client: DynamoDBClient, endpoint: string, tableName: string) {
   const streams = new DynamoDBStreamsClient({
     endpoint,
@@ -41,9 +41,8 @@ export async function streamReader(client: DynamoDBClient, endpoint: string, tab
             seen.add(id)
             fresh.push(record as unknown as DynamoDBRecord)
           }
-          // an empty page is the end of the shard for DynamoDB Local, which is what makes a read here finite.
-          // Real DynamoDB returns empty pages on a live shard as well, so a reader against it stops on a null
-          // NextShardIterator (a closed shard) and keeps polling otherwise.
+          // An empty page ends the shard on DynamoDB Local, which keeps reads finite. Real DynamoDB
+          // also returns empty pages on a live shard, so stop on a null NextShardIterator there.
           if ((page.Records ?? []).length === 0) break
           iterator = page.NextShardIterator
         }

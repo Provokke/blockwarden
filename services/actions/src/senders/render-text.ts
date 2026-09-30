@@ -1,14 +1,14 @@
 import { truncate } from '../records.js'
 
-// A person reads these. The bytes that were signed are the JSON payload; this is a rendering of it, and it is
-// deliberately not parsed back by anything.
+// A person reads these. The signed bytes are the JSON payload; this is just a rendering and nothing
+// parses it back.
 const MAX_TEXT = 4_096
-// no single value gets to fill the body: a transaction carries its calldata, and the hash and the receipt
-// status are what the message exists to deliver
+// no single value gets to fill the body: a tx carries its calldata, but the hash and receipt status
+// are the point
 const MAX_VALUE = 256
-// a subject is one header line, and nobody reads a kilobyte of it
+// a subject is one header line, nobody reads a kilobyte of it
 const MAX_SUBJECT = 200
-// what a person looks for first, so a bulky field further down cannot push these off the end
+// what a person looks for first, so a bulky field further down can't push these off the end
 const SUMMARY_FIRST = [
   'eventName',
   'status',
@@ -29,7 +29,7 @@ export function summarise(payload: string): { subject: string; text: string; htm
   const chainId = data.chainId ?? 'unknown'
   const head = type.startsWith('match.') ? `${data.eventName ?? 'event'}` : type
   const state = String((type.startsWith('match.') ? (data.status ?? type) : (data.receiptStatus ?? data.status)) ?? '')
-  // a transaction that has neither status would otherwise end in an empty pair of brackets
+  // a tx with neither status would otherwise end in an empty pair of brackets
   const subject = subjectLine(`Blockwarden: ${head} on chain ${chainId}${state ? ` (${state})` : ''}`)
   const lines = [`${type}  ${event.createdAt ?? ''}`, `delivery ${event.id ?? ''}`, '', ...describe(summaryFirst(data))]
   const text = capText(lines.join('\n'))
@@ -37,12 +37,12 @@ export function summarise(payload: string): { subject: string; text: string; htm
   return { subject, text, html }
 }
 
-// a caller writes one of these too, so it gets what the generated one gets: one line, and an end to it
+// a caller writes one of these too, so it gets one line and an end to it
 export function subjectLine(raw: string): string {
   return truncate(raw.replace(/\s+/g, ' ').trim(), MAX_SUBJECT)
 }
 
-// stable, so everything the list does not name keeps the order the payload had
+// stable, so anything the list doesn't name keeps the payload's order
 function summaryFirst(data: unknown): unknown {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return data
   const rank = (key: string) => (SUMMARY_FIRST.includes(key) ? SUMMARY_FIRST.indexOf(key) : SUMMARY_FIRST.length)
@@ -59,13 +59,14 @@ function describe(value: unknown, prefix = ''): string[] {
   )
 }
 
-// a newline inside a value starts a line of its own, and a line of its own reads exactly like a field we
-// rendered. Decoded arguments are chain data and a reference is caller text, so neither is ours to trust.
+// a newline inside a value starts a line that reads exactly like a field we rendered. Decoded args
+// are chain data and a reference is caller text, so don't trust either.
 function oneLine(value: unknown): string {
   return truncate(String(value).replace(/[\r\n]+/g, ' '), MAX_VALUE)
 }
 
-// slice() would cut a surrogate pair in half; truncate() backs off, and its ellipsis has to fit under the cap
+// slice() would cut a surrogate pair; truncate() backs off, and its ellipsis has to fit under the
+// cap
 function capText(text: string): string {
   return text.length <= MAX_TEXT ? text : truncate(text, MAX_TEXT - 3)
 }

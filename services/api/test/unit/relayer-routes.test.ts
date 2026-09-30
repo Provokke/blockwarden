@@ -21,7 +21,8 @@ function pendingTx(chainId: number, n: number, signerId: string): StoredTx {
 // a page key shaped like the one the real store returns for a pending-tx query (relayer-routes.ts's
 // TX_LIST_KEY_ATTRS: PK, SK, GSI2PK as strings, GSI2SK a number), so this fake exercises the same cursor
 // shape-and-value check the real store's key would have to pass (matches.test.ts's pageKey does the same for
-// matches, deliveries.test.ts's for deliveries). `order` stands in for the real GSI2SK (createdAt epoch ms) -
+// matches, deliveries.test.ts's for deliveries). `order` stands in for the real GSI2SK (createdAt
+// epoch ms),
 // only its relative ordering matters to this fake, not its absolute value.
 function pendingKey(chainId: number, tx: StoredTx, order: number): Record<string, unknown> {
   return { PK: `TX#${tx.txId}`, SK: 'META', GSI2PK: `TXPENDING#${chainId}`, GSI2SK: order }
@@ -184,7 +185,8 @@ describe('handleListTxs', () => {
 
   it('carries the reduced budget into the next chain within one request, not the full page size again', async () => {
     // chain 8453 exhausts under the limit (1 of 1, no cursor) so the ordinary loop continues into 42161 within
-    // this same call - proving `limit - txs.length` reaches the second chain's own store call, not `limit`
+    // this same call, which proves `limit - txs.length` reaches the second chain's own store call,
+    // not `limit`
     // again, which would let it hand back more rows than this page was ever asked for
     const d = deps({
       8453: [pendingTx(8453, 1, 'demo')],
@@ -220,7 +222,8 @@ describe('handleListTxs', () => {
   })
 
   it('refuses a cursor whose key names a different chains partition than the one it claims to resume', async () => {
-    // shaped exactly right - PK/SK/GSI2PK strings, GSI2SK a number - but GSI2PK is another chain's partition
+    // shaped exactly right (PK/SK/GSI2PK strings, GSI2SK a number) but GSI2PK is another chain's
+    // partition
     // while the envelope's own chainId is the one this listing is walking (84532 is what the integration test
     // walks; here it stands in as "a chain this deployment relays on")
     const forged = encodeCursor({

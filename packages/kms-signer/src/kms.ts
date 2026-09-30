@@ -36,7 +36,7 @@ export function kmsDigestSigner({ keyId, region, client }: KmsAccountOptions): D
   }
 }
 
-// one GetPublicKey call to learn the address; every signature after that is one Sign call
+// one GetPublicKey call to learn the address; every signature after is one Sign call
 export async function toKmsAccount(options: KmsAccountOptions): Promise<KmsAccount> {
   return toDigestSignerAccount(kmsDigestSigner(options))
 }

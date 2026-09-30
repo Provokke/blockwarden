@@ -103,7 +103,7 @@ describe('monitor handler end to end', () => {
     const { blockNumber } = await anvil.ping(emitter, 50n)
     expect((await handler(undefined)).provisional).toBe(1)
 
-    // anvil_reorg with no transactions removes the ping for good; it is never re-mined.
+    // anvil_reorg with no transactions removes the ping for good; it's never re-mined.
     await anvil.reorg(1)
     await anvil.mine(64 + 64 + 1)
 

@@ -124,7 +124,7 @@ describe('Rules', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Load more' }))
     await waitFor(() => expect(rowsOf(screen.getByRole('table'))).toHaveLength(5))
-    // the last page carried no cursor, so there is nothing more to ask for
+    // the last page carried no cursor, so there's nothing more to ask for
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
   })
 
@@ -273,7 +273,8 @@ describe('Deliveries', () => {
   let store: typeof DEAD
   beforeEach(() => {
     store = DEAD.map((d) => ({ ...d }))
-    // the API's own rules: only dead rows are listed, the ref has to be the row's, and a row that is not dead is a 409
+    // the API's own rules: only dead rows are listed, the ref has to be the row's, and a row that
+    // isn't dead is a 409
     handler = (call) => {
       if (call.method === 'GET' && call.path === '/v1/deliveries') {
         if (call.query.get('status') !== 'dead')

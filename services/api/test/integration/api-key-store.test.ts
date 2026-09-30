@@ -22,7 +22,7 @@ afterAll(async () => {
 })
 
 // exactly the attributes infra/terraform/modules/relayer/signers.tf's aws_dynamodb_table_item.api_key
-// writes: PK, SK, signerIds, label - no hash attribute, no createdAt
+// writes: PK, SK, signerIds, label. No hash attribute, no createdAt
 async function putTerraformApiKey(hash: string, signerIds: string[], label: string): Promise<void> {
   await dynamo.doc.send(
     new PutCommand({ TableName: table, Item: { PK: `APIKEY#${hash}`, SK: 'META', signerIds, label } }),

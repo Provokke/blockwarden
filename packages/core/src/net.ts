@@ -2,9 +2,9 @@ import { isIP } from 'node:net'
 
 export type AddressVerdict = { allowed: true } | { allowed: false; reason: string }
 
-// RFC 1918, loopback, link-local (the instance metadata endpoint lives at 169.254.169.254), carrier-grade NAT,
-// IETF protocol assignments, documentation, the 6to4 relay anycast prefix, benchmarking, multicast and the
-// reserved space above it
+// RFC 1918, loopback, link-local (instance metadata lives at 169.254.169.254), carrier-grade NAT,
+// IETF protocol assignments, documentation, the 6to4 relay anycast prefix, benchmarking, multicast
+// and the reserved space above it
 export const PRIVATE_V4_RANGES = [
   ['0.0.0.0', 8],
   ['10.0.0.0', 8],
@@ -34,8 +34,8 @@ function inRange(address: string, base: string, bits: number): boolean {
   return (toInt(address) & mask) >>> 0 === (toInt(base) & mask) >>> 0
 }
 
-// Every group is two bytes, except a trailing dotted quad, which is four and stands for two groups. Getting that
-// wrong leaves ::ffff:127.0.0.1 eighteen bytes long and unclassified.
+// Every group is two bytes except a trailing dotted quad, which is four (two groups). Get that
+// wrong and ::ffff:127.0.0.1 is eighteen bytes and unclassified.
 function toBytes(address: string): number[] {
   const zone = address.indexOf('%')
   const text = zone === -1 ? address : address.slice(0, zone)
@@ -70,9 +70,10 @@ export function classifyAddress(address: string): AddressVerdict {
   const bytes = toBytes(address)
   if (bytes.length !== 16) return { allowed: false, reason: 'the address is not an IP address' }
   const zeros = (n: number) => bytes.slice(0, n).every((b) => b === 0)
-  // ::ffff:a.b.c.d is an ordinary IPv4 address wearing an IPv6 spelling, so it is judged as one
+  // ::ffff:a.b.c.d is an IPv4 address in IPv6 clothes, so judge it as one
   if (zeros(10) && bytes[10] === 0xff && bytes[11] === 0xff) return classifyAddress(bytes.slice(12).join('.'))
-  // everything else in ::/64 is ::, ::1 or one of the deprecated embeddings, all of which reach a local network
+  // everything else in ::/64 is ::, ::1 or a deprecated embedding, all of which reach a local
+  // network
   if (zeros(8)) return { allowed: false, reason: 'the address is inside ::/64' }
   const [a = 0, b = 0, c = 0, d = 0] = bytes
   if (a === 0x00 && b === 0x64 && c === 0xff && d === 0x9b) {
@@ -92,13 +93,13 @@ export function classifyAddress(address: string): AddressVerdict {
   return { allowed: true }
 }
 
-// how much of the first path level is worth printing: enough to tell /services from /api, never a whole
-// path segment that could be a token
+// how much of the first path level is worth printing: enough to tell /services from /api, never a
+// whole segment that could be a token
 const PATH_SHOWN = 12
 
-// A webhook URL is the credential: for a Discord or Slack hook the path is the secret, and an operator's
-// terminal, shell history and screenshots are not where it belongs. Enough here to recognise the destination,
-// not enough to send to it - the same rule senders/telegram.ts keeps for the token in its path.
+// A webhook URL is the credential (for Discord or Slack the path is the secret), and terminals,
+// shell history and screenshots aren't where it belongs. Print enough to recognise the destination,
+// not enough to send to it. senders/telegram.ts does the same for its token.
 export function redactedUrl(raw: string): string {
   let url: URL
   try {
@@ -124,7 +125,8 @@ export function checkDestinationUrl(raw: string): { ok: true; url: URL } | { ok:
   if (url.username !== '' || url.password !== '') {
     return { ok: false, reason: 'the URL must not carry a username or a password' }
   }
-  // a client turns port 0 back into 443 without saying so, so the URL would not name the port it reaches
+  // a client turns port 0 back into 443 without saying so, so the URL wouldn't name the port it
+  // reaches
   if (url.port === '0') return { ok: false, reason: 'the URL must not use port 0' }
   // URL normalises 0x7f.1, 127.1 and 2130706433 to 127.0.0.1, so one check covers every spelling
   const host = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname

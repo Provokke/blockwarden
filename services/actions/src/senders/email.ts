@@ -3,9 +3,9 @@ import { truncate } from '../records.js'
 import { subjectLine, summarise } from './render-text.js'
 import type { Sender } from './types.js'
 
-// SES refuses these for good, so a retry only burns attempts. NotFoundException is deliberately not here: the
-// only resource SendEmail names is the configuration set, and one that Terraform has not created yet is a
-// deploy window, not a dead message.
+// SES refuses these for good, so a retry only burns attempts. NotFoundException isn't here: the
+// only resource named is the configuration set, and one Terraform hasn't created yet is a deploy
+// window.
 const PERMANENT = new Set([
   'MessageRejected',
   'MailFromDomainNotVerifiedException',
@@ -26,7 +26,7 @@ export const sendEmail: Sender = async (deps, delivery) => {
         Destination: { ToAddresses: delivery.target.to },
         Content: {
           Simple: {
-            // a caller writes this one, so it is folded onto one line like the generated one
+            // a caller writes this one, so fold it onto one line like the generated one
             Subject: {
               Data: delivery.target.subject ? subjectLine(delivery.target.subject) : subject,
               Charset: 'UTF-8',
@@ -37,13 +37,13 @@ export const sendEmail: Sender = async (deps, delivery) => {
         ...(deps.configurationSet ? { ConfigurationSetName: deps.configurationSet } : {}),
       }),
     )
-    // SES's own id is the only handle on the message once it has left us, so it goes in the log
+    // SES's id is the only handle on the message once it's gone, so log it
     deps.log('SES accepted an email', { deliveryId: delivery.deliveryId, messageId: answer.MessageId })
     return { kind: 'delivered' }
   } catch (err) {
     const name = (err as Error).name
     const message = truncate(`SES refused the message (${name}): ${(err as Error).message}`)
-    // throttling and a 5xx are worth another attempt; a rejected address is not
+    // throttling and 5xx are worth another go; a rejected address isn't
     return PERMANENT.has(name) ? { kind: 'permanent', error: message } : { kind: 'retry', error: message }
   }
 }

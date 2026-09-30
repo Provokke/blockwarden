@@ -26,8 +26,8 @@ function formatAge(seconds: number): string {
 type ChainRow = { chainId: number; health: ChainHealth | null }
 type QueueRow = { name: string; health: QueueHealth | null }
 
-// A chain the monitor has not started reports nulls; a chain whose read failed reports null altogether. They
-// are different states and read differently.
+// A chain the monitor hasn't started reports nulls; a chain whose read failed reports null
+// altogether. Different states, read differently.
 const CHAIN_COLUMNS: Column<ChainRow>[] = [
   { header: 'Chain', cell: (row) => chainName(row.chainId) },
   { header: 'Durable block', cell: (row) => (row.health ? (row.health.durableBlock ?? NOT_STARTED) : UNAVAILABLE) },
@@ -38,7 +38,7 @@ const CHAIN_COLUMNS: Column<ChainRow>[] = [
     cell: (row) =>
       row.health
         ? row.health.cursorAgeSeconds === null
-          ? // the row exists but carries no readable write time: not the same as a monitor that never ran
+          ? // the row exists but has no readable write time: not the same as a monitor that never ran
             row.health.durableBlock !== null || row.health.fastBlock !== null
             ? 'unknown'
             : NOT_STARTED

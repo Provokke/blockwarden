@@ -12,7 +12,7 @@ import type {
 import { isSignersBody, isTxBody } from './validate.js'
 
 export type RelayerClientOptions = {
-  // the API root, for example https://abc123.execute-api.us-east-1.amazonaws.com, without /v1
+  // the API root, e.g. https://abc123.execute-api.us-east-1.amazonaws.com, without /v1
   baseUrl: string
   apiKey: string
   fetch?: typeof globalThis.fetch
@@ -35,8 +35,8 @@ export class RelayerApiError extends Error {
   }
 }
 
-// A repeated call with the same idempotencyKey returns the original transaction, so a caller that timed out can
-// call again safely. A request that differs from the original under the same key is refused with 409.
+// A repeated call with the same idempotencyKey returns the original transaction, so a caller that
+// timed out can call again safely. A different request under the same key is refused with 409.
 export async function relay(options: RelayerClientOptions, request: RelayRequest): Promise<RelayerTx> {
   const body: RelayRequestBody = {
     signerId: request.signerId,
@@ -98,7 +98,7 @@ async function call<T>(
   if (status < 200 || status > 299) {
     const error = (parsed as Partial<ApiErrorBody> | undefined)?.error
     if (typeof error?.code === 'string' && typeof error.message === 'string') throw new RelayerApiError(status, error)
-    // API Gateway answers its own refusals, such as throttling, with only a message
+    // API Gateway answers its own refusals, like throttling, with only a message
     const gateway = (parsed as { message?: unknown } | undefined)?.message
     throw new RelayerApiError(status, {
       code: status === 429 ? 'throttled' : 'http_error',

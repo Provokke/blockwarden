@@ -19,14 +19,13 @@ export type Lookup = {
   signer(signerId: string): Promise<SignerView | undefined>
 }
 
-// A rule or a signer changes far less often than a match arrives, and a warm container would otherwise read
-// the same item for every delivery. A minute is short enough that an edited rule takes effect while an operator
-// is still watching, and long enough to cost nothing.
+// Rules and signers change far less often than matches arrive. A minute is short enough that an
+// edit takes effect while someone's watching.
 const DEFAULT_TTL_MS = 60_000
 
 type Entry<T> = { value: T | undefined; readAt: number }
 
-// a rule that cannot be read is skipped, the same as one that no longer compiles; polling goes on for the rest
+// a rule that can't be read is skipped, same as one that no longer compiles
 function parseInput(value: unknown): unknown {
   if (typeof value !== 'string') return undefined
   try {
@@ -76,8 +75,8 @@ export function createLookup(
         }
         try {
           const compiled = compileRule(ruleId, input)
-          // compiled.actions, not input.actions: an action compileRule dropped is one the sender could not
-          // deliver anyway, and a rule stored before milestone 3 has no actions key at all
+          // compiled.actions, not input.actions: a dropped action couldn't be delivered anyway, and
+          // older rules have no actions key
           if (compiled.warnings.length > 0) {
             const warnings = compiled.warnings.map((w) => `${w.path}: ${w.message}`).join('; ')
             log('part of a rule was dropped; the rest of it still delivers', { ruleId, warnings }, 'warn')
@@ -90,7 +89,8 @@ export function createLookup(
             actions: compiled.actions.map((action) => ({ actionId: actionId(action), action })),
           }
         } catch (err) {
-          // the monitor skips a rule that no longer compiles and keeps polling; the dispatcher does the same
+          // the monitor skips a rule that no longer compiles and keeps polling; so does the
+          // dispatcher
           const message = err instanceof RuleValidationError ? err.message : 'rule could not be read'
           log('rule skipped', { ruleId, error: message }, 'warn')
           return undefined

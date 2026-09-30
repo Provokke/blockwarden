@@ -1,7 +1,6 @@
 export type ApiIssue = { path: string; message: string }
 
-// the envelope services/api/src/http.ts writes; declared here rather than imported so the browser bundle
-// takes no dependency on server packages
+// the envelope services/api/src/http.ts writes; declared here, not imported, so the browser bundle doesn't depend on server packages
 type ErrorEnvelope = { code: string; message: string; issues?: ApiIssue[] }
 
 export class ApiError extends Error {
@@ -18,8 +17,8 @@ export class ApiError extends Error {
 
 export type ApiInit = { method?: string; body?: unknown }
 
-// Paths are relative on purpose: the origin is whatever served the page, which is what keeps the session
-// cookie same-site. An absolute URL would send it (credentials: 'include') somewhere else.
+// Paths are relative on purpose: the origin is whatever served the page, which keeps the session
+// cookie same-site. An absolute URL would send it (credentials: 'include') elsewhere.
 export async function apiFetch<T = unknown>(path: string, init: ApiInit = {}): Promise<T> {
   // every API path is under /v1/; browsers treat a backslash as a slash, so '/\evil.example' would leave the origin
   if (!path.startsWith('/v1/')) throw new Error(`apiFetch takes a /v1/ path, got ${path}`)
@@ -36,7 +35,7 @@ export async function apiFetch<T = unknown>(path: string, init: ApiInit = {}): P
     try {
       return (await res.json()) as T
     } catch {
-      // a 200 that is not JSON is a misrouted path answering with the site's HTML, not a parse crash
+      // a 200 that isn't JSON is a misrouted path answering with the site's HTML, not a parse crash
       throw new ApiError(res.status, 'bad_response', `the API answered ${res.status} with a body that is not JSON`)
     }
   }

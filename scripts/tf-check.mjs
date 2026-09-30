@@ -1,13 +1,14 @@
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 
-// only infra/terraform is mounted, not the Lambda bundle the module zips, so plan and apply are not supported here
+// only infra/terraform is mounted, not the Lambda bundle the module zips, so plan and apply aren't
+// supported here
 const tf = resolve('infra/terraform')
 const terraform = 'hashicorp/terraform:1.16.2'
 const tflint = 'ghcr.io/terraform-linters/tflint:v0.64.0'
 const checkov = 'bridgecrew/checkov:3.3.17'
 
-// terraform writes .terraform/ into the mounted tree, which would otherwise be owned by root on Linux
+// terraform writes .terraform/ into the mounted tree, which would be owned by root on Linux
 const asCaller =
   process.platform !== 'win32' && typeof process.getuid === 'function' && typeof process.getgid === 'function'
     ? ['--user', `${process.getuid()}:${process.getgid()}`]
@@ -20,7 +21,7 @@ function run(label, args) {
 }
 
 run('terraform fmt', [...asCaller, '-w', '/tf', terraform, 'fmt', '-check', '-recursive'])
-// the demo stack uses every module; each example deploys one slice alone, with its defaults
+// the demo stack uses every module, and each example deploys one slice on its own with its defaults
 for (const root of ['envs/demo', 'examples/relayer-only', 'examples/monitor-actions-only']) {
   run(`terraform init ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'init', '-backend=false', '-input=false'])
   run(`terraform validate ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'validate'])

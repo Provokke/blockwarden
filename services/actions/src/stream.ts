@@ -13,8 +13,8 @@ export type StreamChange = {
   newImage?: Row
 }
 
-// aws-lambda's AttributeValue is the same shape written as an exclusive union, which is why the cast is here
-// and nowhere else
+// aws-lambda's AttributeValue is the same shape as an exclusive union, hence the cast here and
+// nowhere else
 type Image = Record<string, AttributeValue>
 
 function toRow(image: unknown): Row | undefined {
@@ -35,10 +35,10 @@ export function readRecord(record: DynamoDBRecord): StreamChange | undefined {
   }
 }
 
-// unmarshall returns a bigint for a number above 2^53 and a Set for a string or number set, and JSON.stringify
-// throws on the first and writes {} for the second. A plain number is an argument viem decoded from an integer
-// of 48 bits or fewer, and the published schema says every integer in a decoded argument is a decimal string,
-// so toDecodedValue makes one wire form of it here instead of letting two reach a receiver.
+// unmarshall returns a bigint above 2^53 and a Set for string/number sets; JSON.stringify throws on
+// the first and writes {} for the second. A plain number is an argument viem decoded from an
+// integer of 48 bits or fewer, and the schema says those are decimal strings, so toDecodedValue
+// makes one wire form of it.
 export function jsonSafe(value: unknown): unknown {
   if (typeof value === 'bigint' || typeof value === 'number') return toDecodedValue(value)
   if (value instanceof Set) return [...value].map(jsonSafe)

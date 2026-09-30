@@ -19,33 +19,30 @@ import { readRecord } from './stream.js'
 import { REAPER_GRACE_MS, type DeliveryStore, type DueCursor } from './store.js'
 
 export const MAX_ATTEMPTS = 8
-// how long a claim holds a delivery before the reaper treats the sender as gone; twice the sender's own timeout
+// how long a claim holds before the reaper treats the sender as gone (twice the sender's timeout)
 export const CLAIM_LEASE_MS = 120_000
-// one sweep reads at most this many pages, so a scheduled run always ends
+// one sweep reads at most this many pages so it always ends
 export const MAX_SWEEP_PAGES = 10
-// the grace the reaper waits past a due time lives with the store, which queues deliveries out by the same one
 export { REAPER_GRACE_MS }
 
-// only the store methods the dispatcher uses. The real DeliveryStore still satisfies it, and a test fake is
-// then a plain object rather than a cast that hides every way the fake has drifted from the store.
+// only the store methods the dispatcher uses, so a test fake is a plain object, not a cast
 export type DispatcherStore = Pick<DeliveryStore, 'create' | 'markQueued' | 'markDead' | 'listDuePage'>
 
 export type DispatcherDeps = {
   store: DispatcherStore
   lookup: Lookup
   queue: DeliveryQueue
-  // the reaper kills a delivery too, and dead has to mean the same thing whichever path got there
+  // the reaper kills deliveries too, so dead has to mean the same on both paths
   deadLetters: DeliveryQueue
   now: () => Date
   log: Log
-  // Terraform's list, its own rather than the outbound one; the sender's IAM policy grants the same paths
+  // Terraform's list; the sender's IAM policy grants the same paths
   ruleSecretPrefixes: readonly string[]
 }
 
-// The sender reads whatever parameter a webhook action names and signs the delivery's body with it. Without a
-// list, a rule could name another party's secret, sign a body of its own choosing with it and post the result
-// anywhere: a signing oracle. The outbound queue checks the same thing about the same kind of name; the lists
-// are separate so that granting a rule's secret does not widen what an outbound caller may name.
+// The sender reads whatever parameter a webhook action names and signs with it. Without a list a
+// rule could name another party's secret and use us as a signing oracle. Separate from the outbound
+// list so granting a rule's secret doesn't widen outbound.
 function namesAnAllowedSecret(deps: DispatcherDeps, action: ActionInput): boolean {
   if (action.type !== 'webhook' || action.secretParameter === undefined) return true
   return underAnyPrefix(deps.ruleSecretPrefixes, action.secretParameter)
@@ -92,7 +89,8 @@ async function plan(deps: DispatcherDeps, change: Change): Promise<NewDelivery[]
       deps.log('no rule for match', { matchKey: change.matchKey, ruleId: change.ruleId }, 'warn')
       return []
     }
-    // a provisional alert and its drop notice belong to a fast rule; a finalized rule hears only the final record
+    // a provisional alert and its drop notice belong to a fast rule; a finalised rule only hears
+    // the final record
     if (change.event !== 'match.final' && rule.mode !== 'fast') return []
     const data = matchEventData(change.row, rule)
     return rule.actions.flatMap((entry) => {
@@ -148,9 +146,9 @@ async function plan(deps: DispatcherDeps, change: Change): Promise<NewDelivery[]
   })
 }
 
-// A throw that is a property of the record itself: the same bytes and the same sequence number come back on
-// every delivery of it, so reporting it back would stall every later record on this ordered shard for the
-// stream's whole 24-hour retention. Everything else - DynamoDB, SQS - might pass next time and is reported.
+// A throw that's a property of the record itself comes back identical every time, so reporting it
+// would stall the shard for the stream's whole retention. Anything else (DynamoDB, SQS) might pass
+// next time and is reported.
 function poison(err: unknown): string | undefined {
   if (err instanceof DeliverySeqRangeError) return `sequence number ${err.seq} is past the width of the sort key`
   if (err instanceof PayloadTooLargeError) return `payload of ${err.bytes} bytes is over the size cap`
@@ -165,8 +163,7 @@ export async function dispatchRecords(deps: DispatcherDeps, records: DynamoDBRec
       for (const item of changesFor(change)) {
         for (const delivery of await plan(deps, item)) {
           const created = await deps.store.create(delivery, deps.now())
-          // already created by an earlier delivery of this record; its message was sent then, and the reaper
-          // covers the case where it was not
+          // already created by an earlier delivery; the reaper covers a message that never went out
           if (!created) continue
           await deps.queue.send(refOf(created), 0)
           await deps.store.markQueued(created, deps.now().getTime())
@@ -175,9 +172,8 @@ export async function dispatchRecords(deps: DispatcherDeps, records: DynamoDBRec
     } catch (err) {
       const reason = poison(err)
       if (reason) {
-        // Logged and skipped, never retried. Nothing was written for it - create() refuses the oversized
-        // payload before it puts anything, and the range error happens before there is a sort key to write
-        // under at all - so there is no item here to mark dead; the log line is the record of it.
+        // Logged and skipped, never retried. Nothing was written (oversized payloads are refused
+        // before the put), so there's no item to mark dead.
         deps.log(
           'record skipped; nothing about it can succeed',
           {
@@ -191,16 +187,16 @@ export async function dispatchRecords(deps: DispatcherDeps, records: DynamoDBRec
         )
         continue
       }
-      // Lambda checkpoints at the lowest sequence number returned and retries from there, so reporting this one
-      // and stopping is the same as reporting the rest too
+      // Lambda retries from the lowest sequence number returned, so reporting this one and stopping
+      // is the same as reporting the rest
       deps.log(
         'dispatch failed; the stream will deliver this record again',
         { sequenceNumber: record.dynamodb?.SequenceNumber, error: (err as Error).message },
         'error',
       )
       const itemIdentifier = record.dynamodb?.SequenceNumber
-      // Lambda rejects a partial-batch response holding an empty identifier and retries the whole batch; a
-      // record with no sequence number cannot be named, so say that outright rather than send a shape it refuses
+      // Lambda rejects an empty identifier and retries the whole batch, so say outright that this
+      // record can't be named
       if (!itemIdentifier) throw err
       return { batchItemFailures: [{ itemIdentifier }] }
     }
@@ -216,17 +212,15 @@ export async function sweepDue(
   let requeued = 0
   let dead = 0
   let cursor: DueCursor | undefined
-  // page through the backlog: a delivery the sweep keeps failing on must not hide everything behind it
+  // page through the backlog so a delivery that keeps failing can't hide the rest
   for (let page = 0; page < MAX_SWEEP_PAGES; page++) {
     const due = await deps.store.listDuePage(nowMs - REAPER_GRACE_MS, limit, cursor)
     for (const delivery of due.deliveries) {
       try {
         if (delivery.attempts >= MAX_ATTEMPTS) {
-          // Send the copy before marking the delivery dead - the other way round from the sender's own path.
-          // markDead drops the delivery from the due index, and once that commits nothing brings the delivery
-          // back if the copy then fails to land. Sending first means a failed copy leaves the delivery due and
-          // otherwise untouched, so the next sweep tries both steps again; a duplicate copy that does land costs
-          // nothing (the alarm only watches the dead-letter queue's depth), but a missing one costs the alarm.
+          // Send the copy before marking dead, the opposite of the sender's path. markDead drops it
+          // from the due index, so a failed copy afterwards would never retry. Copy first and a
+          // failure leaves it due for the next sweep; a duplicate is harmless.
           await deps.deadLetters.send(refOf(delivery), 0)
           await deps.store.markDead(delivery, nowMs, 'every attempt was used and no sender finished it')
           dead++
@@ -236,8 +230,8 @@ export async function sweepDue(
         await deps.queue.send(refOf(queued), 0)
         requeued++
       } catch (err) {
-        // one delivery's conflict is another sender working on it; a dead-letter copy that hasn't landed yet
-        // leaves the delivery due and unchanged either way, so the sweep just moves on and tries again next time
+        // another sender is on it, or the copy hasn't landed; either way it stays due and the sweep
+        // retries next time
         deps.log(
           'could not process a due delivery',
           { deliveryId: delivery.deliveryId, error: (err as Error).message },

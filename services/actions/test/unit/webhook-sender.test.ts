@@ -44,8 +44,8 @@ const deps = (answer: HttpAnswer | Error, secrets = ['s1']) => {
       return answer
     },
   )
-  // both fakes record what they were asked for, so a test can prove which parameter and which URL the sender
-  // actually passed rather than only that it passed something
+  // both fakes record what they were asked for, so a test proves which parameter and URL the sender
+  // actually passed
   const asked: string[] = []
   const resolve = vi.fn(async (_raw: string) => resolved)
   const log = vi.fn()
@@ -103,7 +103,8 @@ describe('sendWebhook', () => {
       { signatureHeader: 'X-Sig', deliveryHeader: 'X-Sig' },
       // a case-differing pair is the same header to a receiver
       { signatureHeader: 'X-Sig', deliveryHeader: 'x-sig' },
-      // the shape a stored rule can already have: the signature left at its default, the delivery id on top of it
+      // the shape a stored rule can already have: signature left at its default, delivery id on top
+      // of it
       { deliveryHeader: SIGNATURE_HEADER },
       { deliveryHeader: 'X-Blockwarden-Signature' },
       { signatureHeader: DELIVERY_HEADER },
@@ -113,7 +114,7 @@ describe('sendWebhook', () => {
       expect(outcome, JSON.stringify(target)).toMatchObject({ kind: 'permanent' })
       expect(outcome.kind === 'permanent' && outcome.error).toContain('same header')
       expect(d.post).not.toHaveBeenCalled()
-      // an operator has to hear about a rule that cannot be delivered at all
+      // an operator has to hear about a rule that can't be delivered at all
       expect(d.log).toHaveBeenCalledWith(expect.stringContaining('header'), expect.anything(), 'warn')
     }
   })
