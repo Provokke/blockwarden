@@ -6,7 +6,9 @@
   "scripts": {
     "build": "node scripts/forge.mjs build",
     "test": "node scripts/forge.mjs test",
-    "fmt:check": "node scripts/forge.mjs fmt --check"
+    "fmt:check": "node scripts/forge.mjs fmt --check",
+    "deploy:local": "node scripts/local.mjs deploy",
+    "fund:local": "node scripts/local.mjs fund"
   },
   "dependencies": {
     "@openzeppelin/contracts": "5.6.1"

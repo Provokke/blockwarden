@@ -6,8 +6,15 @@ export const FOUNDRY_VERSION = '1.8.1'
 const image = `ghcr.io/foundry-rs/foundry:v${FOUNDRY_VERSION}`
 const contracts = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const repo = resolve(contracts, '..')
-// the profile that picks the fuzz and invariant run counts
-const forwardedEnv = ['FOUNDRY_PROFILE']
+// the inputs Deploy.s.sol and Fund.s.sol read, and the profile that picks the run counts
+const forwardedEnv = [
+  'FOUNDRY_PROFILE',
+  'VAULT_OWNER',
+  'VAULT_THRESHOLD',
+  'VAULT_TOP_UP_AMOUNT',
+  'VAULT_COOLDOWN',
+  'FUND_AMOUNT',
+]
 
 // pnpm links node_modules with junctions on Windows, and Docker Desktop shows a junction inside a container as a
 // link to /mnt/host/<drive>/<path>, so the repository is mounted at that path for the remappings to resolve.
@@ -18,19 +25,26 @@ export function containerPath(hostPath, platform = process.platform) {
   return `/mnt/host/${drive.replace(':', '').toLowerCase()}/${rest.join('/')}`
 }
 
+// a container cannot reach the host's loopback, so an Anvil published on localhost is reached through the gateway
+export function containerRpcUrl(rpcUrl) {
+  const url = new URL(rpcUrl)
+  if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') url.hostname = 'host.docker.internal'
+  return url.toString()
+}
+
 function localForgeMatches() {
   const probe = spawnSync('forge', ['--version'], { encoding: 'utf8' })
   // another Foundry may default to another EVM version, and different bytecode moves every CREATE2 address
   return probe.status === 0 && probe.stdout.split(/\r?\n/).includes(`forge Version: ${FOUNDRY_VERSION}`)
 }
 
-export function forge(args) {
+export function forge(args, { rpcUrl } = {}) {
   if (localForgeMatches()) {
     return spawnSync('forge', args, { cwd: contracts, stdio: 'inherit' }).status ?? 1
   }
   const workdir = containerPath(contracts)
   const dockerArgs = ['run', '--rm', '-v', `${repo}:${containerPath(repo)}`, '-w', workdir]
-  // forge writes out/ and cache/ into the mount, which would otherwise belong to the image's user
+  // forge writes out/, cache/ and broadcast/ into the mount, which would otherwise belong to the image's user
   if (process.platform !== 'win32' && typeof process.getuid === 'function' && typeof process.getgid === 'function') {
     dockerArgs.push('--user', `${process.getuid()}:${process.getgid()}`)
   }
@@ -39,7 +53,12 @@ export function forge(args) {
   // forge asks git about the project, and git refuses a repository owned by another user unless told it is safe
   dockerArgs.push('-e', 'GIT_CONFIG_COUNT=1', '-e', 'GIT_CONFIG_KEY_0=safe.directory', '-e', 'GIT_CONFIG_VALUE_0=*')
   for (const name of forwardedEnv) if (process.env[name] !== undefined) dockerArgs.push('-e', name)
-  dockerArgs.push('--entrypoint', 'forge', image, ...args)
+  let forgeArgs = args
+  if (rpcUrl !== undefined) {
+    dockerArgs.push('--add-host', 'host.docker.internal:host-gateway')
+    forgeArgs = args.map((arg) => (arg === rpcUrl ? containerRpcUrl(rpcUrl) : arg))
+  }
+  dockerArgs.push('--entrypoint', 'forge', image, ...forgeArgs)
   const result = spawnSync('docker', dockerArgs, { stdio: 'inherit' })
   if (result.error) console.error(`neither forge ${FOUNDRY_VERSION} nor docker could be run: ${result.error.message}`)
   return result.status ?? 1
