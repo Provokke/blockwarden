@@ -36,6 +36,14 @@ export function buildPolicy(hashes) {
   ).join('; ')
 }
 
+export function assertFits(policy, hashCount) {
+  if (policy.length > POLICY_LIMIT) {
+    throw new Error(
+      `the policy would be ${policy.length} characters, over CloudFront's limit of ${POLICY_LIMIT}, with ${hashCount} script hashes`,
+    )
+  }
+}
+
 async function htmlFiles(root) {
   const found = []
   for (const entry of await readdir(root, { withFileTypes: true })) {
@@ -46,7 +54,8 @@ async function htmlFiles(root) {
   return found
 }
 
-const SCRIPT_ELEMENT = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi
+// quote-aware like START_TAG: a > inside a quoted attribute value does not end the tag
+const SCRIPT_ELEMENT = /<script\b((?:"[^"]*"|'[^']*'|[^>"'])*)>([\s\S]*?)<\/script\s*>/gi
 const START_TAG = /<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
 
 function inspect(html) {
@@ -75,6 +84,11 @@ export async function collect(root) {
   for (const file of (await htmlFiles(root)).sort()) {
     const name = relative(root, file).split(sep).join('/')
     const { inline, found } = inspect(await readFile(file, 'utf8'))
+    // The HTML parser turns CRLF and a lone CR into LF before a script's text exists, so a CR here would hash to
+    // something the browser never computes. The bytes stay as they are; the page is refused instead.
+    if (inline.some((content) => content.includes('\r'))) {
+      problems.push(`${name} has an inline script containing a carriage return, which a browser hashes as a line feed`)
+    }
     for (const content of inline) hashes.add(`sha256-${createHash('sha256').update(content, 'utf8').digest('base64')}`)
 
     const exempt = STYLE_EXEMPT.some((pattern) => pattern.test(name))
@@ -100,6 +114,9 @@ function parseArgs(argv) {
       throw new Error(`unexpected argument ${flag}`)
     }
   }
+  if (options.check && options.out !== undefined) {
+    throw new Error('--check writes nothing, so it cannot be combined with --out')
+  }
   return options
 }
 
@@ -118,11 +135,7 @@ async function main() {
   if (result.hashes.length === 0) throw new Error(`${dir} has no inline scripts; is it the dashboard's export?`)
 
   const length = buildPolicy(result.hashes).length
-  if (length > POLICY_LIMIT) {
-    throw new Error(
-      `the policy would be ${length} characters, over CloudFront's limit of ${POLICY_LIMIT}, with ${result.hashes.length} script hashes`,
-    )
-  }
+  assertFits(buildPolicy(result.hashes), result.hashes.length)
 
   const json = `${JSON.stringify({ site_script_hashes: result.hashes }, null, 2)}\n`
   if (check) {
