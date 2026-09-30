@@ -47,8 +47,9 @@ function isTxListKey(
     return false
   }
   // shape alone lets a caller mint a cursor naming its own (permitted) chain in the envelope while its key's
-  // GSI2PK is another chain's partition - that key would still reach ExclusiveStartKey and read that other
-  // chain's page, so the partition itself must match the chain this cursor claims to resume
+  // GSI2PK is another chain's partition. DynamoDB reads the partition the query names and rejects a start key
+  // from another one with a ValidationException, so the partition itself must match the chain this cursor
+  // claims to resume
   return record.GSI2PK === `TXPENDING#${chainId}`
 }
 
@@ -72,7 +73,7 @@ export async function handleListTxs(
   ].sort((a, b) => a - b)
   const chainId = query.chainId === undefined ? undefined : Number(query.chainId)
   if (chainId !== undefined && !relayed.includes(chainId)) {
-    return error(400, 'unknown_chain', 'this deployment does not relay on that chain')
+    return error(400, 'unknown_chain', 'no signer you may use relays on that chain')
   }
   const limit = pageSize(query.limit)
   const chains = chainId === undefined ? relayed : [chainId]

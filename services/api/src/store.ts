@@ -11,6 +11,10 @@ import { ruleInputSchema, type RuleInput } from '@blockwarden/core'
 
 export const NONCE_SECONDS = 300
 
+// the one GSI1 partition that holds a delivery while it is dead; mirrors services/actions/src/keys.ts's
+// keys.deliveriesByStatus('dead'), which is a separate copy
+export const DEAD_PARTITION = 'DELIVERY#DEAD'
+
 // `@blockwarden/api` has no dependency on `@blockwarden/actions` (services/* depend on packages/*, not on each
 // other), so this is a copied literal of services/actions/src/keys.ts's DUE_SHARDS/dueShard/dueDeliveries, not
 // an import of it. A delivery a redrive puts in the wrong shard is one the reaper never sweeps again, so any
@@ -323,9 +327,9 @@ export function createStore(deps: StoreDeps): ApiStore {
           TableName: table,
           IndexName: GSI1,
           KeyConditionExpression: 'GSI1PK = :pk',
-          // mirrors services/actions/src/keys.ts's keys.deliveriesByStatus('dead'); GSI1 is sparse and only
-          // ever holds a delivery while it is dead, which is what makes this the one status worth an index read
-          ExpressionAttributeValues: { ':pk': 'DELIVERY#DEAD' },
+          // GSI1 is sparse and only ever holds a delivery while it is dead, which is what makes this the one
+          // status worth an index read
+          ExpressionAttributeValues: { ':pk': DEAD_PARTITION },
           Limit: limit,
           ...(cursor ? { ExclusiveStartKey: cursor } : {}),
         }),

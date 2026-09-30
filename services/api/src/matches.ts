@@ -19,8 +19,8 @@ function isMatchListKey(
   const record = value as Record<string, unknown>
   if (Object.keys(record).length !== MATCH_LIST_KEY_ATTRS.length) return false
   if (!MATCH_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')) return false
-  // the envelope's ruleId is only a claim; the key's own partition is what DynamoDB would read, so a key
-  // for another rule's partition must not ride in under this rule's name
+  // DynamoDB reads the partition the KeyConditionExpression names and rejects a start key from any other
+  // partition with a ValidationException, so a key for another rule's partition must not reach it
   return record.GSI1PK === `RULE#${ruleId}`
 }
 

@@ -89,8 +89,9 @@ function isRuleListKey(value: unknown, chainId: number): value is Record<(typeof
   if (Object.keys(record).length !== RULE_LIST_KEY_ATTRS.length) return false
   if (!RULE_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')) return false
   // shape alone lets a caller mint a cursor naming its own (permitted) chain in the envelope while its key's
-  // GSI1PK is another chain's partition (store.ts's putRule: GSI1PK = `CHAIN#<chainId>#RULES`) - that key would
-  // still reach ExclusiveStartKey and read that other chain's page, so the partition itself must match too
+  // GSI1PK is another chain's partition (store.ts's putRule: GSI1PK = `CHAIN#<chainId>#RULES`). DynamoDB reads
+  // the partition the query names and rejects a start key from another one with a ValidationException, so the
+  // partition itself must match too
   return record.GSI1PK === `CHAIN#${chainId}#RULES`
 }
 
