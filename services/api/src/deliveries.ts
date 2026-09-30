@@ -6,29 +6,40 @@ import type { DeliveryItem, DeliveryRef, DeliveryStore } from './store.js'
 const MAX_PAGE = 100
 const SUBJECT_KINDS = ['MATCH#', 'TX#', 'OUTBOUND#']
 
-// GSI1's own LastEvaluatedKey for the dead-letter query is always exactly these four string attributes -
-// proven by reading one back from DynamoDB Local, not assumed (same reasoning as matches.ts's isMatchListKey).
+// GSI1's own LastEvaluatedKey for the dead-letter query is always exactly these four string attributes, as
+// the integration test reads back from DynamoDB Local (same reasoning as matches.ts's isMatchListKey).
 // The cursor is unsigned base64, so any caller can hand back a crafted key; anything of another shape must
 // never reach ExclusiveStartKey, where DynamoDB answers a bad key with a ValidationException that has no
 // route-level catch.
 const DEAD_LIST_KEY_ATTRS = ['PK', 'SK', 'GSI1PK', 'GSI1SK'] as const
 
+// the partition listDead queries (store.ts), which is services/actions/src/keys.ts's deliveriesByStatus('dead')
+const DEAD_PARTITION = 'DELIVERY#DEAD'
+
 function isDeadListKey(value: unknown): value is Record<(typeof DEAD_LIST_KEY_ATTRS)[number], string> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
   if (Object.keys(record).length !== DEAD_LIST_KEY_ATTRS.length) return false
-  return DEAD_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')
+  if (!DEAD_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')) return false
+  // a key of another partition would still reach ExclusiveStartKey, and DynamoDB rejects a start key that
+  // does not belong to the queried partition
+  return record.GSI1PK === DEAD_PARTITION
 }
 
 // listBySubject queries the base table, not GSI1, so its own LastEvaluatedKey is the table's own key alone -
 // same reasoning as DEAD_LIST_KEY_ATTRS above, one attribute pair narrower
 const SUBJECT_LIST_KEY_ATTRS = ['PK', 'SK'] as const
 
-function isSubjectListKey(value: unknown): value is Record<(typeof SUBJECT_LIST_KEY_ATTRS)[number], string> {
+function isSubjectListKey(
+  value: unknown,
+  subject: string,
+): value is Record<(typeof SUBJECT_LIST_KEY_ATTRS)[number], string> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
   if (Object.keys(record).length !== SUBJECT_LIST_KEY_ATTRS.length) return false
-  return SUBJECT_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')
+  if (!SUBJECT_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')) return false
+  // the query is on this subject's partition alone
+  return record.PK === subject
 }
 
 export type DeliveryDeps = {
@@ -54,7 +65,8 @@ export async function handleListDeliveries(deps: DeliveryDeps, event: APIGateway
     let startKey: Record<string, unknown> | undefined
     if (query.cursor) {
       const cursor = decodeCursor(query.cursor)
-      if (!cursor || !isSubjectListKey(cursor)) return error(400, 'invalid_cursor', 'that cursor cannot be read')
+      if (!cursor || !isSubjectListKey(cursor, query.subject))
+        return error(400, 'invalid_cursor', 'that cursor cannot be read')
       startKey = cursor
     }
     const page = await deps.store.listBySubject(query.subject, limit, startKey)

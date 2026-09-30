@@ -183,6 +183,36 @@ describe('handleListDeliveries', () => {
     expect(first!.ref.length).toBeGreaterThan(0)
   })
 
+  it('refuses a dead-list cursor whose key is shaped right but sits in another partition', async () => {
+    const d = deps()
+    let reads = 0
+    const listDead = d.store.listDead.bind(d.store)
+    d.store.listDead = async (limit, cursor) => {
+      reads++
+      return listDead(limit, cursor)
+    }
+    const cursor = encodeCursor({ ...pageKey(dead('one')), GSI1PK: 'RULE#other' })
+    const result = await handleListDeliveries(d, event({ status: 'dead', cursor }))
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe('invalid_cursor')
+    expect(reads).toBe(0)
+  })
+
+  it('refuses a subject cursor whose key is shaped right but belongs to another subject', async () => {
+    const d = deps()
+    let reads = 0
+    const listBySubject = d.store.listBySubject.bind(d.store)
+    d.store.listBySubject = async (subject, limit, cursor) => {
+      reads++
+      return listBySubject(subject, limit, cursor)
+    }
+    const cursor = encodeCursor({ PK: 'MATCH#0xtwo', SK: 'DELIVERY#a1#match.final#0' })
+    const result = await handleListDeliveries(d, event({ subject: 'MATCH#0xone', cursor }))
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe('invalid_cursor')
+    expect(reads).toBe(0)
+  })
+
   it('pages with a cursor', async () => {
     const d = deps()
     const first = await handleListDeliveries(d, event({ status: 'dead', limit: '2' }))

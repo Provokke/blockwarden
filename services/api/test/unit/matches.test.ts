@@ -9,7 +9,7 @@ function apiEvent(over: Partial<APIGatewayProxyEventV2>): APIGatewayProxyEventV2
   return { version: '2.0', headers: {}, ...over } as APIGatewayProxyEventV2
 }
 
-function row(ruleId: string, blockNumber: number): MatchRow {
+function row(ruleId: string, blockNumber: number, status: MatchRow['status'] = 'final'): MatchRow {
   return {
     matchKey: `0x${blockNumber.toString(16).padStart(64, '0')}`,
     ruleId,
@@ -20,7 +20,7 @@ function row(ruleId: string, blockNumber: number): MatchRow {
     logIndex: 0,
     address: `0x${'d'.repeat(40)}`,
     args: { value: '1' },
-    status: 'final',
+    status,
     firstSeenAt: '2026-09-21T00:00:00.000Z',
   }
 }
@@ -38,14 +38,14 @@ function pageKey(ruleId: string, blockNumber: number): Record<string, string> {
 }
 
 function deps(): MatchDeps & { calls: unknown[] } {
-  const rows = [row('rule-a', 3), row('rule-a', 2), row('rule-a', 1), row('rule-b', 9)]
+  const rows = [row('rule-a', 3), row('rule-a', 2, 'provisional'), row('rule-a', 1), row('rule-b', 9)]
   const calls: unknown[] = []
   return {
     calls,
     store: {
-      async listMatches(ruleId, limit, cursor) {
-        calls.push({ ruleId, limit, cursor })
-        const mine = rows.filter((r) => r.ruleId === ruleId)
+      async listMatches(ruleId, limit, cursor, status) {
+        calls.push({ ruleId, limit, cursor, status })
+        const mine = rows.filter((r) => r.ruleId === ruleId && (status === undefined || r.status === status))
         const from = mine.findIndex((r) => cursor && pageKey(r.ruleId, Number(r.blockNumber)).GSI1SK === cursor.GSI1SK)
         const start = cursor === undefined ? 0 : from + 1
         const page = mine.slice(start, start + limit)
@@ -108,6 +108,15 @@ describe('handleListMatches', () => {
     expect((result.body as { error: { code: string } }).error.code).toBe('invalid_cursor')
   })
 
+  it('refuses a cursor whose key sits in another rule partition, though its envelope names this rule', async () => {
+    const d = deps()
+    const forged = encodeCursor({ ruleId: 'rule-a', key: pageKey('rule-b', 9) })
+    const result = await handleListMatches(d, event({ ruleId: 'rule-a', cursor: forged }))
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe('invalid_cursor')
+    expect(d.calls).toHaveLength(0)
+  })
+
   it('refuses a cursor that is not a cursor, rather than passing it to DynamoDB', async () => {
     const d = deps()
     const result = await handleListMatches(d, event({ ruleId: 'rule-a', cursor: 'garbage' }))
@@ -130,8 +139,13 @@ describe('handleListMatches', () => {
   })
 
   it('filters by status when one is asked for, and refuses one that is not a status', async () => {
-    const ok = await handleListMatches(deps(), event({ ruleId: 'rule-a', status: 'final' }))
+    const d = deps()
+    const ok = await handleListMatches(d, event({ ruleId: 'rule-a', status: 'final' }))
     expect(ok.status).toBe(200)
+    expect((d.calls[0] as { status?: string }).status).toBe('final')
+    expect((ok.body as { matches: MatchRow[] }).matches.map((m) => m.blockNumber)).toEqual(['3', '1'])
+    const provisional = await handleListMatches(d, event({ ruleId: 'rule-a', status: 'provisional' }))
+    expect((provisional.body as { matches: MatchRow[] }).matches.map((m) => m.blockNumber)).toEqual(['2'])
     const bad = await handleListMatches(deps(), event({ ruleId: 'rule-a', status: 'sideways' }))
     expect(bad.status).toBe(400)
   })

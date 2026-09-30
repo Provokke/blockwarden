@@ -1,16 +1,12 @@
 import { GetQueueAttributesCommand, SendMessageCommand, type SQSClient } from '@aws-sdk/client-sqs'
 import { GetParameterCommand } from '@aws-sdk/client-ssm'
-import { GetCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'
+import { GetCommand, QueryCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'
 import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { handleListTxs } from '../../src/relayer-routes.js'
 import { createApiHandler, ROUTES } from '../../src/routes.js'
-import {
-  apiDepsFrom,
-  createApiRuntime,
-  createAuthorizerRuntime,
-  type LoggerLike,
-  type RuntimeClients,
-} from '../../src/lambda/runtime.js'
+import { apiDepsFrom, createApiRuntime } from '../../src/lambda/api-runtime.js'
+import { createAuthorizerRuntime, type LoggerLike, type RuntimeClients } from '../../src/lambda/runtime.js'
 
 const SECRET = 'x'.repeat(40)
 const QUEUE = 'https://sqs.eu-west-2.amazonaws.com/123456789012/deliveries'
@@ -146,7 +142,39 @@ describe('createApiRuntime', () => {
       allowedWallets: ['0x52908400098527886E0F7030069857D2E4169EE7'],
     })
     expect(deps.rules.settings).toEqual({ ruleSecretPrefixes: ['/bw/rules'], chainIds: [8453, 42161] })
-    expect(deps.relayer.chainIds).toEqual([8453, 42161])
+  })
+
+  it('lists pending transactions on the relayer chains, which CHAINS (the monitor chains) does not contain', async () => {
+    const { ssm } = fakeSsm(PARAMETERS)
+    const { logger } = fakeLogger()
+    const asked: string[] = []
+    // answers only the two queries the route makes, each by the partition it is asked for
+    const doc = {
+      async send(command: unknown) {
+        if (!(command instanceof QueryCommand)) throw new Error('only Query')
+        const pk = command.input.ExpressionAttributeValues?.[':pk'] as string
+        asked.push(pk)
+        if (pk === 'SIGNER#ALL') return { Items: [{ signerId: 'demo', chainIds: [421614, 84532] }] }
+        if (pk === 'TXPENDING#84532') {
+          return { Items: [{ txId: 'tx-1', signerId: 'demo', status: 'pending', chainId: 84532 }] }
+        }
+        return { Items: [] }
+      },
+    } as unknown as DynamoDBDocumentClient
+    const runtime = await createApiRuntime(logger, { env, ssm, doc, sqs: fakeSqs([]) })
+    const deps = apiDepsFrom(runtime)
+    const result = await handleListTxs(
+      deps.relayer,
+      { kind: 'session', address: '0x52908400098527886E0F7030069857D2E4169EE7' },
+      {
+        version: '2.0',
+        headers: {},
+        queryStringParameters: { status: 'pending' },
+      } as unknown as APIGatewayProxyEventV2,
+    )
+    expect(result.status).toBe(200)
+    expect((result.body as { txs: { txId: string }[] }).txs.map((tx) => tx.txId)).toEqual(['tx-1'])
+    expect(asked).toEqual(['SIGNER#ALL', 'TXPENDING#84532', 'TXPENDING#421614'])
   })
 
   it('refuses a cold start whose RPC parameter holds nothing usable, naming the parameter and not the value', async () => {
