@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import type { ReactNode } from 'react'
+import { Nav } from '../components/Nav'
 import { Providers } from './providers'
 import './globals.css'
 
@@ -12,6 +13,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>
+        <Nav />
         <Providers>{children}</Providers>
       </body>
     </html>

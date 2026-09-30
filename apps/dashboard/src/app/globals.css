@@ -65,3 +65,67 @@ td {
   border-bottom: 1px solid var(--line);
   text-align: left;
 }
+
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: var(--space);
+  border-bottom: 1px solid var(--line);
+}
+
+a {
+  color: var(--accent);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.wrap {
+  overflow-wrap: anywhere;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: var(--space);
+}
+
+.field input,
+.field select,
+.field textarea {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+}
+
+.field [aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.field-error {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--danger);
+}
+
+fieldset {
+  margin: 0 0 var(--space);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.note {
+  margin-left: 0.5rem;
+}

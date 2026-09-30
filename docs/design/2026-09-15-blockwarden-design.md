@@ -225,14 +225,16 @@ All routes are under `/v1`. Dashboard routes, health among them, need a SIWE ses
 | POST | `/auth/logout` | clear the session |
 | GET, POST | `/rules` | list, create |
 | GET, PATCH, DELETE | `/rules/{ruleId}` | read, update, delete |
-| GET | `/matches?ruleId=&cursor=` | match history |
-| GET | `/deliveries?status=&cursor=` | delivery history |
-| POST | `/deliveries/{deliveryId}/redrive` | resend from the dead-letter queue |
+| GET | `/matches?ruleId=&status=&cursor=` | match history; the index is per rule, so `ruleId` is required |
+| GET | `/deliveries?status=dead&cursor=` | dead deliveries, or `?subject=` for one subject's deliveries (milestone 4) |
+| POST | `/deliveries/{deliveryId}/redrive` | resend from the dead-letter queue; the body carries the `ref` the listing gave the row (milestone 4) |
 | GET | `/relayer/signers` | signers the key may use, with their addresses (milestone 2; a session from milestone 4) |
-| POST | `/relayer/txs` | submit, with an API key only, on `modules/relayer`'s own API (milestone 2) |
+| POST | `/relayer/txs` | submit, with an API key only, on `modules/relayer`'s own API (milestone 2). A session reads the relayer but cannot submit: see the decision below |
 | GET | `/relayer/txs/{txId}` | status (milestone 2; a session from milestone 4) |
-| GET | `/relayer/txs?status=&cursor=` | list |
+| GET | `/relayer/txs?status=pending&cursor=` | list; only pending transactions are indexed (milestone 4 for sessions) |
 | GET | `/health` | per chain, the cursor's staleness: seconds since the monitor last wrote it, which is not block lag and needs no RPC call; and the visible and in-flight depth of the delivery, dead-letter and stream-failure queues |
+
+**Decision: `POST /relayer/txs` is not on the milestone 4 API.** The design's original wording ("milestone 4 adds sessions and the rest") could be read as putting it there too. It is not, for three reasons. Submitting is not a read: it runs the signer policy, a gas estimate, a spend reservation and an idempotency claim in one DynamoDB transaction and enqueues on a FIFO queue, so a second implementation in `services/api` would be two things that must agree about money. A dashboard session is an operator looking at the system and does not need to originate transactions, and not offering the route is one fewer way a stolen session costs the deployment funds. And `modules/relayer` exists so a downstream project can deploy the relayer alone; its API keeps working as it did. A session reads the relayer but cannot submit.
 
 Sessions are HS256 JWTs in an `HttpOnly; Secure; SameSite=Strict` cookie, 12-hour lifetime, signed with a secret from SSM Parameter Store. The dashboard's allowed wallets are an allowlist in Terraform variables.
 
@@ -363,6 +365,14 @@ As of milestone 3:
 7. **The stream filter matches `SK = META` exactly.** `prefix` is not documented for DynamoDB event source filters, so items like `RULE#`, `SIGNER#` and `IDEMP#` still reach the dispatcher and are dropped in code. The same code also drops anything whose sort key is not `META`, which is what keeps a delivery — which shares its partition key with the match it belongs to — from causing a delivery of its own.
 8. **A delivery whose rendered payload is larger than 64 KiB is refused.** `MAX_PAYLOAD_BYTES` in `services/actions/src/records.ts` is 64 KiB. A match- or transaction-triggered delivery is checked when the dispatcher writes the delivery item (`DeliveryStore.create`); going over it there is treated as a poison record and skipped rather than retried, because the same oversized bytes come back every time. An outbound request is checked separately, at accept time, before any delivery item exists. Either way nothing is ever sent for that delivery.
 
+As of milestone 4:
+
+9. **Nothing proves the browser keeps its session across CloudFront.** The cookie is `SameSite=Strict` and the two origins are made one by a distribution that has never been deployed. The configuration is asserted by reading the Terraform; the behaviour is not measured. The real-wallet check through the local dev proxy has not been run either (it is the owner's to run); the dashboard's tests use a stubbed wallet, stubbed API responses and jsdom.
+10. **EIP-1271 is not exercised.** Every signature in the tests is from an externally owned account, so the contract-wallet path is taken from viem's behaviour and not from a deployed wallet.
+11. **Only dead deliveries and pending transactions can be listed.** Both are the sparse index; every other status would need a scan, and the routes refuse rather than scan.
+12. **A cached authorizer result is off**, so every request costs a second Lambda invocation. Turning it on would keep admitting a session after logout for the cache's lifetime.
+13. **The deployed CSP blocks the dashboard's own hydration scripts.** The distribution's policy has `script-src 'self'`, and the Next.js static export writes inline `<script>` tags into every page that it needs to hydrate, so a browser enforcing the policy would refuse them and the pages would not become interactive. The dashboard adds no inline script or inline style of its own; the export's are the ones in question. This is open: the fix is tracked as the next change on this branch, and until it lands the deployed dashboard should be treated as unverified.
+
 ## Cost estimate (demo instance, idle)
 
 These are estimates from published AWS pricing and have to be measured after the first deploy.
@@ -408,11 +418,13 @@ Each milestone gets its own implementation plan.
 4. **API and dashboard.** SIWE auth, rules, matches, deliveries and relayer views, CloudFront routing.
 5. **Contracts, staging and demo.** Foundry contracts and tests, nightly end-to-end workflow, public demo deploy, README and operator docs.
 
-Milestones 1, 2 and 3 are done.
+Milestones 1, 2, 3 and 4 are done. Milestone 4 is built and tested and has never been deployed.
 
 **Deferred from milestone 1:** the GitHub OIDC deploy role, `terraform plan` posted as a PR comment, and per-rule match metrics.
 
-**Deferred from milestone 3:** `GET /deliveries` and `POST /deliveries/{deliveryId}/redrive`, which are milestone 4 along with the dashboard's delivery view; Base Sepolia in the monitor, which is milestone 5 with the demo contracts; and a contract-state rule type, which is Project C item 7 and is not scheduled.
+**Deferred from milestone 3:** Base Sepolia in the monitor, which is milestone 5 with the demo contracts; and a contract-state rule type, which is Project C item 7 and is not scheduled.
+
+**Deferred from milestone 4:** a cancel route for a relayed transaction, so `cancelled` stays a reserved status; and per-rule match metrics, which are still not emitted. Both remain deferred.
 
 ## Prerequisites
 
