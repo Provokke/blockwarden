@@ -21,6 +21,7 @@
     "viem": "2.56.9"
   },
   "devDependencies": {
+    "@blockwarden/contracts": "workspace:*",
     "esbuild": "0.28.2",
     "solc": "0.8.37",
     "testcontainers": "12.1.0",
