@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
+// ts/testing.ts mirrors every value here, and test-ts/deploy.test.ts fails if the two disagree
+
 string constant FORWARDER_NAME = "BlockwardenForwarder";
 
 // every contract's address comes from its salt and its init code: the compiled bytecode plus the constructor arguments.
