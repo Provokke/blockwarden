@@ -24,6 +24,7 @@ runs = 1000
 [profile.default.invariant]
 runs = 512
 depth = 128
+fail_on_revert = true
 
 [profile.ci.fuzz]
 runs = 256
@@ -31,6 +32,7 @@ runs = 256
 [profile.ci.invariant]
 runs = 256
 depth = 64
+fail_on_revert = true
 
 [lint]
 # CI's gate is fmt, build and test; the linter's notes on test and script files would bury the build output

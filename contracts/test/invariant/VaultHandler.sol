@@ -2,6 +2,7 @@
 pragma solidity 0.8.37;
 
 import {ERC2771Forwarder} from "@openzeppelin/contracts/metatx/ERC2771Forwarder.sol";
+import {Errors} from "@openzeppelin/contracts/utils/Errors.sol";
 import {CommonBase} from "forge-std/Base.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
 import {TopUpVault} from "../../src/TopUpVault.sol";
@@ -11,6 +12,11 @@ import {ForwardRequests} from "../utils/ForwardRequests.sol";
 /// ghost totals see every unit funded, credited and spent.
 contract VaultHandler is CommonBase, StdUtils, ForwardRequests {
     uint256 internal constant MAX_FUND = 1e30;
+    // most funding is a few top-ups' worth so the pool runs dry; one call in sixteen is large, to exercise big sums
+    uint256 internal constant SMALL_FUND_TOP_UPS = 5;
+
+    // any refusal the handler cannot justify from its own ghosts: the run fails instead of being counted as a skip
+    error UnexpectedRefusal(bytes reason);
 
     TopUpVault public immutable vault;
     ERC2771Forwarder public immutable forwarder;
@@ -69,7 +75,9 @@ contract VaultHandler is CommonBase, StdUtils, ForwardRequests {
     }
 
     function fund(uint256 amount) external useTime {
-        amount = bound(amount, 0, MAX_FUND);
+        // never below one top-up, so any run that reaches a top-up can credit one
+        uint256 unit = vault.topUpAmount();
+        amount = amount % 16 == 0 ? bound(amount, unit, MAX_FUND) : bound(amount, unit, SMALL_FUND_TOP_UPS * unit);
         vm.prank(owner);
         vault.fund(amount);
         ghostFunded += amount;
@@ -84,44 +92,71 @@ contract VaultHandler is CommonBase, StdUtils, ForwardRequests {
     }
 
     function topUp(uint256 accountSeed, uint256 callerSeed) external useTime {
-        address account = actors[accountSeed % actors.length];
+        // the meta-transaction signer is only ever credited through the forwarder, so a run's first forward request
+        // is never refused for a cooldown the fuzzer opened by accident
+        address account = actors[accountSeed % (actors.length - 1)];
+        bool cooling = cooldownIsLive(account);
+        uint256 poolBefore = vault.pool();
         vm.prank(actors[callerSeed % actors.length]);
-        // refused inside the cooldown or on a short pool; recording only what the vault allowed is the point
         try vault.topUp(account) {
-            recordTopUp(account);
-        } catch {}
+            recordTopUp(account, poolBefore - vault.pool());
+        } catch (bytes memory reason) {
+            // the only refusals the vault may give are the two the ghosts predict; anything else is a bug to surface
+            bytes4 selector = bytes4(reason);
+            if (selector == TopUpVault.CooldownActive.selector && cooling) return;
+            if (selector == TopUpVault.PoolTooLow.selector && poolBefore < vault.topUpAmount()) return;
+            revert UnexpectedRefusal(reason);
+        }
     }
 
     function forwardTopUp() external useTime {
+        // twice the cooldown, so an accepted replay could not be masked by the request having expired
         ERC2771Forwarder.ForwardRequestData memory request = signRequest(
             forwarder,
             metaSignerKey,
             address(vault),
             abi.encodeCall(TopUpVault.topUp, (metaSigner)),
-            uint48(currentTime + 1 hours)
+            uint48(currentTime + 2 * vault.cooldown())
         );
+        bool cooling = cooldownIsLive(metaSigner);
+        uint256 poolBefore = vault.pool();
         try forwarder.execute(request) {
-            recordTopUp(metaSigner);
+            recordTopUp(metaSigner, poolBefore - vault.pool());
             ++ghostForwardedExecutions;
             lastExecuted = request;
             hasExecuted = true;
-        } catch {}
+        } catch (bytes memory reason) {
+            // a fresh, correctly signed request can only fail because the vault refused the inner call
+            if (bytes4(reason) == Errors.FailedCall.selector && (cooling || poolBefore < vault.topUpAmount())) return;
+            revert UnexpectedRefusal(reason);
+        }
     }
 
     function replayForwarded() external useTime {
         if (!hasExecuted) return;
+        bool expired = lastExecuted.deadline < block.timestamp;
+        uint256 poolBefore = vault.pool();
         try forwarder.execute(lastExecuted) {
             ++ghostReplaysAccepted;
-            recordTopUp(metaSigner);
-        } catch {}
+            recordTopUp(metaSigner, poolBefore - vault.pool());
+        } catch (bytes memory reason) {
+            // the forwarder checks expiry before the signature, so the reason says which guard stopped the replay
+            bytes4 expected = expired
+                ? ERC2771Forwarder.ERC2771ForwarderExpiredRequest.selector
+                : ERC2771Forwarder.ERC2771ForwarderInvalidSigner.selector;
+            if (bytes4(reason) != expected) revert UnexpectedRefusal(reason);
+        }
     }
 
-    function recordTopUp(address account) internal {
-        if (ghostToppedUp[account] && block.timestamp < ghostLastTopUp[account] + vault.cooldown()) {
-            ++ghostTopUpsInsideCooldown;
-        }
+    function cooldownIsLive(address account) internal view returns (bool) {
+        return ghostToppedUp[account] && block.timestamp < ghostLastTopUp[account] + vault.cooldown();
+    }
+
+    // credited is what the pool actually lost, not what the vault is configured to give
+    function recordTopUp(address account, uint256 applied) internal {
+        if (cooldownIsLive(account)) ++ghostTopUpsInsideCooldown;
         ghostToppedUp[account] = true;
         ghostLastTopUp[account] = block.timestamp;
-        ghostCredited += vault.topUpAmount();
+        ghostCredited += applied;
     }
 }
