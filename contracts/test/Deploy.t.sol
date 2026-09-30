@@ -143,6 +143,9 @@ contract DeployTest is Test {
         assertEq(other.emitter, local.emitter);
         assertTrue(other.vault != local.vault);
 
+        // only a broadcast records a deployment; a plain run must not overwrite the file a public chain's deploy commits
+        assertFalse(vm.exists("deployments/84532.json"));
+
         vm.setEnv("VAULT_THRESHOLD", "");
         vm.setEnv("VAULT_OWNER", "");
 

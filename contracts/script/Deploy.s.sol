@@ -102,8 +102,9 @@ contract Deploy is Script {
         vm.writeJson(json, path);
     }
 
-    // the same transaction ts/testing.ts sends: the salt, then the init code, to the factory Anvil and every public
-    // chain already carry. An address that already has code is left as it is, so a second run changes nothing.
+    // the same transaction ts/testing.ts sends: the salt, then the init code, to the factory Anvil and the chains the
+    // demo targets already carry. Where it is missing the call fails safely with Create2Failed. An address that already
+    // has code is left as it is, so a second run changes nothing.
     function create2(bytes32 salt, bytes memory initCode) internal returns (address deployed) {
         deployed = vm.computeCreate2Address(salt, keccak256(initCode));
         if (deployed.code.length > 0) return deployed;

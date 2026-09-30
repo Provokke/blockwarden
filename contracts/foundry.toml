@@ -11,6 +11,8 @@ remappings = [
   "forge-std/=node_modules/forge-std/src/",
 ]
 solc_version = "0.8.37"
+# the metadata hash is part of every CREATE2 address; pinned so a Foundry default that changes cannot move them
+bytecode_hash = "ipfs"
 optimizer = true
 optimizer_runs = 200
 # part of every CREATE2 address; Base and Arbitrum both run Prague, and nothing here needs a later opcode

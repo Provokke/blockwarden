@@ -392,7 +392,7 @@ As of milestone 4:
 As of milestone 5a. All three apply once go-live runs the demo, since nothing is deployed yet:
 
 15. **The relayer's policy cannot see inside a forwarded call.** `checkPolicy` matches only the outer `to` and the 4-byte selector. So allowing the forwarder's `execute` admits a forward request to any contract that trusts the forwarder, and the forwarder sits at a public CREATE2 address. Until the policy can decode `execute` and allowlist the inner target and selector, the demo signer's daily spend cap is what bounds it.
-16. **A forward request is refused as a replay only once the first copy is mined.** The relayer estimates at submit and does not re-estimate a queued transaction. The same signed request submitted twice before the first is mined is broadcast twice, and the second reverts on chain. An idempotency key derived from the request's signature would collapse the duplicate.
+16. **A forward request is refused as a replay only once the first copy is mined.** The relayer estimates at submit and does not re-estimate a queued transaction. Under different idempotency keys, the same signed request submitted twice before the first is mined is broadcast twice, and the second reverts on chain. An idempotency key derived from the request's signature would collapse the duplicate.
 17. **Anyone can call `topUp`, so a demo rule that relays `topUp(demoAccount)` can be pre-empted.** A third party can top up that account first, or drain the pool through throwaway accounts. The relayed call is then refused at the estimate and dead-lettered, which pages the dead-letter alarm.
 
 ## Cost estimate (demo instance, idle)
