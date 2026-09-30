@@ -12,3 +12,5 @@ out/
 site.auto.tfvars.json
 next-env.d.ts
 *.tsbuildinfo
+contracts/cache/
+contracts/.forge-home/

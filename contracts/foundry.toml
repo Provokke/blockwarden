@@ -1,0 +1,29 @@
+[profile.default]
+src = "src"
+test = "test"
+script = "script"
+out = "out"
+libs = ["node_modules"]
+# node_modules holds far more than Solidity; the two remappings below are the only ones this project uses
+auto_detect_remappings = false
+remappings = [
+  "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/",
+  "forge-std/=node_modules/forge-std/src/",
+]
+solc_version = "0.8.37"
+optimizer = true
+optimizer_runs = 200
+# part of every CREATE2 address; Base and Arbitrum both run Prague, and nothing here needs a later opcode
+evm_version = "prague"
+# OpenZeppelin 5.6.1 names a variable `error`, which solc 0.8.37 warns will become a keyword; it is not ours to fix
+ignored_warnings_from = ["node_modules"]
+
+[profile.default.fuzz]
+runs = 1000
+
+[profile.ci.fuzz]
+runs = 256
+
+[lint]
+# CI's gate is fmt, build and test; the linter's notes on test and script files would bury the build output
+lint_on_build = false

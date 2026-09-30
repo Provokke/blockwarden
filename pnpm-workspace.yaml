@@ -2,6 +2,7 @@ packages:
   - packages/*
   - services/*
   - apps/*
+  - contracts
 allowBuilds:
   esbuild: true
   cpu-features: false
