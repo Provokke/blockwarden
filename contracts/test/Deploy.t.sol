@@ -125,7 +125,7 @@ contract DeployTest is Test {
         assertEq(localVault.cooldown(), DEFAULT_COOLDOWN);
 
         // any other chain: no owner, no deploy
-        vm.chainId(84532);
+        vm.chainId(424244);
         vm.expectRevert();
         script.run();
 
@@ -144,7 +144,7 @@ contract DeployTest is Test {
         assertTrue(other.vault != local.vault);
 
         // only a broadcast records a deployment; a plain run must not overwrite the file a public chain's deploy commits
-        assertFalse(vm.exists("deployments/84532.json"));
+        assertFalse(vm.exists("deployments/424244.json"));
 
         vm.setEnv("VAULT_THRESHOLD", "");
         vm.setEnv("VAULT_OWNER", "");
