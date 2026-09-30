@@ -64,7 +64,7 @@ pnpm --filter @blockwarden/actions run delivery:redrive --table blockwarden-demo
 
 **Delivery is at least once.** Dedupe on `id` in the body `verifyWebhook()` returned: it is inside the signed bytes. The same value also rides along in the `X-Blockwarden-Delivery` header, but that header is not signed and is for tracing only. Two different events never share an id, and a transaction reorged out and mined again sends a second `tx.mined` with a different id.
 
-**Where the guard runs.** A webhook URL is first checked when the rule is compiled, not when it is created: Terraform writes a rule's actions with no shape validation, and there is no rule-create route to check it at write time until milestone 4. Compiling checks https only, no credentials, no port 0, no literal address in a private, loopback, carrier-grade NAT, link-local, metadata, documentation, benchmarking, multicast, unique-local or translated range. It is checked again when the delivery is sent, this time by resolving the host. Every resolved address must pass, and the connection is then pinned to the address that passed, so a name that answers differently a moment later cannot move it. Redirects are never followed.
+**Where the guard runs.** A webhook URL is checked in three places. The API refuses a bad one when a rule is created or changed. A rule Terraform writes gets no such check, since Terraform writes a rule's actions with no shape validation, so it is first checked when the rule is compiled. The first two make the same checks: https only, no credentials, no port 0, no literal address in a private, loopback, carrier-grade NAT, link-local, metadata, documentation, benchmarking, multicast, unique-local or translated range. It is checked again when the delivery is sent, this time by resolving the host. Every resolved address must pass, and the connection is then pinned to the address that passed, so a name that answers differently a moment later cannot move it. Redirects are never followed.
 
 **Secrets.** Webhook secrets, the Telegram bot token and the relayer API key are SSM SecureString parameters, read through a five-minute cache. A webhook secret parameter may hold several comma-separated secrets: the sender signs with all of them and sends one `v1=` per secret, so a rotation overlaps. To rotate: add the new secret to the parameter, wait for receivers to accept it, then remove the old one. SES needs no credential — the sender's role carries `ses:SendEmail` with a condition on the from address.
 
@@ -257,7 +257,7 @@ A fee cap too low to replace a stuck transaction, or a signer paused for lack of
 | GET | `/matches?ruleId=&cursor=` | session | shipped in milestone 4 |
 | GET | `/deliveries?status=dead&cursor=` | session | shipped in milestone 4 |
 | POST | `/deliveries/{deliveryId}/redrive` | session | shipped in milestone 4 |
-| GET | `/relayer/signers`, `/relayer/txs/{txId}`, `/relayer/txs?status=pending&cursor=` | session or API key | shipped (milestone 2 for keys, 4 for sessions) |
+| GET | `/relayer/signers`, `/relayer/txs/{txId}`, `/relayer/txs?status=pending&cursor=` | session or API key | shipped: milestone 2 for keys on signers and a transaction by id, milestone 4 for sessions on all three and for keys on the pending list |
 | POST | `/relayer/txs` | API key, on the relayer's own API | not on this API, by decision |
 | GET | `/health` | session | shipped in milestone 4 |
 
@@ -285,7 +285,7 @@ The API reads the same `chains` map — and the same RPC URL parameters — as t
 `modules/api` also creates the dashboard's S3 bucket and one CloudFront distribution with two origins: `/v1/*` goes to the API, and every other path to the bucket. They share one host because the session cookie is `SameSite=Strict` and has no `Domain`, so a browser sends it only to the host that set it, and only from a page on the same site. Call the API at its own `execute-api` name from the dashboard and every request after sign-in is a 401.
 
 - The bucket is private. Only this distribution reads it, through Origin Access Control, and the bucket policy names the distribution's ARN.
-- `/v1/*` is never cached. It forwards every viewer header except `Host`, which carries the cookie and `Authorization` through to API Gateway.
+- `/v1/*` is never cached. It forwards every viewer header except `Host`, which is meant to carry the cookie and `Authorization` through to API Gateway. Nothing has been deployed, so whether `AllViewerExceptHostHeader` passes `Authorization` on a GET is unproven; the `execute-api` endpoint stays available to API-key callers as a fallback.
 - The dashboard is a static export built with `trailingSlash: true`, so the page for `/rules` is the object `rules/index.html`. A CloudFront function on the dashboard's paths makes that rewrite, and a route with no exported page is an error from S3, not a fallback to the home page.
 - The distribution's standard log and the bucket's access log go to a separate log bucket, where they expire after 30 days. Cookies are left out of the log.
 
