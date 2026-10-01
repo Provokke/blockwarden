@@ -110,13 +110,24 @@ locals {
       },
       {
         # A mapping's id is chosen by Lambda and the tag actions carry no lambda:FunctionArn key, so they cannot be
-        # held to the stack's functions. Tagging requires the stack's environment tag among the request's tags;
-        # untagging requires the mapping to carry it. The mapping's own writes are held by the function above.
+        # held to the stack's functions. A mapping already tagged can be retagged only while it carries this stack's
+        # environment, and an untagged one (a create in progress) only with it in the request, so a mapping tagged
+        # for the other stack is out of reach. The mapping's own writes are held by the function above.
         Sid       = "EventSourceMappingTags"
         Effect    = "Allow"
         Action    = ["lambda:TagResource"]
         Resource  = ["arn:${format(local.region_arn, "lambda")}:event-source-mapping:*"]
-        Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
+        Condition = { StringEquals = { "aws:RequestTag/environment" = env, "aws:ResourceTag/environment" = env } }
+      },
+      {
+        Sid      = "EventSourceMappingCreateTags"
+        Effect   = "Allow"
+        Action   = ["lambda:TagResource"]
+        Resource = ["arn:${format(local.region_arn, "lambda")}:event-source-mapping:*"]
+        Condition = {
+          StringEquals = { "aws:RequestTag/environment" = env }
+          Null         = { "aws:ResourceTag/environment" = "true" }
+        }
       },
       {
         Sid       = "EventSourceMappingUntags"
@@ -233,25 +244,6 @@ locals {
         Resource = ["arn:${format(local.region_arn, "cloudwatch")}:alarm:blockwarden-${env}-*"]
       },
       {
-        # An HTTP API's id is chosen by API Gateway, so a stack's APIs are told apart by the environment tag the
-        # root's default_tags put on them: created only with it, and changed or deleted only while they carry it.
-        Sid       = "CreateApis"
-        Effect    = "Allow"
-        Action    = ["apigateway:POST"]
-        Resource  = ["arn:${local.partition}:apigateway:${var.region}::/apis"]
-        Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
-      },
-      {
-        # routes, integrations, authorizers and stages are authorized by the tags of the API they sit under. Nothing
-        # here writes /tags/*: that path has no resource-tag condition key, so a role that could would retag the
-        # other stack's API as its own. Tags are set when an API is created, and changing them is the owner's.
-        Sid       = "Apis"
-        Effect    = "Allow"
-        Action    = ["apigateway:DELETE", "apigateway:PATCH", "apigateway:POST", "apigateway:PUT"]
-        Resource  = ["arn:${local.partition}:apigateway:${var.region}::/apis/*"]
-        Condition = { StringEquals = { "aws:ResourceTag/environment" = env } }
-      },
-      {
         # Bucket names come from bucket_prefix, so they carry the stack's name. GetBucketAcl and PutBucketAcl on
         # the log bucket are how CloudFront's standard logging grants itself write access, with the caller's
         # credentials. The object actions are the deploy's sync of the dashboard export.
@@ -273,6 +265,34 @@ locals {
         Effect   = "Allow"
         Action   = ["s3:DeleteObject", "s3:GetObject", "s3:PutObject"]
         Resource = ["arn:${local.partition}:s3:::blockwarden-${env}-site-*/*"]
+      },
+    ]
+  } }
+
+  # The grants for the services whose resource ids AWS chooses (API Gateway, CloudFront, ACM), held to the stack by
+  # its environment tag. They are a managed policy of their own because a role's inline policies share one 10,240
+  # character limit, which the grants above fill.
+  apply_edge_policies = { for env in local.environments : env => {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # An HTTP API's id is chosen by API Gateway, so a stack's APIs are told apart by the environment tag the
+        # root's default_tags put on them: created only with it, and changed or deleted only while they carry it.
+        Sid       = "CreateApis"
+        Effect    = "Allow"
+        Action    = ["apigateway:POST"]
+        Resource  = ["arn:${local.partition}:apigateway:${var.region}::/apis"]
+        Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
+      },
+      {
+        # routes, integrations, authorizers and stages are authorized by the tags of the API they sit under. Nothing
+        # here writes /tags/*: that path has no resource-tag condition key, so a role that could would retag the
+        # other stack's API as its own. Tags are set when an API is created, and changing them is the owner's.
+        Sid       = "Apis"
+        Effect    = "Allow"
+        Action    = ["apigateway:DELETE", "apigateway:PATCH", "apigateway:POST", "apigateway:PUT"]
+        Resource  = ["arn:${local.partition}:apigateway:${var.region}::/apis/*"]
+        Condition = { StringEquals = { "aws:ResourceTag/environment" = env } }
       },
       {
         # A distribution's id is chosen by CloudFront, so a stack's distributions are told apart by the environment
@@ -395,4 +415,17 @@ resource "aws_iam_role_policy" "apply" {
   name     = "apply"
   role     = aws_iam_role.apply[each.key].id
   policy   = jsonencode(local.apply_policies[each.key])
+}
+
+resource "aws_iam_policy" "apply_edge" {
+  for_each    = local.environments
+  name        = "blockwarden-${each.key}-apply-edge"
+  description = "What the ${each.key} apply role may do to API Gateway, CloudFront and ACM, held to its environment tag."
+  policy      = jsonencode(local.apply_edge_policies[each.key])
+}
+
+resource "aws_iam_role_policy_attachment" "apply_edge" {
+  for_each   = local.environments
+  role       = aws_iam_role.apply[each.key].name
+  policy_arn = aws_iam_policy.apply_edge[each.key].arn
 }

@@ -11,6 +11,16 @@ override_resource {
 }
 
 override_resource {
+  target = aws_iam_policy.apply_edge["staging"]
+  values = { arn = "arn:aws:iam::123456789012:policy/blockwarden-staging-apply-edge" }
+}
+
+override_resource {
+  target = aws_iam_policy.apply_edge["demo"]
+  values = { arn = "arn:aws:iam::123456789012:policy/blockwarden-demo-apply-edge" }
+}
+
+override_resource {
   target = aws_iam_policy.read
   values = { arn = "arn:aws:iam::123456789012:policy/blockwarden-read" }
 }
@@ -93,7 +103,7 @@ run "each_stack_names_only_itself" {
   command = apply
 
   assert {
-    condition     = !strcontains(aws_iam_role_policy.apply["staging"].policy, "blockwarden-demo") && !strcontains(aws_iam_role_policy.apply["demo"].policy, "blockwarden-staging")
+    condition     = !strcontains(aws_iam_role_policy.apply["staging"].policy, "blockwarden-demo") && !strcontains(aws_iam_role_policy.apply["demo"].policy, "blockwarden-staging") && !strcontains(aws_iam_policy.apply_edge["staging"].policy, "blockwarden-demo") && !strcontains(aws_iam_policy.apply_edge["demo"].policy, "blockwarden-staging")
     error_message = "an apply policy must never name the other stack"
   }
 
@@ -113,9 +123,14 @@ run "each_stack_names_only_itself" {
   }
 
   assert {
+    condition     = alltrue([for env in ["staging", "demo"] : aws_iam_role_policy_attachment.apply_edge[env].policy_arn == "arn:aws:iam::123456789012:policy/blockwarden-${env}-apply-edge"])
+    error_message = "each apply role attaches its own stack's edge grants"
+  }
+
+  assert {
     condition = alltrue(flatten([
       for env in ["staging", "demo"] : [
-        for s in concat(jsondecode(aws_iam_role_policy.apply[env].policy).Statement, jsondecode(aws_iam_policy.boundary[env].policy).Statement, jsondecode(aws_iam_policy.apply_read[env].policy).Statement) : [
+        for s in concat(jsondecode(aws_iam_role_policy.apply[env].policy).Statement, jsondecode(aws_iam_policy.apply_edge[env].policy).Statement, jsondecode(aws_iam_policy.boundary[env].policy).Statement, jsondecode(aws_iam_policy.apply_read[env].policy).Statement) : [
           for r in s.Resource : strcontains(r, "blockwarden-${env}")
           if strcontains(r, "blockwarden-") && !startswith(r, "arn:aws:s3:::blockwarden-tfstate-")
         ]
@@ -158,7 +173,7 @@ run "roles_are_created_only_inside_the_boundary" {
 
   assert {
     condition = alltrue([
-      for p in aws_iam_role_policy.apply : !anytrue([
+      for p in concat(values(aws_iam_role_policy.apply), values(aws_iam_policy.apply_edge)) : !anytrue([
         for s in jsondecode(p.policy).Statement :
         s.Effect == "Allow" && anytrue([for a in s.Action : a == "*" || endswith(a, ":*")])
       ])
@@ -182,6 +197,11 @@ run "policies_fit_their_size_limits" {
   assert {
     condition     = alltrue([for p in aws_iam_role_policy.apply : length(p.policy) <= 10240])
     error_message = "a role's inline policies hold at most 10,240 characters"
+  }
+
+  assert {
+    condition     = alltrue([for p in aws_iam_policy.apply_edge : length(p.policy) <= 6144])
+    error_message = "a managed policy holds at most 6,144 characters"
   }
 
   assert {
@@ -252,7 +272,7 @@ run "escalation_critical_statements_are_pinned" {
   assert {
     condition = alltrue([
       for env in ["staging", "demo"] : toset(flatten([
-        for s in jsondecode(aws_iam_role_policy.apply[env].policy).Statement : [for a in s.Action : a if startswith(a, "iam:")]
+        for s in concat(jsondecode(aws_iam_role_policy.apply[env].policy).Statement, jsondecode(aws_iam_policy.apply_edge[env].policy).Statement) : [for a in s.Action : a if startswith(a, "iam:")]
         if s.Effect == "Allow"
         ])) == toset([
         "iam:CreateRole", "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:PassRole", "iam:PutRolePermissionsBoundary",
@@ -270,7 +290,7 @@ run "other_stacks_resources_are_held_by_environment_tag" {
   assert {
     condition = {
       for env in ["staging", "demo"] : env => {
-        for s in jsondecode(aws_iam_role_policy.apply[env].policy).Statement : s.Sid => s
+        for s in concat(jsondecode(aws_iam_role_policy.apply[env].policy).Statement, jsondecode(aws_iam_policy.apply_edge[env].policy).Statement) : s.Sid => s
         if contains(["CreateApis", "Apis", "CreateDistributions", "Distributions"], s.Sid)
       }
       } == {
@@ -315,7 +335,7 @@ run "other_stacks_resources_are_held_by_environment_tag" {
   assert {
     condition = alltrue(flatten([
       for env in ["staging", "demo"] : [
-        for s in jsondecode(aws_iam_role_policy.apply[env].policy).Statement :
+        for s in concat(jsondecode(aws_iam_role_policy.apply[env].policy).Statement, jsondecode(aws_iam_policy.apply_edge[env].policy).Statement) :
         (s.Condition == { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
         || s.Condition == { StringEquals = { "aws:RequestTag/environment" = env }, Null = { "aws:ResourceTag/environment" = "true" } })
         if length(setintersection(s.Action, ["kms:TagResource", "acm:AddTagsToCertificate", "cloudfront:TagResource"])) > 0
@@ -327,7 +347,7 @@ run "other_stacks_resources_are_held_by_environment_tag" {
   # the tags path cannot be conditioned on a resource tag, so a grant on it would let one stack retag the other's API
   assert {
     condition = !anytrue(flatten([
-      for p in aws_iam_role_policy.apply : [
+      for p in concat(values(aws_iam_role_policy.apply), values(aws_iam_policy.apply_edge)) : [
         for s in jsondecode(p.policy).Statement : [for r in s.Resource : strcontains(r, "apigateway") && strcontains(r, "/tags")]
         if s.Effect == "Allow"
       ]
@@ -340,7 +360,7 @@ run "other_stacks_resources_are_held_by_environment_tag" {
   assert {
     condition = alltrue([
       for env in ["staging", "demo"] : toset([
-        for s in jsondecode(aws_iam_role_policy.apply[env].policy).Statement : s.Sid
+        for s in concat(jsondecode(aws_iam_role_policy.apply[env].policy).Statement, jsondecode(aws_iam_policy.apply_edge[env].policy).Statement) : s.Sid
         if s.Effect == "Allow" && !contains(keys(s), "Condition") && anytrue([for a in s.Action : startswith(a, "apigateway:") || startswith(a, "cloudfront:")])
         ]) == toset([
         "EdgePolicies", "CreateEdgePolicies", "CreateCloudFrontFunctions", "CloudFrontFunctions",
@@ -356,10 +376,11 @@ run "tag_held_statements_are_pinned" {
   assert {
     condition = {
       for env in ["staging", "demo"] : env => {
-        for s in jsondecode(aws_iam_role_policy.apply[env].policy).Statement : s.Sid => s
+        for s in concat(jsondecode(aws_iam_role_policy.apply[env].policy).Statement, jsondecode(aws_iam_policy.apply_edge[env].policy).Statement) : s.Sid => s
         if contains([
           "CreateKeys", "Keys", "KeyTags", "KeyCreateTags", "DistributionCreateTags", "RequestCertificates", "Certificates",
-          "CertificateTags", "EventSourceMappings", "EventSourceMappingTags", "EventSourceMappingUntags",
+          "CertificateTags", "EventSourceMappings", "EventSourceMappingTags", "EventSourceMappingCreateTags",
+          "EventSourceMappingUntags",
         ], s.Sid)
       }
       } == {
@@ -441,7 +462,17 @@ run "tag_held_statements_are_pinned" {
           Effect    = "Allow"
           Action    = ["lambda:TagResource"]
           Resource  = ["arn:aws:lambda:ap-southeast-2:123456789012:event-source-mapping:*"]
-          Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
+          Condition = { StringEquals = { "aws:RequestTag/environment" = env, "aws:ResourceTag/environment" = env } }
+        }
+        EventSourceMappingCreateTags = {
+          Sid      = "EventSourceMappingCreateTags"
+          Effect   = "Allow"
+          Action   = ["lambda:TagResource"]
+          Resource = ["arn:aws:lambda:ap-southeast-2:123456789012:event-source-mapping:*"]
+          Condition = {
+            StringEquals = { "aws:RequestTag/environment" = env }
+            Null         = { "aws:ResourceTag/environment" = "true" }
+          }
         }
         EventSourceMappingUntags = {
           Sid       = "EventSourceMappingUntags"
