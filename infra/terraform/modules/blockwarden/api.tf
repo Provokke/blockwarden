@@ -22,4 +22,6 @@ module "api" {
 
   alarm_topic_arn    = aws_sns_topic.alarms.arn
   log_retention_days = var.log_retention_days
+
+  permissions_boundary_arn = var.permissions_boundary_arn
 }

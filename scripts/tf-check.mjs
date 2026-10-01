@@ -20,10 +20,16 @@ function run(label, args) {
 }
 
 run('terraform fmt', [...asCaller, '-w', '/tf', terraform, 'fmt', '-check', '-recursive'])
-// the demo stack uses every module; each example deploys one slice alone, with its defaults
-for (const root of ['envs/demo', 'examples/relayer-only', 'examples/monitor-actions-only']) {
+// the bootstrap is applied once by hand; the two stacks use every module; each example deploys one slice alone,
+// with its defaults
+const roots = ['bootstrap', 'envs/staging', 'envs/demo', 'examples/relayer-only', 'examples/monitor-actions-only']
+for (const root of roots) {
   run(`terraform init ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'init', '-backend=false', '-input=false'])
   run(`terraform validate ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'validate'])
+}
+// every provider in these tests is a mock_provider, so they reach no AWS endpoint
+for (const root of ['bootstrap', 'envs/staging', 'envs/demo']) {
+  run(`terraform test ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'test'])
 }
 run('tflint', [
   '-w',

@@ -46,18 +46,21 @@ resource "aws_cloudwatch_log_group" "relayer" {
 }
 
 resource "aws_iam_role" "api" {
-  name               = "${var.name}-relayer-api"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  name                 = "${var.name}-relayer-api"
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 resource "aws_iam_role" "signer" {
-  name               = "${var.name}-relayer-signer"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  name                 = "${var.name}-relayer-signer"
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 resource "aws_iam_role" "sweeper" {
-  name               = "${var.name}-relayer-sweeper"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  name                 = "${var.name}-relayer-sweeper"
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 data "aws_iam_policy_document" "common" {
@@ -240,8 +243,9 @@ data "aws_iam_policy_document" "scheduler_assume" {
 }
 
 resource "aws_iam_role" "scheduler" {
-  name               = "${var.name}-relayer-scheduler"
-  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+  name                 = "${var.name}-relayer-scheduler"
+  assume_role_policy   = data.aws_iam_policy_document.scheduler_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 data "aws_iam_policy_document" "scheduler" {

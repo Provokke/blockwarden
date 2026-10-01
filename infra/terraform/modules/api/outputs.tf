@@ -32,3 +32,8 @@ output "site_url" {
   description = "Where the dashboard is served: site_origin, or the distribution's own name when that is null. A sign-in is accepted from this origin only."
   value       = local.site_origin
 }
+
+output "permissions_boundary_arn" {
+  description = "The permissions boundary on the api role, so a caller can check the value reached the role and not only this module."
+  value       = aws_iam_role.api.permissions_boundary
+}
