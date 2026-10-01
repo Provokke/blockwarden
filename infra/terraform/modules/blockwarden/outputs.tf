@@ -80,3 +80,12 @@ output "site_url" {
   description = "Where the dashboard is served, or null when the API is not deployed."
   value       = var.api == null ? null : module.api[0].site_url
 }
+
+output "permissions_boundary_arns" {
+  description = "The permissions boundary on one role of each part, so a caller can check the value reached the roles and not only this module. A part that is switched off is null."
+  value = {
+    monitor = aws_iam_role.monitor.permissions_boundary
+    actions = var.actions == null ? null : module.actions[0].permissions_boundary_arn
+    api     = var.api == null ? null : module.api[0].permissions_boundary_arn
+  }
+}

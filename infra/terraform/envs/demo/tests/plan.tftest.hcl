@@ -32,6 +32,28 @@ run "the_stack_plans_from_empty" {
     condition     = output.alarm_topic_arn == "arn:aws:sns:ap-southeast-2:123456789012:blockwarden-demo-alarms"
     error_message = "the alarm topic's ARN must be known at plan, or the relayer cannot count its own topic"
   }
+
+  # the runs below plan each module as a root, so they cannot see a pass-through dropped between the stack and a
+  # child; these read the boundary off a role in each child, as that child received it
+  assert {
+    condition     = module.blockwarden.permissions_boundary_arns.monitor == var.boundary
+    error_message = "the stack must hand the demo boundary to modules/blockwarden"
+  }
+
+  assert {
+    condition     = module.blockwarden.permissions_boundary_arns.actions == var.boundary
+    error_message = "modules/blockwarden must hand the boundary to modules/actions"
+  }
+
+  assert {
+    condition     = module.blockwarden.permissions_boundary_arns.api == var.boundary
+    error_message = "modules/blockwarden must hand the boundary to modules/api"
+  }
+
+  assert {
+    condition     = module.relayer.permissions_boundary_arn == var.boundary
+    error_message = "the stack must hand the demo boundary to modules/relayer"
+  }
 }
 
 run "monitor_roles_have_the_boundary" {
@@ -74,9 +96,7 @@ run "actions_roles_have_the_boundary" {
   }
 
   assert {
-    condition = alltrue([
-      for role in concat(values(aws_iam_role.actions), [aws_iam_role.scheduler]) : role.permissions_boundary == var.boundary
-    ])
+    condition     = aws_iam_role.actions["dispatcher"].permissions_boundary == var.boundary && aws_iam_role.actions["sender"].permissions_boundary == var.boundary && aws_iam_role.scheduler.permissions_boundary == var.boundary
     error_message = "every role modules/actions creates must carry the boundary"
   }
 }
@@ -133,9 +153,7 @@ run "relayer_roles_have_the_boundary" {
   }
 
   assert {
-    condition = alltrue([
-      for role in [aws_iam_role.api, aws_iam_role.signer, aws_iam_role.sweeper, aws_iam_role.scheduler] : role.permissions_boundary == var.boundary
-    ])
+    condition     = aws_iam_role.api.permissions_boundary == var.boundary && aws_iam_role.signer.permissions_boundary == var.boundary && aws_iam_role.sweeper.permissions_boundary == var.boundary && aws_iam_role.scheduler.permissions_boundary == var.boundary
     error_message = "every role modules/relayer creates must carry the boundary"
   }
 }
