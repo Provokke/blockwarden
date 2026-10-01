@@ -89,10 +89,25 @@ run "plan_role_writes_only_lock_files" {
   assert {
     condition = alltrue(flatten([
       for s in jsondecode(aws_iam_role_policy.plan_state.policy).Statement : [
-        for r in s.Resource : startswith(r, "arn:aws:s3:::blockwarden-tfstate-123456789012-ap-southeast-2")
+        for r in s.Resource : contains([
+          "arn:aws:s3:::blockwarden-tfstate-123456789012-ap-southeast-2",
+          "arn:aws:s3:::blockwarden-tfstate-123456789012-ap-southeast-2/*",
+          "arn:aws:s3:::blockwarden-tfstate-123456789012-ap-southeast-2/*.tflock",
+        ], r)
       ]
     ]))
-    error_message = "the plan role's state access names the state bucket and nothing else"
+    error_message = "the plan role's state access names the state bucket, its objects and its lock files, and nothing else"
+  }
+
+  assert {
+    condition = {
+      for s in jsondecode(aws_iam_role_policy.plan_state.policy).Statement : s.Sid => s.Resource
+      } == {
+      ListState = ["arn:aws:s3:::blockwarden-tfstate-123456789012-ap-southeast-2"]
+      ReadState = ["arn:aws:s3:::blockwarden-tfstate-123456789012-ap-southeast-2/*"]
+      Lock      = ["arn:aws:s3:::blockwarden-tfstate-123456789012-ap-southeast-2/*.tflock"]
+    }
+    error_message = "list and read name the state bucket and its objects, and the lock writes name *.tflock only"
   }
 
   # an exact set, so a new read action is a decision made here and not a quiet addition
@@ -179,6 +194,18 @@ run "reads_only_the_items_terraform_writes" {
       if contains(s.Action, "dynamodb:GetItem")
     ]) == 1
     error_message = "exactly one statement grants GetItem"
+  }
+
+  assert {
+    condition = alltrue([
+      for s in jsondecode(aws_iam_policy.read.policy).Statement :
+      s.Resource == [
+        "arn:aws:dynamodb:ap-southeast-2:123456789012:table/blockwarden-staging",
+        "arn:aws:dynamodb:ap-southeast-2:123456789012:table/blockwarden-demo",
+      ]
+      if contains(s.Action, "dynamodb:GetItem")
+    ])
+    error_message = "dynamodb:GetItem names the two stacks' tables and nothing wider"
   }
 }
 

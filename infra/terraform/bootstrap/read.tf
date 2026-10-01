@@ -23,11 +23,16 @@ locals {
       Resource = ["arn:${format(local.region_arn, "dynamodb")}:table/blockwarden-*"]
     },
     {
-      # GetItem is for the rule, signer and API key items Terraform writes. The tables also hold runtime data
-      # (matches, deliveries, sessions, nonces, spend), which the leading key keeps out of reach.
-      Sid      = "TerraformItems"
-      Action   = ["dynamodb:GetItem"]
-      Resource = ["arn:${format(local.region_arn, "dynamodb")}:table/blockwarden-*"]
+      # GetItem is for the rule, signer and API key items Terraform writes. The leading-key condition limits it to
+      # the partitions Terraform writes, and IAM cannot condition on a sort key. The relayer also keeps its nonce,
+      # pause and spend rows inside signer partitions, and those stay readable; match, delivery and the other
+      # runtime data is not.
+      Sid    = "TerraformItems"
+      Action = ["dynamodb:GetItem"]
+      Resource = [
+        "arn:${format(local.region_arn, "dynamodb")}:table/blockwarden-staging",
+        "arn:${format(local.region_arn, "dynamodb")}:table/blockwarden-demo",
+      ]
       Condition = {
         "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["RULE#*", "SIGNER#*", "APIKEY#*"] }
       }

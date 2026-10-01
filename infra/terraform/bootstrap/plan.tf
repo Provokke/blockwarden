@@ -1,13 +1,13 @@
 resource "aws_iam_role" "plan" {
   name                 = "blockwarden-plan"
-  description          = "terraform plan for the Blockwarden stacks, from pull requests and main."
+  description          = "terraform plan for the Blockwarden stacks, from pull requests."
   assume_role_policy   = jsonencode(local.trust_policies["plan"])
   max_session_duration = 3600
 
   lifecycle {
     precondition {
-      condition     = var.existing_oidc_provider_arn == null || split(":", var.existing_oidc_provider_arn)[4] == local.account_id
-      error_message = "existing_oidc_provider_arn must be a provider in this account."
+      condition     = var.existing_oidc_provider_arn == null || var.existing_oidc_provider_arn == "arn:${local.partition}:iam::${local.account_id}:oidc-provider/token.actions.githubusercontent.com"
+      error_message = "existing_oidc_provider_arn must be the GitHub provider in this account and partition."
     }
   }
 }
