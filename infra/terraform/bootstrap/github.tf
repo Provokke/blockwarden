@@ -13,9 +13,12 @@ locals {
   # pull_request subject is reachable only from a branch in this repository. The assumption that remains is that no
   # pull_request_target or workflow_run workflow requests id-token: write, since those run with the base
   # repository's context for a trigger an outsider can cause.
-  role_subjects = {
-    plan = ["${var.github_sub_prefix}:pull_request"]
-  }
+  role_subjects = merge(
+    {
+      plan = ["${var.github_sub_prefix}:pull_request"]
+    },
+    { for env in local.environments : "${env}-apply" => ["${var.github_sub_prefix}:environment:${env}"] },
+  )
 
   # StringEquals on both claims, never StringLike: a sub list is a set of exact strings
   trust_policies = { for role, subjects in local.role_subjects : role => {
