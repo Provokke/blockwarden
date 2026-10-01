@@ -277,4 +277,20 @@ describe('the Terraform policy', () => {
       expect(envApi, env).toMatch(/site_script_hashes\s*=\s*var\.site_script_hashes/)
     }
   })
+
+  // the apply roles hold CloudFront, API Gateway, KMS, ACM and event source mappings to their stack by the
+  // environment tag. A mock provider applies no default_tags, so no plan test can see it; the tag has to be a line
+  // of its own in the one aws provider that has no alias, since an aliased provider's tags reach only its resources.
+  it.each([
+    ['envs/demo/main.tf', 'demo'],
+    ['envs/staging/main.tf', 'staging'],
+  ])('%s tags every resource environment = "%s" through the default aws provider', async (file, env) => {
+    const text = await read(file)
+    const providers = [...text.matchAll(/^provider "aws" \{/gm)].map((m) =>
+      block(text.slice(m.index), /^provider "aws" \{/),
+    )
+    const defaults = providers.filter((p) => !/^\s*alias\s*=/m.test(p))
+    expect(defaults, file).toHaveLength(1)
+    expect(defaults[0], file).toMatch(new RegExp(`^\\s*environment\\s*=\\s*"${env}"\\s*$`, 'm'))
+  })
 })

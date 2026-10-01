@@ -45,13 +45,6 @@ run "the_stack_plans_from_empty_under_its_own_names" {
     condition     = output.session_secret_parameter == "/blockwarden-staging/api/session-secret"
     error_message = "staging's session secret is under /blockwarden-staging/"
   }
-
-  # the apply role holds CloudFront, API Gateway, KMS, ACM and event source mappings to their stack by this tag, and
-  # a mock provider applies no default_tags, so the provider block is read as text
-  assert {
-    condition     = can(regex("default_tags \\{\\s*tags = \\{[^}]*environment\\s*=\\s*\"staging\"", file("${path.root}/main.tf")))
-    error_message = "the aws provider's default_tags must set environment = \"staging\""
-  }
 }
 
 run "the_boundary_reaches_every_module" {

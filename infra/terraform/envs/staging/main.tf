@@ -11,8 +11,10 @@ terraform {
     }
   }
 
-  # A partial configuration: bucket, key and region are passed with -backend-config, so no account id is
-  # committed. The key is staging/terraform.tfstate, the only one the staging apply role can write.
+  # A partial configuration, so no account id is committed. init supplies the rest:
+  #   terraform init -backend-config="bucket=<state_bucket output of infra/terraform/bootstrap>" \
+  #     -backend-config="key=staging/terraform.tfstate" -backend-config="region=<region output of the bootstrap>"
+  # The key is the only one the staging apply role can write.
   backend "s3" {
     use_lockfile = true
   }
