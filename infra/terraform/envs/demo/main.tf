@@ -60,11 +60,21 @@ provider "aws" {
   }
 }
 
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}
+
+locals {
+  # created by infra/terraform/bootstrap; the apply role can create a role only with this attached
+  permissions_boundary_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/blockwarden-demo-boundary"
+}
+
 module "blockwarden" {
-  source             = "../../modules/blockwarden"
-  name               = "blockwarden-demo"
-  monitor_source_dir = "${path.root}/../../../../services/monitor/dist/monitor"
-  alarm_email        = var.alarm_email
+  source                   = "../../modules/blockwarden"
+  name                     = "blockwarden-demo"
+  permissions_boundary_arn = local.permissions_boundary_arn
+  monitor_source_dir       = "${path.root}/../../../../services/monitor/dist/monitor"
+  alarm_email              = var.alarm_email
 
   chains = {
     ethereum = {
@@ -103,11 +113,12 @@ module "blockwarden" {
 # Testnet relaying only. Until the milestone 5 demo contracts exist, the allowlist holds only the burn address, and
 # "0x" there allows plain transfers with value to it, up to the 0.05 ETH daily spend cap.
 module "relayer" {
-  source             = "../../modules/relayer"
-  name               = "blockwarden-demo"
-  relayer_source_dir = "${path.root}/../../../../services/relayer/dist"
-  table              = { name = module.blockwarden.table_name, arn = module.blockwarden.table_arn }
-  alarm_topic_arn    = module.blockwarden.alarm_topic_arn
+  source                   = "../../modules/relayer"
+  name                     = "blockwarden-demo"
+  permissions_boundary_arn = local.permissions_boundary_arn
+  relayer_source_dir       = "${path.root}/../../../../services/relayer/dist"
+  table                    = { name = module.blockwarden.table_name, arn = module.blockwarden.table_arn }
+  alarm_topic_arn          = module.blockwarden.alarm_topic_arn
 
   chains = {
     base-sepolia = {

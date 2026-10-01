@@ -27,7 +27,7 @@ for (const root of ['bootstrap', 'envs/demo', 'examples/relayer-only', 'examples
   run(`terraform validate ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'validate'])
 }
 // every provider in these tests is a mock_provider, so they reach no AWS endpoint
-for (const root of ['bootstrap']) {
+for (const root of ['bootstrap', 'envs/demo']) {
   run(`terraform test ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'test'])
 }
 run('tflint', [

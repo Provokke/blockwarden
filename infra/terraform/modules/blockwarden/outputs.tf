@@ -20,7 +20,10 @@ output "monitor_function_names" {
 
 output "alarm_topic_arn" {
   description = "SNS topic that receives every alarm."
-  value       = aws_sns_topic.alarms.arn
+  # Built from the topic's name, which is known at plan, rather than read from the topic, which is not until it
+  # exists: modules/relayer decides whether to create its own topic by whether this is null, and on a first plan
+  # an unknown ARN makes that count unknown and the plan fails.
+  value = "arn:${local.partition}:sns:${local.region}:${local.account_id}:${aws_sns_topic.alarms.name}"
 }
 
 output "delivery_queue_url" {
