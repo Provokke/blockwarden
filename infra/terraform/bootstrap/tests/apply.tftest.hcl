@@ -292,7 +292,7 @@ run "other_stacks_resources_are_held_by_environment_tag" {
         CreateDistributions = {
           Sid       = "CreateDistributions"
           Effect    = "Allow"
-          Action    = ["cloudfront:CreateDistribution", "cloudfront:CreateDistributionWithTags"]
+          Action    = ["cloudfront:CreateDistribution"]
           Resource  = ["*"]
           Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
         }
@@ -316,11 +316,12 @@ run "other_stacks_resources_are_held_by_environment_tag" {
     condition = alltrue(flatten([
       for env in ["staging", "demo"] : [
         for s in jsondecode(aws_iam_role_policy.apply[env].policy).Statement :
-        s.Condition == { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
+        (s.Condition == { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
+        || s.Condition == { StringEquals = { "aws:RequestTag/environment" = env }, Null = { "aws:ResourceTag/environment" = "true" } })
         if length(setintersection(s.Action, ["kms:TagResource", "acm:AddTagsToCertificate", "cloudfront:TagResource"])) > 0
       ]
     ]))
-    error_message = "tagging a key, certificate or distribution requires this stack's environment on the resource and on the request"
+    error_message = "tagging a key, certificate or distribution requires this stack's environment on the request, and on the resource unless it has none yet"
   }
 
   # the tags path cannot be conditioned on a resource tag, so a grant on it would let one stack retag the other's API
@@ -346,5 +347,111 @@ run "other_stacks_resources_are_held_by_environment_tag" {
       ])
     ])
     error_message = "the API Gateway and CloudFront grants with no condition are exactly the untaggable ones"
+  }
+}
+
+run "tag_held_statements_are_pinned" {
+  command = apply
+
+  assert {
+    condition = {
+      for env in ["staging", "demo"] : env => {
+        for s in jsondecode(aws_iam_role_policy.apply[env].policy).Statement : s.Sid => s
+        if contains([
+          "CreateKeys", "Keys", "KeyTags", "KeyCreateTags", "DistributionCreateTags", "RequestCertificates", "Certificates",
+          "CertificateTags", "EventSourceMappings", "EventSourceMappingTags", "EventSourceMappingUntags",
+        ], s.Sid)
+      }
+      } == {
+      for env in ["staging", "demo"] : env => {
+        CreateKeys = {
+          Sid       = "CreateKeys"
+          Effect    = "Allow"
+          Action    = ["kms:CreateKey"]
+          Resource  = ["*"]
+          Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
+        }
+        Keys = {
+          Sid    = "Keys"
+          Effect = "Allow"
+          Action = [
+            "kms:CreateAlias", "kms:DeleteAlias", "kms:DisableKey", "kms:EnableKey", "kms:PutKeyPolicy",
+            "kms:ScheduleKeyDeletion", "kms:UntagResource", "kms:UpdateAlias", "kms:UpdateKeyDescription",
+          ]
+          Resource  = ["arn:aws:kms:ap-southeast-2:123456789012:key/*"]
+          Condition = { StringEquals = { "aws:ResourceTag/environment" = env } }
+        }
+        KeyTags = {
+          Sid       = "KeyTags"
+          Effect    = "Allow"
+          Action    = ["kms:TagResource"]
+          Resource  = ["arn:aws:kms:ap-southeast-2:123456789012:key/*"]
+          Condition = { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
+        }
+        KeyCreateTags = {
+          Sid      = "KeyCreateTags"
+          Effect   = "Allow"
+          Action   = ["kms:TagResource"]
+          Resource = ["arn:aws:kms:ap-southeast-2:123456789012:key/*"]
+          Condition = {
+            StringEquals = { "aws:RequestTag/environment" = env }
+            Null         = { "aws:ResourceTag/environment" = "true" }
+          }
+        }
+        DistributionCreateTags = {
+          Sid      = "DistributionCreateTags"
+          Effect   = "Allow"
+          Action   = ["cloudfront:TagResource"]
+          Resource = ["arn:aws:cloudfront::123456789012:distribution/*"]
+          Condition = {
+            StringEquals = { "aws:RequestTag/environment" = env }
+            Null         = { "aws:ResourceTag/environment" = "true" }
+          }
+        }
+        RequestCertificates = {
+          Sid       = "RequestCertificates"
+          Effect    = "Allow"
+          Action    = ["acm:RequestCertificate"]
+          Resource  = ["*"]
+          Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
+        }
+        Certificates = {
+          Sid       = "Certificates"
+          Effect    = "Allow"
+          Action    = ["acm:DeleteCertificate", "acm:RemoveTagsFromCertificate"]
+          Resource  = ["arn:aws:acm:us-east-1:123456789012:certificate/*"]
+          Condition = { StringEquals = { "aws:ResourceTag/environment" = env } }
+        }
+        CertificateTags = {
+          Sid       = "CertificateTags"
+          Effect    = "Allow"
+          Action    = ["acm:AddTagsToCertificate"]
+          Resource  = ["arn:aws:acm:us-east-1:123456789012:certificate/*"]
+          Condition = { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
+        }
+        EventSourceMappings = {
+          Sid       = "EventSourceMappings"
+          Effect    = "Allow"
+          Action    = ["lambda:CreateEventSourceMapping", "lambda:DeleteEventSourceMapping", "lambda:UpdateEventSourceMapping"]
+          Resource  = ["*"]
+          Condition = { ArnLike = { "lambda:FunctionArn" = "arn:aws:lambda:ap-southeast-2:123456789012:function:blockwarden-${env}-*" } }
+        }
+        EventSourceMappingTags = {
+          Sid       = "EventSourceMappingTags"
+          Effect    = "Allow"
+          Action    = ["lambda:TagResource"]
+          Resource  = ["arn:aws:lambda:ap-southeast-2:123456789012:event-source-mapping:*"]
+          Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
+        }
+        EventSourceMappingUntags = {
+          Sid       = "EventSourceMappingUntags"
+          Effect    = "Allow"
+          Action    = ["lambda:UntagResource"]
+          Resource  = ["arn:aws:lambda:ap-southeast-2:123456789012:event-source-mapping:*"]
+          Condition = { StringEquals = { "aws:ResourceTag/environment" = env } }
+        }
+      }
+    }
+    error_message = "keys, certificates and event source mappings are held to the stack by tag or function exactly as designed"
   }
 }

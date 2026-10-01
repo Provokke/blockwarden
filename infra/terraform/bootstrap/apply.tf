@@ -109,9 +109,9 @@ locals {
         Condition = { ArnLike = { "lambda:FunctionArn" = "arn:${format(local.region_arn, "lambda")}:function:blockwarden-${env}-*" } }
       },
       {
-        # A mapping's id is chosen by Lambda and its tag actions carry no lambda:FunctionArn key, so neither the
-        # name nor the function can hold these to the stack. Tagging requires the stack's environment tag, which
-        # is all the default tags put there; the mapping's own writes are held by the function above.
+        # A mapping's id is chosen by Lambda and the tag actions carry no lambda:FunctionArn key, so they cannot be
+        # held to the stack's functions. Tagging requires the stack's environment tag among the request's tags;
+        # untagging requires the mapping to carry it. The mapping's own writes are held by the function above.
         Sid       = "EventSourceMappingTags"
         Effect    = "Allow"
         Action    = ["lambda:TagResource"]
@@ -119,10 +119,11 @@ locals {
         Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
       },
       {
-        Sid      = "EventSourceMappingUntags"
-        Effect   = "Allow"
-        Action   = ["lambda:UntagResource"]
-        Resource = ["arn:${format(local.region_arn, "lambda")}:event-source-mapping:*"]
+        Sid       = "EventSourceMappingUntags"
+        Effect    = "Allow"
+        Action    = ["lambda:UntagResource"]
+        Resource  = ["arn:${format(local.region_arn, "lambda")}:event-source-mapping:*"]
+        Condition = { StringEquals = { "aws:ResourceTag/environment" = env } }
       },
       {
         Sid      = "Schedules"
@@ -171,6 +172,19 @@ locals {
         Action    = ["kms:TagResource"]
         Resource  = ["arn:${format(local.region_arn, "kms")}:key/*"]
         Condition = { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
+      },
+      {
+        # CreateKey with tags is also authorized as kms:TagResource, on a key that carries no tag yet. That is allowed
+        # only while the key has no environment tag and the request sets this stack's, so a key already tagged for
+        # the other stack is out of reach. An untagged key in the account is not.
+        Sid      = "KeyCreateTags"
+        Effect   = "Allow"
+        Action   = ["kms:TagResource"]
+        Resource = ["arn:${format(local.region_arn, "kms")}:key/*"]
+        Condition = {
+          StringEquals = { "aws:RequestTag/environment" = env }
+          Null         = { "aws:ResourceTag/environment" = "true" }
+        }
       },
       {
         Sid      = "Aliases"
@@ -262,11 +276,12 @@ locals {
       },
       {
         # A distribution's id is chosen by CloudFront, so a stack's distributions are told apart by the environment
-        # tag: created only with it, and changed, tagged or deleted only while they carry it. CreateDistribution is
-        # what CreateDistributionWithTags is authorized as, and neither takes a resource ARN.
+        # tag: created only with it, and changed, tagged or deleted only while they carry it. The provider creates
+        # one with tags through CreateDistributionWithTags, which is no IAM action: the API needs
+        # cloudfront:CreateDistribution, which takes no resource ARN, and cloudfront:TagResource, below.
         Sid       = "CreateDistributions"
         Effect    = "Allow"
-        Action    = ["cloudfront:CreateDistribution", "cloudfront:CreateDistributionWithTags"]
+        Action    = ["cloudfront:CreateDistribution"]
         Resource  = ["*"]
         Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
       },
@@ -286,6 +301,17 @@ locals {
         Action    = ["cloudfront:TagResource"]
         Resource  = ["arn:${local.partition}:cloudfront::${local.account_id}:distribution/*"]
         Condition = { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
+      },
+      {
+        # the TagResource half of a tagged create, on a distribution that carries no tag yet; see KeyCreateTags
+        Sid      = "DistributionCreateTags"
+        Effect   = "Allow"
+        Action   = ["cloudfront:TagResource"]
+        Resource = ["arn:${local.partition}:cloudfront::${local.account_id}:distribution/*"]
+        Condition = {
+          StringEquals = { "aws:RequestTag/environment" = env }
+          Null         = { "aws:ResourceTag/environment" = "true" }
+        }
       },
       {
         # Origin access controls and response headers policies take no tags and their ids are chosen by CloudFront,

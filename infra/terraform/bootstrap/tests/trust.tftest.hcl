@@ -286,3 +286,84 @@ run "names_the_state_bucket_from_the_account_and_region" {
     error_message = "a managed policy holds at most 6,144 characters"
   }
 }
+
+run "per_stack_read_policies_read_only_their_stack" {
+  command = apply
+
+  assert {
+    condition = {
+      for env, p in aws_iam_policy.apply_read : env => flatten([
+        for s in jsondecode(p.policy).Statement : s.Resource if contains(s.Action, "ssm:GetParameter")
+      ])
+      } == {
+      for env in ["staging", "demo"] : env => [
+        "arn:aws:ssm:ap-southeast-2:123456789012:parameter/blockwarden-${env}/api/session-secret",
+        "arn:aws:ssm:ap-southeast-2:123456789012:parameter/blockwarden-${env}/relayer/api-keys/*",
+      ]
+    }
+    error_message = "an apply role's ssm:GetParameter names only its own stack's session secret and API keys"
+  }
+
+  assert {
+    condition = alltrue([
+      for env in ["staging", "demo"] : {
+        for s in jsondecode(aws_iam_policy.apply_read[env].policy).Statement : s.Sid => s.Resource
+        if contains(s.Action, "dynamodb:GetItem")
+      } == { TerraformItems = ["arn:aws:dynamodb:ap-southeast-2:123456789012:table/blockwarden-${env}"] }
+    ])
+    error_message = "dynamodb:GetItem names only the stack's own table"
+  }
+
+  assert {
+    condition     = alltrue([for p in aws_iam_policy.apply_read : !strcontains(p.policy, "kms:Decrypt")])
+    error_message = "a per-stack read policy must not grant kms:Decrypt"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in aws_iam_policy.apply_read : alltrue(flatten([
+        for s in jsondecode(p.policy).Statement : [
+          for a in s.Action : !can(regex("^(secretsmanager:|ssm:GetParameter.|s3:GetObject|logs:Get)", a))
+        ]
+      ]))
+    ])
+    error_message = "a per-stack read policy must not read secrets, parameter paths, objects or log events"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in aws_iam_policy.apply_read : toset(flatten([
+        for s in jsondecode(p.policy).Statement : s.Action
+        ])) == toset([
+        "acm:DescribeCertificate", "acm:ListTagsForCertificate", "apigateway:GET",
+        "cloudfront:DescribeFunction", "cloudfront:GetCachePolicy", "cloudfront:GetDistribution",
+        "cloudfront:GetDistributionConfig", "cloudfront:GetFunction", "cloudfront:GetInvalidation",
+        "cloudfront:GetOriginAccessControl", "cloudfront:GetOriginRequestPolicy",
+        "cloudfront:GetResponseHeadersPolicy", "cloudfront:ListCachePolicies",
+        "cloudfront:ListOriginRequestPolicies", "cloudfront:ListTagsForResource", "cloudwatch:DescribeAlarms",
+        "cloudwatch:ListTagsForResource", "dynamodb:DescribeContinuousBackups", "dynamodb:DescribeTable",
+        "dynamodb:DescribeTimeToLive", "dynamodb:GetItem", "dynamodb:ListTagsOfResource", "iam:GetRole",
+        "iam:GetRolePolicy", "iam:ListAttachedRolePolicies", "iam:ListInstanceProfilesForRole",
+        "iam:ListRolePolicies", "iam:ListRoleTags", "kms:DescribeKey", "kms:GetKeyPolicy",
+        "kms:GetKeyRotationStatus", "kms:ListAliases", "kms:ListResourceTags", "lambda:GetEventSourceMapping",
+        "lambda:GetFunction", "lambda:GetFunctionCodeSigningConfig", "lambda:GetFunctionConcurrency",
+        "lambda:GetFunctionConfiguration", "lambda:GetFunctionEventInvokeConfig", "lambda:GetPolicy",
+        "lambda:ListTags", "lambda:ListVersionsByFunction", "logs:DescribeLogGroups",
+        "logs:ListTagsForResource", "s3:GetAccelerateConfiguration", "s3:GetBucketAcl", "s3:GetBucketCORS",
+        "s3:GetBucketLogging", "s3:GetBucketObjectLockConfiguration", "s3:GetBucketOwnershipControls",
+        "s3:GetBucketPolicy", "s3:GetBucketPublicAccessBlock", "s3:GetBucketRequestPayment",
+        "s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetBucketWebsite",
+        "s3:GetEncryptionConfiguration", "s3:GetLifecycleConfiguration", "s3:GetReplicationConfiguration",
+        "s3:ListBucket", "scheduler:GetSchedule", "sns:GetSubscriptionAttributes", "sns:GetTopicAttributes",
+        "sns:ListSubscriptionsByTopic", "sns:ListTagsForResource", "sqs:GetQueueAttributes",
+        "sqs:ListQueueTags", "ssm:DescribeParameters", "ssm:GetParameter", "ssm:ListTagsForResource",
+      ])
+    ])
+    error_message = "a per-stack read policy grants exactly the plan role's actions"
+  }
+
+  assert {
+    condition     = alltrue([for p in aws_iam_policy.apply_read : alltrue([for s in jsondecode(p.policy).Statement : s.Effect == "Allow"])])
+    error_message = "every per-stack read statement allows"
+  }
+}
