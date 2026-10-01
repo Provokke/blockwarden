@@ -21,6 +21,18 @@ updates:
     cooldown:
       default-days: 3
   - package-ecosystem: terraform
+    directory: /infra/terraform/bootstrap
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+  - package-ecosystem: terraform
+    directory: /infra/terraform/envs/staging
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+  - package-ecosystem: terraform
     directory: /infra/terraform/envs/demo
     schedule:
       interval: weekly

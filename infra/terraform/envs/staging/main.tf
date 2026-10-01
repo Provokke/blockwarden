@@ -12,14 +12,14 @@ terraform {
   }
 
   # A partial configuration: bucket, key and region are passed with -backend-config, so no account id is
-  # committed. The key is demo/terraform.tfstate, the only one the demo apply role can write.
+  # committed. The key is staging/terraform.tfstate, the only one the staging apply role can write.
   backend "s3" {
     use_lockfile = true
   }
 }
 
 variable "region" {
-  description = "AWS region for the demo stack."
+  description = "AWS region for the staging stack."
   type        = string
   default     = "ap-southeast-2"
 }
@@ -61,7 +61,7 @@ provider "aws" {
   default_tags {
     tags = {
       project     = "blockwarden"
-      environment = "demo"
+      environment = "staging"
     }
   }
 }
@@ -72,39 +72,40 @@ data "aws_partition" "current" {}
 
 locals {
   # created by infra/terraform/bootstrap; the apply role can create a role only with this attached
-  permissions_boundary_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/blockwarden-demo-boundary"
+  permissions_boundary_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/blockwarden-staging-boundary"
 }
 
 module "blockwarden" {
   source                   = "../../modules/blockwarden"
-  name                     = "blockwarden-demo"
+  name                     = "blockwarden-staging"
   permissions_boundary_arn = local.permissions_boundary_arn
   monitor_source_dir       = "${path.root}/../../../../services/monitor/dist/monitor"
   alarm_email              = var.alarm_email
+  log_retention_days       = 7
 
   chains = {
     ethereum = {
       chain_id           = 1
-      rpc_urls_parameter = "/blockwarden-demo/rpc/ethereum"
+      rpc_urls_parameter = "/blockwarden-staging/rpc/ethereum"
       lag_alarm_blocks   = 50
     }
     base = {
       chain_id           = 8453
-      rpc_urls_parameter = "/blockwarden-demo/rpc/base"
+      rpc_urls_parameter = "/blockwarden-staging/rpc/base"
       lag_alarm_blocks   = 300
     }
     arbitrum = {
       chain_id           = 42161
-      rpc_urls_parameter = "/blockwarden-demo/rpc/arbitrum"
+      rpc_urls_parameter = "/blockwarden-staging/rpc/arbitrum"
       lag_alarm_blocks   = 300
     }
   }
 
-  # webhooks only: no SES identity and no Telegram bot token exist for the demo yet. Both senders still deploy
-  # and fail closed on the channels that are not configured.
+  # webhooks only, as in the demo: both senders still deploy and fail closed on the channels that are not
+  # configured
   actions = {
     source_dir               = "${path.root}/../../../../services/actions/dist"
-    webhook_secret_parameter = "/blockwarden-demo/webhook-secret"
+    webhook_secret_parameter = "/blockwarden-staging/webhook-secret"
   }
 
   api = {
@@ -116,36 +117,41 @@ module "blockwarden" {
   }
 }
 
-# Testnet relaying only. Until the milestone 5 demo contracts exist, the allowlist holds only the burn address, and
-# "0x" there allows plain transfers with value to it, up to the 0.05 ETH daily spend cap.
+# The demo's relayer with a lower daily spend cap, a lower API rate and no balance alarm: every merge lands here
+# first, and a staging signer running low is not worth a page or the custom metric the alarm needs.
 module "relayer" {
   source                   = "../../modules/relayer"
-  name                     = "blockwarden-demo"
+  name                     = "blockwarden-staging"
   permissions_boundary_arn = local.permissions_boundary_arn
   relayer_source_dir       = "${path.root}/../../../../services/relayer/dist"
   table                    = { name = module.blockwarden.table_name, arn = module.blockwarden.table_arn }
   alarm_topic_arn          = module.blockwarden.alarm_topic_arn
+  log_retention_days       = 7
+
+  api_throttle = {
+    burst_limit = 5
+    rate_limit  = 2
+  }
 
   chains = {
     base-sepolia = {
       chain_id           = 84532
-      rpc_urls_parameter = "/blockwarden-demo/rpc/base-sepolia"
+      rpc_urls_parameter = "/blockwarden-staging/rpc/base-sepolia"
     }
     arbitrum-sepolia = {
       chain_id           = 421614
-      rpc_urls_parameter = "/blockwarden-demo/rpc/arbitrum-sepolia"
+      rpc_urls_parameter = "/blockwarden-staging/rpc/arbitrum-sepolia"
     }
   }
 
   signers = {
-    demo = {
+    staging = {
       chain_ids                    = [84532, 421614]
       allowed_to                   = [{ address = "0x000000000000000000000000000000000000dEaD", selectors = ["0x"] }]
       max_gas_limit                = 500000
       max_fee_per_gas_wei          = "5000000000"
       max_priority_fee_per_gas_wei = "2000000000"
-      daily_spend_cap_wei          = "50000000000000000"
-      balance_alarm_gwei           = 10000000
+      daily_spend_cap_wei          = "10000000000000000"
     }
   }
 }
