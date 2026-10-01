@@ -191,27 +191,35 @@ run "roles_are_created_only_inside_the_boundary" {
   }
 }
 
+# IAM does not count white space against a policy's limit, and jsonencode of the decoded document is the minified
+# form. A role's inline policies share 10,240 characters, a managed policy has 6,144 and a role's trust policy 2,048.
 run "policies_fit_their_size_limits" {
   command = apply
 
   assert {
-    condition     = alltrue([for p in aws_iam_role_policy.apply : length(p.policy) <= 10240])
+    condition     = alltrue([for p in aws_iam_role_policy.apply : length(jsonencode(jsondecode(p.policy))) <= 10240])
     error_message = "a role's inline policies hold at most 10,240 characters"
   }
 
   assert {
-    condition     = alltrue([for p in aws_iam_policy.apply_edge : length(p.policy) <= 6144])
+    condition     = length(jsonencode(jsondecode(aws_iam_role_policy.plan_state.policy))) <= 10240
+    error_message = "a role's inline policies hold at most 10,240 characters"
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for set in [aws_iam_policy.apply_edge, aws_iam_policy.apply_read, aws_iam_policy.boundary, { plan = aws_iam_policy.read }] :
+      [for p in values(set) : length(jsonencode(jsondecode(p.policy))) <= 6144]
+    ]))
     error_message = "a managed policy holds at most 6,144 characters"
   }
 
   assert {
-    condition     = alltrue([for p in aws_iam_policy.boundary : length(p.policy) <= 6144])
-    error_message = "a managed policy holds at most 6,144 characters"
-  }
-
-  assert {
-    condition     = alltrue([for p in aws_iam_policy.apply_read : length(p.policy) <= 6144])
-    error_message = "a managed policy holds at most 6,144 characters"
+    condition = alltrue(concat(
+      [for r in aws_iam_role.apply : length(jsonencode(jsondecode(r.assume_role_policy))) <= 2048],
+      [length(jsonencode(jsondecode(aws_iam_role.plan.assume_role_policy))) <= 2048],
+    ))
+    error_message = "a role's trust policy holds at most 2,048 characters by default"
   }
 }
 
@@ -256,6 +264,8 @@ run "escalation_critical_statements_are_pinned" {
           Resource = [
             "arn:aws:iam::123456789012:role/blockwarden-${env}-apply",
             "arn:aws:iam::123456789012:policy/blockwarden-${env}-boundary",
+            "arn:aws:iam::123456789012:policy/blockwarden-${env}-apply-edge",
+            "arn:aws:iam::123456789012:policy/blockwarden-${env}-read",
           ]
         }
         KeepBoundaries = {

@@ -72,14 +72,17 @@ locals {
         }
       },
       {
-        # Its own name matches the prefix above, so it is shut out of itself and of its boundary explicitly, and
-        # no role may ever lose its boundary.
+        # Its own name matches the prefix above, so it is shut out of itself, its boundary and the managed policies
+        # attached to it explicitly. Nothing here allows a policy write; this keeps that true if a grant is added.
+        # No role may ever lose its boundary.
         Sid    = "NotItself"
         Effect = "Deny"
         Action = ["iam:*"]
         Resource = [
           "arn:${local.partition}:iam::${local.account_id}:role/blockwarden-${env}-apply",
           "arn:${local.partition}:iam::${local.account_id}:policy/blockwarden-${env}-boundary",
+          "arn:${local.partition}:iam::${local.account_id}:policy/blockwarden-${env}-apply-edge",
+          "arn:${local.partition}:iam::${local.account_id}:policy/blockwarden-${env}-read",
         ]
       },
       {
