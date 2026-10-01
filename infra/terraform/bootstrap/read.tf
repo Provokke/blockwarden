@@ -18,10 +18,19 @@ locals {
       Resource = ["arn:${local.partition}:s3:::blockwarden-*"]
     },
     {
-      # GetItem is for the rule, signer and API key items Terraform writes; it reads every item in the table
       Sid      = "Tables"
-      Action   = ["dynamodb:DescribeContinuousBackups", "dynamodb:DescribeTable", "dynamodb:DescribeTimeToLive", "dynamodb:GetItem", "dynamodb:ListTagsOfResource"]
+      Action   = ["dynamodb:DescribeContinuousBackups", "dynamodb:DescribeTable", "dynamodb:DescribeTimeToLive", "dynamodb:ListTagsOfResource"]
       Resource = ["arn:${format(local.region_arn, "dynamodb")}:table/blockwarden-*"]
+    },
+    {
+      # GetItem is for the rule, signer and API key items Terraform writes. The tables also hold runtime data
+      # (matches, deliveries, sessions, nonces, spend), which the leading key keeps out of reach.
+      Sid      = "TerraformItems"
+      Action   = ["dynamodb:GetItem"]
+      Resource = ["arn:${format(local.region_arn, "dynamodb")}:table/blockwarden-*"]
+      Condition = {
+        "ForAllValues:StringLike" = { "dynamodb:LeadingKeys" = ["RULE#*", "SIGNER#*", "APIKEY#*"] }
+      }
     },
     {
       Sid      = "Roles"
@@ -86,8 +95,10 @@ locals {
       Sid    = "TerraformParameters"
       Action = ["ssm:GetParameter"]
       Resource = [
-        "arn:${format(local.region_arn, "ssm")}:parameter/blockwarden-*/api/session-secret",
-        "arn:${format(local.region_arn, "ssm")}:parameter/blockwarden-*/relayer/api-keys/*",
+        "arn:${format(local.region_arn, "ssm")}:parameter/blockwarden-staging/api/session-secret",
+        "arn:${format(local.region_arn, "ssm")}:parameter/blockwarden-demo/api/session-secret",
+        "arn:${format(local.region_arn, "ssm")}:parameter/blockwarden-staging/relayer/api-keys/*",
+        "arn:${format(local.region_arn, "ssm")}:parameter/blockwarden-demo/relayer/api-keys/*",
       ]
     },
     {

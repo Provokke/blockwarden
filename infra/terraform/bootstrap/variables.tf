@@ -10,14 +10,25 @@ variable "region" {
 }
 
 variable "github_repository" {
-  description = "The GitHub repository whose workflows may assume the roles, as owner/name."
+  description = "The GitHub repository the workflows run in, as owner/name. The gh variable set commands in the outputs name it; the trust policies use github_sub_prefix."
   type        = string
   default     = "Provokke/blockwarden"
 
-  # a * here would become a wildcard in every trust policy's sub, and StringEquals would match it literally anyway
   validation {
     condition     = can(regex("^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$", var.github_repository))
     error_message = "github_repository must be owner/name, with no wildcard."
+  }
+}
+
+variable "github_sub_prefix" {
+  description = "The repository part of the sub claim GitHub writes for this repository, repo:<owner>@<owner id>/<name>@<repository id>. Read it from the sub_claim_prefix field of: gh api repos/<owner>/<name>/actions/oidc/customization/sub"
+  type        = string
+  default     = "repo:Provokke@70989453/blockwarden@1371434855"
+
+  # the pattern has no place for a *, which would become a wildcard in every trust policy's sub
+  validation {
+    condition     = can(regex("^repo:[A-Za-z0-9-]+@[0-9]+/[A-Za-z0-9._-]+@[0-9]+$", var.github_sub_prefix))
+    error_message = "github_sub_prefix must be repo:<owner>@<owner id>/<name>@<repository id>, with no wildcard."
   }
 }
 

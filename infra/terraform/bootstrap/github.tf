@@ -7,15 +7,14 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 locals {
-  # The sub claims GitHub writes for a pull request, for a push to a branch, and for a job that names an
-  # environment. A job that names an environment gets the environment form whatever triggered it, which is why the
-  # plan jobs name none. Pull requests from forks get no token at all: GitHub turns id-token: write into read for
-  # them, so the pull_request subject is reachable only from a branch in this repository.
+  # The sub claim GitHub writes for a pull request. This repository issues the immutable subject format, which names
+  # the owner and the repository by id as well as by name, so a renamed or re-created repository cannot claim it.
+  # Pull requests from forks get no token at all: GitHub turns id-token: write into read for them, so the
+  # pull_request subject is reachable only from a branch in this repository. The assumption that remains is that no
+  # pull_request_target or workflow_run workflow requests id-token: write, since those run with the base
+  # repository's context for a trigger an outsider can cause.
   role_subjects = {
-    plan = [
-      "repo:${var.github_repository}:pull_request",
-      "repo:${var.github_repository}:ref:refs/heads/main",
-    ]
+    plan = ["${var.github_sub_prefix}:pull_request"]
   }
 
   # StringEquals on both claims, never StringLike: a sub list is a set of exact strings

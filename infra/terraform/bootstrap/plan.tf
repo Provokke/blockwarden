@@ -3,6 +3,13 @@ resource "aws_iam_role" "plan" {
   description          = "terraform plan for the Blockwarden stacks, from pull requests and main."
   assume_role_policy   = jsonencode(local.trust_policies["plan"])
   max_session_duration = 3600
+
+  lifecycle {
+    precondition {
+      condition     = var.existing_oidc_provider_arn == null || split(":", var.existing_oidc_provider_arn)[4] == local.account_id
+      error_message = "existing_oidc_provider_arn must be a provider in this account."
+    }
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "plan_read" {

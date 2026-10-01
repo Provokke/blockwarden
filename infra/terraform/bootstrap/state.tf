@@ -1,6 +1,6 @@
 # Terraform's own S3 lockfile does the locking (use_lockfile in each root's backend), so there is no lock table.
 resource "aws_s3_bucket" "state" {
-  #checkov:skip=CKV_AWS_18:an access log needs a second bucket; the only writers are the three roles below, and CloudTrail records every time one is assumed
+  #checkov:skip=CKV_AWS_18:an access log needs a second bucket; the only writers are the roles that run Terraform, and CloudTrail records every time one is assumed
   #checkov:skip=CKV_AWS_144:versioning keeps every earlier state in the region the stacks run in; a second region's copy would not outlive them
   #checkov:skip=CKV_AWS_145:SSE-S3 rather than SSE-KMS: a customer managed key costs $1 a month and protects nothing more here
   #checkov:skip=CKV2_AWS_62:nothing consumes the bucket's events
@@ -54,6 +54,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "state" {
 
     noncurrent_version_expiration {
       noncurrent_days = 90
+    }
+
+    # a lock file is created and deleted on every run; its delete marker is all that is left of it once the old
+    # versions expire
+    expiration {
+      expired_object_delete_marker = true
     }
 
     abort_incomplete_multipart_upload {
