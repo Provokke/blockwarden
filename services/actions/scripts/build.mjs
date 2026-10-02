@@ -1,6 +1,9 @@
 import { build } from 'esbuild'
 
-// one bundle per function, so each Lambda ships only what it imports
+// One bundle per function. Both currently carry every sender's client code: handlers.ts holds the entry for
+// both functions and names all four ports, so either entry pulls the lot in. Splitting that would mean a
+// handler module per function, and the dispatcher's own reaper already sends to the dead-letter queue, so
+// the saving would be a few hundred kilobytes of cold start for a second copy of the wiring to keep in step.
 for (const name of ['dispatcher', 'sender']) {
   await build({
     entryPoints: [`src/lambda/${name}.ts`],
