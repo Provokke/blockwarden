@@ -1,3 +1,4 @@
+import { MetricUnit } from '@aws-lambda-powertools/metrics'
 import { describe, expect, it, vi } from 'vitest'
 import { DeliveryConflictError } from '../../src/store.js'
 import { CLAIM_LEASE_MS } from '../../src/dispatcher.js'
@@ -62,6 +63,9 @@ const deps = (outcome: SendOutcome | Error, ...storedArgs: [DeliveryRecord | und
     if (outcome instanceof Error) throw outcome
     return outcome
   })
+  // stands in for the Powertools Metrics instance: only the one method the pipeline calls
+  const addMetric = vi.fn()
+  const metrics = { singleMetric: () => ({ addMetric, addDimension: vi.fn() }) }
   return {
     deps: {
       store,
@@ -72,12 +76,14 @@ const deps = (outcome: SendOutcome | Error, ...storedArgs: [DeliveryRecord | und
       now: () => 1_000,
       log: vi.fn(),
       random: () => 0.5,
+      metrics: metrics as never,
     },
     store,
     queue,
     deadLetters,
     send,
     items,
+    addMetric,
   }
 }
 
@@ -91,6 +97,7 @@ describe('processDelivery', () => {
     expect(d.store.markDelivered).toHaveBeenCalledWith(claimed(), 1_000, 204)
     expect(d.queue.send).not.toHaveBeenCalled()
     expect(d.deadLetters.send).not.toHaveBeenCalled()
+    expect(d.addMetric).not.toHaveBeenCalled()
   })
 
   it('schedules the next attempt and enqueues it with a delay', async () => {
@@ -104,6 +111,8 @@ describe('processDelivery', () => {
       503,
     )
     expect(d.queue.send).toHaveBeenCalledWith(ref, 10)
+    // an ordinary retry is not a death; counting it would make the dead-deliveries metric meaningless
+    expect(d.addMetric).not.toHaveBeenCalled()
   })
 
   it('lets a destination ask for a longer wait than the backoff', async () => {
@@ -125,6 +134,7 @@ describe('processDelivery', () => {
     expect(d.store.markDead).toHaveBeenCalledWith(claimed(), 1_000, 'the destination answered 410', 410)
     expect(d.deadLetters.send).toHaveBeenCalledWith(ref, 0)
     expect(d.queue.send).not.toHaveBeenCalled()
+    expect(d.addMetric).toHaveBeenCalledWith('deliveriesDead', MetricUnit.Count, 1)
   })
 
   it('kills a delivery whose last attempt failed', async () => {
@@ -132,6 +142,7 @@ describe('processDelivery', () => {
     expect(await processDelivery(d.deps, ref)).toBe('dead')
     expect(d.store.markDead).toHaveBeenCalledWith(claimed(record({ attempts: 7 })), 1_000, 'still 503', undefined)
     expect(d.deadLetters.send).toHaveBeenCalledWith(ref, 0)
+    expect(d.addMetric).toHaveBeenCalledWith('deliveriesDead', MetricUnit.Count, 1)
   })
 
   it('copies a dead delivery on a later pass when the first copy never landed', async () => {
@@ -148,6 +159,10 @@ describe('processDelivery', () => {
     expect(d.deps.log).toHaveBeenCalledWith('re-sent a dead-letter copy for a delivery already marked dead', {
       deliveryId: 'dlv_1',
     })
+    // the first pass died before it reached the metric too, same as the log line above; the redelivery branch
+    // is the only place either one is recorded for this delivery
+    expect(d.addMetric).toHaveBeenCalledTimes(1)
+    expect(d.addMetric).toHaveBeenCalledWith('deliveriesDead', MetricUnit.Count, 1)
   })
 
   it('treats a sender that threw as a retry rather than losing the delivery', async () => {
@@ -220,6 +235,8 @@ describe('processDelivery', () => {
     expect(d.store.markDead).toHaveBeenCalledWith(claimed(stored), 1_000, 'no sender for channel sqs')
     expect(d.deadLetters.send).toHaveBeenCalledWith(ref, 0)
     expect(d.items.get(itemKey)?.status).toBe('dead')
+    // this path kills a delivery without ever reaching recordOutcome, so it has to count itself
+    expect(d.addMetric).toHaveBeenCalledWith('deliveriesDead', MetricUnit.Count, 1)
   })
 })
 
