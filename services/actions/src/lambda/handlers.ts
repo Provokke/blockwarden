@@ -17,8 +17,7 @@ export const realPorts: Ports = { dispatchRecords, sweepDue, acceptOutbound, pro
 
 type AnyEvent = { Records?: { eventSource?: string }[] }
 
-// the one field of the Lambda context the sender's deadline margin needs; AWS always supplies it, and only a
-// unit test that never lets the closure below run calls the handler without one
+// the one field of the Lambda context the sender's deadline margin needs, as the relayer's own entries take it
 type Context = { getRemainingTimeInMillis(): number }
 
 export function createDispatcherHandler(runtime: () => Promise<Runtime>, ports: Ports, metrics: Metrics) {
@@ -46,7 +45,7 @@ export function createDispatcherHandler(runtime: () => Promise<Runtime>, ports: 
           queue: r.queue,
           now: () => new Date(),
           log: r.log,
-          allowedSecretPrefixes: r.config?.outboundSecretPrefixes ?? [],
+          allowedSecretPrefixes: r.config.outboundSecretPrefixes,
         },
         (records as SQSRecord[]).map((record) => ({ messageId: record.messageId, body: record.body })),
       )
@@ -62,22 +61,20 @@ export function createDispatcherHandler(runtime: () => Promise<Runtime>, ports: 
         log: r.log,
       },
       Date.now(),
-      // matches loadConfig's own default: a fake runtime with no config (only the unit tests build one) sweeps
-      // as if nothing had been configured, rather than throwing before the sweep it is meant to test can run
-      r.config?.reaperLimit ?? 100,
+      r.config.reaperLimit,
     )
-    r.log?.('sweep finished', summary)
+    r.log('sweep finished', summary)
     // a billed custom metric, so it is published only when something actually died
     if (summary.dead > 0) metrics.singleMetric().addMetric('deliveriesDead', MetricUnit.Count, summary.dead)
   }
 }
 
 export function createSenderHandler(runtime: () => Promise<Runtime>, ports: Ports, metrics: Metrics) {
-  return async (event: { Records: SQSRecord[] }, context?: Context): Promise<SQSBatchResponse> => {
+  return async (event: { Records: SQSRecord[] }, context: Context): Promise<SQSBatchResponse> => {
     const r = await runtime()
     // required so a caller that forgets it fails to compile; a batch cannot time out after its sends already
     // happened, which is exactly what an omitted margin would let happen
-    const remainingMs = () => context!.getRemainingTimeInMillis()
+    const remainingMs = () => context.getRemainingTimeInMillis()
     // built as the narrower production type: `resolve` and `post` are test-only injection points, and naming
     // either one here would be an excess-property error rather than a silent bypass of the destination guard
     const deps: ProductionSenderPipelineDeps = {
@@ -88,8 +85,8 @@ export function createSenderHandler(runtime: () => Promise<Runtime>, ports: Port
       secrets: r.secrets,
       now: () => Date.now(),
       log: r.log,
-      region: r.config?.region,
-      allowedTargetArns: r.config?.allowedTargetArns ?? [],
+      region: r.config.region,
+      allowedTargetArns: r.config.allowedTargetArns,
       sqs: r.sqs,
       lambda: r.lambda,
       metrics,
@@ -112,11 +109,7 @@ export function createSenderHandler(runtime: () => Promise<Runtime>, ports: Port
   }
 }
 
-// `source` is only ever undefined when a unit test stands in a runtime with no config at all; real wiring
-// always has one, and an absent source then means none of these optional overrides is set, same as if every
-// field on it were undefined
-function pick<T extends object, K extends keyof T>(source: T | undefined, ...names: K[]): Partial<Pick<T, K>> {
-  if (!source) return {}
+function pick<T extends object, K extends keyof T>(source: T, ...names: K[]): Partial<Pick<T, K>> {
   return Object.fromEntries(names.filter((n) => source[n] !== undefined).map((n) => [n, source[n]])) as Partial<
     Pick<T, K>
   >
