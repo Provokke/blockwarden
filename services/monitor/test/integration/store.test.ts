@@ -1,4 +1,4 @@
-import { GetCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb'
+import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import { ruleInputSchema } from '@blockwarden/core'
 import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import type { Hex } from 'viem'
@@ -137,6 +137,57 @@ describe('MonitorStore', () => {
 
     await store.putRule(storedRule('a', 1, false))
     expect(await store.listActiveRules(1)).toEqual([])
+  })
+
+  it('reads a rule whose body Terraform wrote as a JSON string', async () => {
+    const input = {
+      chainId: 8453,
+      addresses: ['0x1111111111111111111111111111111111111111'],
+      event: 'event Transfer(address indexed from, address indexed to, uint256 value)',
+      confirmation: { mode: 'finalized' },
+      actions: [{ type: 'webhook', url: 'https://example.com/hook' }],
+    }
+    await dynamo.doc.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: {
+          PK: 'RULE#tf-1',
+          SK: 'META',
+          ruleId: 'tf-1',
+          active: true,
+          inputJson: JSON.stringify(input),
+          chainId: 8453,
+          GSI1PK: 'CHAIN#8453#RULES',
+          GSI1SK: 'RULE#tf-1',
+          createdAt: 'terraform',
+          updatedAt: 'terraform',
+        },
+      }),
+    )
+    const rules = await store.listActiveRules(8453)
+    expect(rules.find((r) => r.ruleId === 'tf-1')?.input).toEqual(input)
+  })
+
+  it('skips a rule whose JSON body cannot be parsed, rather than failing the poll', async () => {
+    await dynamo.doc.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: {
+          PK: 'RULE#tf-2',
+          SK: 'META',
+          ruleId: 'tf-2',
+          active: true,
+          inputJson: '{ not json',
+          chainId: 8453,
+          GSI1PK: 'CHAIN#8453#RULES',
+          GSI1SK: 'RULE#tf-2',
+          createdAt: 'x',
+          updatedAt: 'x',
+        },
+      }),
+    )
+    const rules = await store.listActiveRules(8453)
+    expect(rules.map((r) => r.ruleId)).not.toContain('tf-2')
   })
 
   it('writes a provisional match once, indexed by rule and by chain, with bigint args as strings', async () => {
