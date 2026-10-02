@@ -1,3 +1,4 @@
+import { MetricUnit, type Metrics } from '@aws-lambda-powertools/metrics'
 import type { SQSBatchResponse, SQSRecord } from 'aws-lambda'
 import { nextDelaySeconds } from './backoff.js'
 import { DEFAULT_DEADLINE_MS } from './destination.js'
@@ -6,7 +7,7 @@ import { refOf } from './keys.js'
 import type { DeliveryQueue } from './queue.js'
 import { TERMINAL, truncate, type DeliveryChannel, type DeliveryRecord, type DeliveryRef, type Log } from './records.js'
 import { DeliveryConflictError, type DeliveryStore } from './store.js'
-import type { Sender, SendOutcome, SenderDeps } from './senders/types.js'
+import type { ProductionSenderDeps, Sender, SendOutcome, SenderDeps } from './senders/types.js'
 
 export type Outcome = 'delivered' | 'retrying' | 'dead' | 'skipped'
 
@@ -23,17 +24,36 @@ export const DEADLINE_MARGIN_MS = DEFAULT_DEADLINE_MS + ATTEMPT_AWS_MS
 // it, and a test fake is a plain object whose drift from the store is a compile error rather than a silence
 export type SenderStore = Pick<DeliveryStore, 'get' | 'claim' | 'markDelivered' | 'scheduleRetry' | 'markDead'>
 
-export type SenderPipelineDeps = SenderDeps & {
+// fields every pipeline wiring adds on top of a plain sender's own deps; kept once so the production and test
+// shapes below cannot drift apart on these
+type PipelineExtras = {
   store: SenderStore
   queue: DeliveryQueue
   deadLetters: DeliveryQueue
   senders: Partial<Record<DeliveryChannel, Sender>>
   random?: () => number
   log: Log
+  // Task 14's delivery-failure metric. Optional so a unit test that builds its deps by hand keeps compiling
+  // without one; production wiring always supplies it.
+  metrics?: Metrics
 }
+
+export type SenderPipelineDeps = SenderDeps & PipelineExtras
+
+// what the Lambda entry point builds: `SenderDeps` minus the two local-server escape hatches, so wiring this
+// pipeline from real infrastructure can never set `resolve` or `post` and bypass the destination guard
+export type ProductionSenderPipelineDeps = ProductionSenderDeps & PipelineExtras
 
 // the reaper names a delivery to the dead-letter queue the same way, so the two share one builder
 export { refOf }
+
+// The design's one delivery-failure metric. It shares the reaper's name (`dispatcher.ts`'s sweepDue emits it
+// too) so this adds no new billed custom metric: CloudWatch merges data points under the same namespace, name
+// and dimension set regardless of which Lambda published them. No per-channel dimension, for the reason
+// `deliveriesDead` already has none in the dispatcher: six channels would be six billed metrics instead of one.
+function countDead(deps: Pick<SenderPipelineDeps, 'metrics'>): void {
+  deps.metrics?.singleMetric().addMetric('deliveriesDead', MetricUnit.Count, 1)
+}
 
 export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef): Promise<Outcome> {
   const delivery = await deps.store.get(ref)
@@ -50,6 +70,7 @@ export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef
       // so this line is the only trace of it; Task 14's metrics need to count this branch as dead too, not only
       // the pass that called markDead
       deps.log('re-sent a dead-letter copy for a delivery already marked dead', { deliveryId: delivery.deliveryId })
+      countDead(deps)
     }
     return 'skipped'
   }
@@ -71,6 +92,7 @@ export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef
     await deps.store.markDead(claimed, deps.now(), `no sender for channel ${claimed.channel}`)
     await deps.deadLetters.send(ref, 0)
     deps.log('no sender for channel', { deliveryId: claimed.deliveryId, channel: claimed.channel }, 'error')
+    countDead(deps)
     return 'dead'
   }
 
@@ -126,6 +148,7 @@ async function recordOutcome(
       },
       'error',
     )
+    countDead(deps)
     return 'dead'
   }
 
