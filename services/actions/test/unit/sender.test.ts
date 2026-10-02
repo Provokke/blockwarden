@@ -65,7 +65,8 @@ const deps = (outcome: SendOutcome | Error, ...storedArgs: [DeliveryRecord | und
   })
   // stands in for the Powertools Metrics instance: only the one method the pipeline calls
   const addMetric = vi.fn()
-  const metrics = { singleMetric: () => ({ addMetric, addDimension: vi.fn() }) }
+  const addDimension = vi.fn()
+  const metrics = { singleMetric: () => ({ addMetric, addDimension }) }
   return {
     deps: {
       store,
@@ -84,6 +85,7 @@ const deps = (outcome: SendOutcome | Error, ...storedArgs: [DeliveryRecord | und
     send,
     items,
     addMetric,
+    addDimension,
   }
 }
 
@@ -135,6 +137,9 @@ describe('processDelivery', () => {
     expect(d.deadLetters.send).toHaveBeenCalledWith(ref, 0)
     expect(d.queue.send).not.toHaveBeenCalled()
     expect(d.addMetric).toHaveBeenCalledWith('deliveriesDead', MetricUnit.Count, 1)
+    // a dimension multiplies the billed metric count by its cardinality, so adding one is a cost decision, not
+    // a detail: it has to fail here rather than land quietly
+    expect(d.addDimension).not.toHaveBeenCalled()
   })
 
   it('kills a delivery whose last attempt failed', async () => {
