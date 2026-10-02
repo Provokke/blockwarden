@@ -76,6 +76,16 @@ function matchFields(match: NewMatch) {
   }
 }
 
+// a rule that cannot be read is skipped, the same as one that no longer compiles; polling goes on for the rest
+function parseInput(value: unknown): unknown {
+  if (typeof value !== 'string') return undefined
+  try {
+    return JSON.parse(value)
+  } catch {
+    return undefined
+  }
+}
+
 export class MonitorStore implements MonitorStorePort {
   constructor(
     private readonly doc: DynamoDBDocumentClient,
@@ -174,13 +184,21 @@ export class MonitorStore implements MonitorStorePort {
       KeyConditionExpression: 'GSI1PK = :pk',
       ExpressionAttributeValues: { ':pk': keys.activeRules(chainId) },
     })
-    return items.map((i) => ({
-      ruleId: i.ruleId as string,
-      input: i.input as RuleInput,
-      active: i.active as boolean,
-      createdAt: i.createdAt as string,
-      updatedAt: i.updatedAt as string,
-    }))
+    const rules: StoredRule[] = []
+    for (const i of items) {
+      // Terraform has no way to build a nested DynamoDB map from an arbitrary rule, so a rule it writes keeps
+      // its body as one JSON string
+      const input = i.input ?? parseInput(i.inputJson)
+      if (!input) continue
+      rules.push({
+        ruleId: i.ruleId as string,
+        input: input as RuleInput,
+        active: i.active as boolean,
+        createdAt: i.createdAt as string,
+        updatedAt: i.updatedAt as string,
+      })
+    }
+    return rules
   }
 
   async writeProvisional(match: NewMatch): Promise<boolean> {
