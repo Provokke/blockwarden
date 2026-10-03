@@ -1,0 +1,51 @@
+terraform {
+  required_version = ">= 1.16.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.64"
+    }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.8"
+    }
+  }
+}
+
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
+data "aws_partition" "current" {}
+
+data "aws_kms_alias" "ssm" {
+  name = "alias/aws/ssm"
+}
+
+locals {
+  account_id = data.aws_caller_identity.current.account_id
+  region     = data.aws_region.current.region
+  partition  = data.aws_partition.current.partition
+
+  functions = {
+    dispatcher = { timeout = 60, memory = 256 }
+    sender     = { timeout = 30, memory = 256 }
+  }
+
+  secret_parameter_arns = [
+    for name in distinct(concat(
+      var.webhook_secret_parameter == null ? [] : [var.webhook_secret_parameter],
+      var.telegram_token_parameter == null ? [] : [var.telegram_token_parameter],
+      var.relayer_api_key_parameter == null ? [] : [var.relayer_api_key_parameter],
+    )) : "arn:${local.partition}:ssm:${local.region}:${local.account_id}:parameter${name}"
+  ]
+
+  # a caller may only name a parameter under one of these, and the sender may only read under one of these
+  outbound_secret_arns = [
+    for prefix in var.outbound_secret_prefixes :
+    "arn:${local.partition}:ssm:${local.region}:${local.account_id}:parameter${prefix}*"
+  ]
+
+  target_queue_arns    = [for arn in var.allowed_target_arns : arn if can(regex(":sqs:", arn))]
+  target_function_arns = [for arn in var.allowed_target_arns : arn if can(regex(":lambda:", arn))]
+}
