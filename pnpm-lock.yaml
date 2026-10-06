@@ -232,8 +232,8 @@ importers:
         specifier: github:foundry-rs/forge-std#v1.16.2
         version: https://codeload.github.com/foundry-rs/forge-std/tar.gz/bf647bd6046f2f7da30d0c2bf435e5c76a780c1b
       testcontainers:
-        specifier: 12.1.0
-        version: 12.1.0
+        specifier: 12.2.0
+        version: 12.2.0
       viem:
         specifier: 2.56.9
         version: 2.56.9(typescript@7.0.2)(zod@4.6.5)
@@ -257,8 +257,8 @@ importers:
         version: 3.1141.0(@aws-sdk/client-dynamodb@3.1141.0)
     devDependencies:
       testcontainers:
-        specifier: 12.1.0
-        version: 12.1.0
+        specifier: 12.2.0
+        version: 12.2.0
 
   packages/kms-signer:
     dependencies:
@@ -331,8 +331,8 @@ importers:
         specifier: 0.28.2
         version: 0.28.2
       testcontainers:
-        specifier: 12.1.0
-        version: 12.1.0
+        specifier: 12.2.0
+        version: 12.2.0
       tsx:
         specifier: 4.23.13
         version: 4.23.13
@@ -380,8 +380,8 @@ importers:
         specifier: 0.28.2
         version: 0.28.2
       testcontainers:
-        specifier: 12.1.0
-        version: 12.1.0
+        specifier: 12.2.0
+        version: 12.2.0
 
   services/monitor:
     dependencies:
@@ -420,8 +420,8 @@ importers:
         specifier: 0.8.37
         version: 0.8.37(debug@4.4.3)
       testcontainers:
-        specifier: 12.1.0
-        version: 12.1.0
+        specifier: 12.2.0
+        version: 12.2.0
       tsx:
         specifier: 4.23.13
         version: 4.23.13
@@ -478,8 +478,8 @@ importers:
         specifier: 0.8.37
         version: 0.8.37(debug@4.4.3)
       testcontainers:
-        specifier: 12.1.0
-        version: 12.1.0
+        specifier: 12.2.0
+        version: 12.2.0
       tsx:
         specifier: 4.23.13
         version: 4.23.13
@@ -1808,8 +1808,8 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  docker-compose@1.4.2:
-    resolution: {integrity: sha512-rPHigTKGaEHpkUmfd69QgaOp+Os5vGJwG/Ry8lcr8W/382AmI+z/D7qoa9BybKIkqNppaIbs8RYeHSevdQjWww==}
+  docker-compose@1.5.0:
+    resolution: {integrity: sha512-O+eD6c63+BJORUWddXA7uAlI6H1KLDPd/aS14k73nXYpFliM48C3xrrKB3sXsR1Fp/rHUZQe7+fJ+QA7+jepyw==}
     engines: {node: '>= 6.0.0'}
 
   docker-modem@5.0.7:
@@ -2415,8 +2415,8 @@ packages:
   teex@1.0.1:
     resolution: {integrity: sha512-eYE6iEI62Ni1H8oIa7KlDU6uQBtqr4Eajni3wX7rpfXD8ysFx8z0+dri+KWEPWpBsxXfxu58x/0jvTVT1ekOSg==}
 
-  testcontainers@12.1.0:
-    resolution: {integrity: sha512-YjDLqIITuhGLMnM10yhg3oV6lIG5IMpz1R1DPBZoOOks83q7i7IVpeSWRTiyl7roozjiyLmwIoLK/KY8OnZmIA==}
+  testcontainers@12.2.0:
+    resolution: {integrity: sha512-Pd0c2eU0DdIuK+Pb3c+vmBUdKjDLgxZmPecQGESFAKyn5LTqSaSw8l7htfMlLwabb/QsUILe6XkxMJw8Ly/ThA==}
     engines: {node: '>= 22.22'}
 
   text-decoder@1.2.7:
@@ -3832,7 +3832,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  docker-compose@1.4.2:
+  docker-compose@1.5.0:
     dependencies:
       yaml: 2.9.1
 
@@ -4514,7 +4514,7 @@ snapshots:
       - bare-abort-controller
       - react-native-b4a
 
-  testcontainers@12.1.0:
+  testcontainers@12.2.0:
     dependencies:
       '@balena/dockerignore': 1.0.2
       '@types/dockerode': 4.0.1
@@ -4522,7 +4522,7 @@ snapshots:
       async-lock: 1.4.1
       byline: 5.0.0
       debug: 4.4.3
-      docker-compose: 1.4.2
+      docker-compose: 1.5.0
       dockerode: 5.0.1
       get-port: 5.1.1
       proper-lockfile: 4.1.2
