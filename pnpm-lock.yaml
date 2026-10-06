@@ -250,11 +250,11 @@ importers:
   packages/dynamo:
     dependencies:
       '@aws-sdk/client-dynamodb':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/lib-dynamodb':
-        specifier: 3.1141.0
-        version: 3.1141.0(@aws-sdk/client-dynamodb@3.1141.0)
+        specifier: 3.1146.0
+        version: 3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)
     devDependencies:
       testcontainers:
         specifier: 12.1.0
@@ -263,8 +263,8 @@ importers:
   packages/kms-signer:
     dependencies:
       '@aws-sdk/client-kms':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
     devDependencies:
       viem:
         specifier: 2.56.9
@@ -285,26 +285,26 @@ importers:
         specifier: 2.35.0
         version: 2.35.0
       '@aws-sdk/client-dynamodb':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/client-lambda':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/client-sesv2':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/client-sqs':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/client-ssm':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/lib-dynamodb':
-        specifier: 3.1141.0
-        version: 3.1141.0(@aws-sdk/client-dynamodb@3.1141.0)
+        specifier: 3.1146.0
+        version: 3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)
       '@aws-sdk/util-dynamodb':
         specifier: 3.996.9
-        version: 3.996.9(@aws-sdk/client-dynamodb@3.1141.0)
+        version: 3.996.9(@aws-sdk/client-dynamodb@3.1146.0)
       '@blockwarden/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -322,8 +322,8 @@ importers:
         version: 4.6.5
     devDependencies:
       '@aws-sdk/client-dynamodb-streams':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@types/aws-lambda':
         specifier: 8.10.163
         version: 8.10.163
@@ -343,17 +343,17 @@ importers:
         specifier: 2.35.0
         version: 2.35.0
       '@aws-sdk/client-dynamodb':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/client-sqs':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/client-ssm':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/lib-dynamodb':
-        specifier: 3.1141.0
-        version: 3.1141.0(@aws-sdk/client-dynamodb@3.1141.0)
+        specifier: 3.1146.0
+        version: 3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)
       '@blockwarden/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -392,14 +392,14 @@ importers:
         specifier: 2.35.0
         version: 2.35.0
       '@aws-sdk/client-dynamodb':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/client-ssm':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/lib-dynamodb':
-        specifier: 3.1141.0
-        version: 3.1141.0(@aws-sdk/client-dynamodb@3.1141.0)
+        specifier: 3.1146.0
+        version: 3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)
       '@blockwarden/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -435,17 +435,17 @@ importers:
         specifier: 2.35.0
         version: 2.35.0
       '@aws-sdk/client-dynamodb':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/client-sqs':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/client-ssm':
-        specifier: 3.1141.0
-        version: 3.1141.0
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/lib-dynamodb':
-        specifier: 3.1141.0
-        version: 3.1141.0(@aws-sdk/client-dynamodb@3.1141.0)
+        specifier: 3.1146.0
+        version: 3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)
       '@blockwarden/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -519,32 +519,32 @@ packages:
       '@middy/core':
         optional: true
 
-  '@aws-sdk/client-dynamodb-streams@3.1141.0':
-    resolution: {integrity: sha512-tMmRkwj0bVVlrHoI40tS9DeAEGrNGUne/88HXs3XNXpZlinwrkqpaCYJ1M1ZWjcUPiu18zvTw87Mr3yg/svAyQ==}
+  '@aws-sdk/client-dynamodb-streams@3.1146.0':
+    resolution: {integrity: sha512-leGzWU3TK5cAvU0B26VquuLT3if1sV44B3K9cYmf21BlgbwD51lWi1XGSP4u4RF2KUK9TNczvfL3dKiyl895/Q==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-dynamodb@3.1141.0':
-    resolution: {integrity: sha512-R36EN5Ti01NtoJrgR5ryM+3msAmxob4s+xHKsJRbTwQUO5xQf1Hs8lKQ/QEuiQOG445UCwZbTjBUhekSmk1cyg==}
+  '@aws-sdk/client-dynamodb@3.1146.0':
+    resolution: {integrity: sha512-3Mc8YkSu2KlgNNSuspaW+Fo0pTwX+fLYlC5ovH3yX3OoDg2RPtp3Py8KuQJr0FDlQj1tHw0K3+AtaH4NXlI3aQ==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-kms@3.1141.0':
-    resolution: {integrity: sha512-dfdarFBC2U0j0oyb3PQPdQX0m/jrjNXmxD162OU/Ln+ZGUIAHYseeqo5XqgITKYM+83NnSzv3QpWmuELI7nirQ==}
+  '@aws-sdk/client-kms@3.1146.0':
+    resolution: {integrity: sha512-STfnvGIMWIT8svHbmdBD96iqsmuHwOnX1nsDHlldnOxpRW/8hyKqVWEvnedPmfUfF7Dda6UUeYopHwgUJecreg==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-lambda@3.1141.0':
-    resolution: {integrity: sha512-xp/96eYrHkWVQbgEuDii170j7Kv397NYYv55sX99VV1M676rpl6MlbatRkdPZX7iV3M7ICm2fuSgR2n1bFNKaw==}
+  '@aws-sdk/client-lambda@3.1146.0':
+    resolution: {integrity: sha512-qCeVHGhkI5aw0Lvexhwuf1H41L2sCm+9C4K+IOUhErY/nx5ioCU0dFyXF4+P4m4Nk23uiTbON7lI7nmlPNncHw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-sesv2@3.1141.0':
-    resolution: {integrity: sha512-y3QxG2mMn160kSjYNm8qM6kWSH5wFWR4BBm/aHl8OdppEAVj/ZqWQ/Rl59S6ED3K21pYwoX1FsCD8VoUtAIHdA==}
+  '@aws-sdk/client-sesv2@3.1146.0':
+    resolution: {integrity: sha512-3sMaymLxzaP1Ldqmu8mU4Uj2qLMDl8hHb3WYiM+H2fFHOnpTGVSToB5s15qCb0sAWqbXmFf+0vBLfwazpB8LzA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-sqs@3.1141.0':
-    resolution: {integrity: sha512-97MRJvJi3H5BFXc673JvlNekbogdPPbaAFo4JH16wQcnrIEibsCAeMqk3A4rej0Ufv6p9SgQjbiCZHB7sUYZzA==}
+  '@aws-sdk/client-sqs@3.1146.0':
+    resolution: {integrity: sha512-JQT0qy87HLkrCJNYaBkzpQuopVFpvafwyrHTRaL55gXCrYRh8y3oJ080squ4X6gmyD2wO7uw4E65ps13KuisJw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/client-ssm@3.1141.0':
-    resolution: {integrity: sha512-zMGUGocXCtUYThen14djmU0c4BjHEpSeQIm/dhzZPN4Zr7ipogSTnpmZOlMv5zvOcmDwSlEGwCWbYjqZUhUEuw==}
+  '@aws-sdk/client-ssm@3.1146.0':
+    resolution: {integrity: sha512-Qx29jzZEVPpxUxzRNs1wwHg2qtOmHcwa3p1Bbufixg7SnyLg3zdLbhbK6oeeRnFDPBdlcjacURI/5JY+aSmu/Q==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.978.1':
@@ -591,11 +591,11 @@ packages:
     resolution: {integrity: sha512-8q1ICxcDjHId3bBryuu/j+1L9y5/3uQnwzLDt5j2ElcjZSoWmFtymdJy7OjLrluSMe0Z4mq5bcH4fxBXvlEHfw==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/lib-dynamodb@3.1141.0':
-    resolution: {integrity: sha512-209LbGdIbASBQGX7/EsPItCFwv1FyT+fXv5aifacYRCOGh+VzGvqZCJ/C2FEZfkE+Zww4KqahrGJc1i6fnum4A==}
+  '@aws-sdk/lib-dynamodb@3.1146.0':
+    resolution: {integrity: sha512-QsmNtrc6V8qfJ6SPWRoVdN1idQCievzaKKBMFgbjw9YAvu/8C9tGM9tTY/B3dA9HiI+eX9nx99Jlbe6NuLnwRw==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@aws-sdk/client-dynamodb': ^3.1141.0
+      '@aws-sdk/client-dynamodb': ^3.1146.0
 
   '@aws-sdk/middleware-endpoint-discovery@3.972.31':
     resolution: {integrity: sha512-JqOIXupzP6cpAmCCmuEaacbXo/bVCcg1NkglCJC6q4wDAvJO09qIs7POf50JNzmhOhWPtfXvzgWxb5nMQl8QiA==}
@@ -2732,7 +2732,7 @@ snapshots:
       '@aws-lambda-powertools/commons': 2.35.0
       '@aws/lambda-invoke-store': 0.3.0
 
-  '@aws-sdk/client-dynamodb-streams@3.1141.0':
+  '@aws-sdk/client-dynamodb-streams@3.1146.0':
     dependencies:
       '@aws-sdk/core': 3.978.1
       '@aws-sdk/credential-provider-node': 3.972.84
@@ -2743,7 +2743,7 @@ snapshots:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
-  '@aws-sdk/client-dynamodb@3.1141.0':
+  '@aws-sdk/client-dynamodb@3.1146.0':
     dependencies:
       '@aws-sdk/core': 3.978.1
       '@aws-sdk/credential-provider-node': 3.972.84
@@ -2756,7 +2756,7 @@ snapshots:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
-  '@aws-sdk/client-kms@3.1141.0':
+  '@aws-sdk/client-kms@3.1146.0':
     dependencies:
       '@aws-sdk/core': 3.978.1
       '@aws-sdk/credential-provider-node': 3.972.84
@@ -2767,7 +2767,7 @@ snapshots:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
-  '@aws-sdk/client-lambda@3.1141.0':
+  '@aws-sdk/client-lambda@3.1146.0':
     dependencies:
       '@aws-sdk/core': 3.978.1
       '@aws-sdk/credential-provider-node': 3.972.84
@@ -2778,7 +2778,7 @@ snapshots:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
-  '@aws-sdk/client-sesv2@3.1141.0':
+  '@aws-sdk/client-sesv2@3.1146.0':
     dependencies:
       '@aws-sdk/core': 3.978.1
       '@aws-sdk/credential-provider-node': 3.972.84
@@ -2790,7 +2790,7 @@ snapshots:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
-  '@aws-sdk/client-sqs@3.1141.0':
+  '@aws-sdk/client-sqs@3.1146.0':
     dependencies:
       '@aws-sdk/core': 3.978.1
       '@aws-sdk/credential-provider-node': 3.972.84
@@ -2802,7 +2802,7 @@ snapshots:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
-  '@aws-sdk/client-ssm@3.1141.0':
+  '@aws-sdk/client-ssm@3.1146.0':
     dependencies:
       '@aws-sdk/core': 3.978.1
       '@aws-sdk/credential-provider-node': 3.972.84
@@ -2920,11 +2920,11 @@ snapshots:
       mnemonist: 0.38.3
       tslib: 2.8.1
 
-  '@aws-sdk/lib-dynamodb@3.1141.0(@aws-sdk/client-dynamodb@3.1141.0)':
+  '@aws-sdk/lib-dynamodb@3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)':
     dependencies:
-      '@aws-sdk/client-dynamodb': 3.1141.0
+      '@aws-sdk/client-dynamodb': 3.1146.0
       '@aws-sdk/core': 3.978.1
-      '@aws-sdk/util-dynamodb': 3.996.9(@aws-sdk/client-dynamodb@3.1141.0)
+      '@aws-sdk/util-dynamodb': 3.996.9(@aws-sdk/client-dynamodb@3.1146.0)
       '@smithy/core': 3.35.0
       '@smithy/types': 4.19.0
       tslib: 2.8.1
@@ -2976,9 +2976,9 @@ snapshots:
       '@smithy/types': 4.19.0
       tslib: 2.8.1
 
-  '@aws-sdk/util-dynamodb@3.996.9(@aws-sdk/client-dynamodb@3.1141.0)':
+  '@aws-sdk/util-dynamodb@3.996.9(@aws-sdk/client-dynamodb@3.1146.0)':
     dependencies:
-      '@aws-sdk/client-dynamodb': 3.1141.0
+      '@aws-sdk/client-dynamodb': 3.1146.0
       tslib: 2.8.1
 
   '@aws-sdk/xml-builder@3.972.41':
@@ -3400,20 +3400,20 @@ snapshots:
 
   '@smithy/credential-provider-imds@4.5.2':
     dependencies:
-      '@smithy/core': 3.34.1
-      '@smithy/types': 4.18.0
+      '@smithy/core': 3.35.0
+      '@smithy/types': 4.19.0
       tslib: 2.8.1
 
   '@smithy/fetch-http-handler@5.8.0':
     dependencies:
-      '@smithy/core': 3.34.1
-      '@smithy/types': 4.18.0
+      '@smithy/core': 3.35.0
+      '@smithy/types': 4.19.0
       tslib: 2.8.1
 
   '@smithy/node-http-handler@4.12.1':
     dependencies:
-      '@smithy/core': 3.34.1
-      '@smithy/types': 4.18.0
+      '@smithy/core': 3.35.0
+      '@smithy/types': 4.19.0
       tslib: 2.8.1
 
   '@smithy/signature-v4@5.7.3':
