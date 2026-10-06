@@ -31,7 +31,7 @@
     "@aws-sdk/client-dynamodb-streams": "3.1141.0",
     "@types/aws-lambda": "8.10.163",
     "esbuild": "0.28.2",
-    "testcontainers": "12.1.0",
+    "testcontainers": "12.2.0",
     "tsx": "4.23.13"
   }
 }

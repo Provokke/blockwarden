@@ -24,7 +24,7 @@
     "@blockwarden/contracts": "workspace:*",
     "esbuild": "0.28.2",
     "solc": "0.8.37",
-    "testcontainers": "12.1.0",
+    "testcontainers": "12.2.0",
     "tsx": "4.23.13"
   }
 }
