@@ -115,6 +115,5 @@ async function call<T>(
 }
 
 function toTx(body: RelayerTxBody): RelayerTx {
-  // a 0.1.x relayer leaves revertData out altogether, and the type promises one either way
-  return { ...body, value: BigInt(body.value), gasLimit: BigInt(body.gasLimit), revertData: body.revertData ?? null }
+  return { ...body, value: BigInt(body.value), gasLimit: BigInt(body.gasLimit) }
 }
