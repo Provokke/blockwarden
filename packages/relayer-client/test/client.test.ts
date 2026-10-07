@@ -131,10 +131,13 @@ describe('relayer client', () => {
     expect(tx.receiptStatus).toBe('reverted')
   })
 
-  it('reports revertData as null when a 0.1.x relayer leaves the field out', async () => {
+  // the field has been part of every published version, so a body without it is not a transaction; the type
+  // said it was always there while the guard let it through, and a caller's `!== null` check then passed on
+  // undefined
+  it('refuses a transaction body with no revertData', async () => {
     const { revertData: _absent, ...old } = TX
     answer = { status: 200, body: JSON.stringify(old) }
-    expect((await getTx({ baseUrl, apiKey: 'k' }, 'tx-1')).revertData).toBeNull()
+    await expect(getTx({ baseUrl, apiKey: 'k' }, 'tx-1')).rejects.toMatchObject({ code: 'invalid_response' })
   })
 
   it('lists signers', async () => {

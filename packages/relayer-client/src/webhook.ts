@@ -18,15 +18,13 @@ export const DEFAULT_TOLERANCE_SECONDS = 300
 // reader should branch on it rather than on the presence of a field.
 export const WEBHOOK_SPEC_VERSION = 1
 
-// The timestamp is not a header of its own: it is the t= part of X-Blockwarden-Signature, in unix seconds.
-export const TIMESTAMP_TOLERANCE_SECONDS = DEFAULT_TOLERANCE_SECONDS
-
 export type WebhookEvent = {
   // the delivery id, also sent as X-Blockwarden-Delivery, for receiver-side idempotency
   id: string
   type: string
   createdAt: string
-  // the schema version of data; 1 today, absent on a body from a sender older than this field
+  // the schema version of data; every version of Blockwarden sends 1. Optional because verifyWebhook checks
+  // id, type and createdAt and nothing else, so the type promises only what was actually looked at.
   specVersion?: number
   data: unknown
 }
@@ -110,8 +108,7 @@ export function isTxEvent(event: WebhookEvent): event is TxEvent {
 }
 
 export function parseTx(body: RelayerTxBody): RelayerTx {
-  // a 0.1.x sender leaves revertData out altogether, and the type promises one either way
-  return { ...body, value: BigInt(body.value), gasLimit: BigInt(body.gasLimit), revertData: body.revertData ?? null }
+  return { ...body, value: BigInt(body.value), gasLimit: BigInt(body.gasLimit) }
 }
 
 // The sending half of the wire form, where parseTx is the receiving half. viem decodes an ABI integer of 48

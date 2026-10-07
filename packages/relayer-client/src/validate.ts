@@ -27,13 +27,6 @@ const nullable =
   (check: Check): Check =>
   (v) =>
     v === null || check(v)
-// a body from a relayer older than this field has no revertData at all, and refusing it would make a
-// 0.2.0 client unable to read a 0.1.x relayer's webhooks
-const optional =
-  (check: Check): Check =>
-  (v) =>
-    v === undefined || check(v)
-
 const decodedValue: Check = (v) => {
   if (typeof v === 'string' || typeof v === 'boolean') return true
   if (Array.isArray(v)) return v.every(decodedValue)
@@ -58,7 +51,7 @@ const TX_BODY: Record<keyof RelayerTxBody, Check> = {
   blockHash: nullable(hex),
   receiptStatus: nullable(oneOf('success', 'reverted')),
   error: nullable(string),
-  revertData: optional(nullable(hex)),
+  revertData: nullable(hex),
   fillerTxId: nullable(string),
   idempotencyKey: nullable(string),
   reference: nullable(string),

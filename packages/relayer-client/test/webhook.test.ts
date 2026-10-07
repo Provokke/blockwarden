@@ -203,7 +203,9 @@ describe('isTxEvent and parseTx', () => {
     if (isTxEvent(verified)) expect(parseTx(verified.data).value).toBe(10n ** 21n)
   })
 
-  it('reports revertData as null for a 0.1.x body that has no such field', async () => {
+  // isTxEvent used to vouch for a body with no revertData while the type promised one, so a caller's
+  // `revertData !== null` guard passed and the .slice() behind it threw on undefined
+  it('refuses a body that has no revertData, which the type says is always there', async () => {
     const { revertData: _absent, ...old } = TX
     const payload = event('tx.failed', old)
     const verified = await verifyWebhook({
@@ -212,8 +214,7 @@ describe('isTxEvent and parseTx', () => {
       secret: 's',
       nowMs: NOW,
     })
-    expect(isTxEvent(verified)).toBe(true)
-    if (isTxEvent(verified)) expect(parseTx(verified.data).revertData).toBeNull()
+    expect(isTxEvent(verified)).toBe(false)
   })
 
   it('refuses an event whose type is not a known status or whose data is not a transaction', () => {
