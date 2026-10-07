@@ -93,6 +93,48 @@ Requires Terraform, the AWS CLI v2, and AWS credentials for the target account. 
 
 Free RPC tiers often cap `eth_getLogs` at a small block range. The poller halves a refused range until it fits, but setting `max_range` for that chain in `infra/terraform/envs/demo/main.tf` avoids the wasted calls.
 
+## Deploying the actions pipeline
+
+The demo stack deploys the dispatcher and the sender alongside the monitor, through the `actions` input of
+`infra/terraform/modules/blockwarden`. To deploy the monitor and actions without the relayer, use
+`infra/terraform/examples/monitor-actions-only`.
+
+1. Put the default webhook signing secret in SSM before the apply. Without it every delivery burns its eight
+   attempts, dies, and latches the dead-letters alarm.
+
+   ```bash
+   aws ssm put-parameter --name /blockwarden-demo/webhook-secret --type SecureString --value "$(openssl rand -hex 32)"
+   # the monitor-actions-only example names its own path instead
+   aws ssm put-parameter --name /bw-example/webhook-secret --type SecureString --value "$(openssl rand -hex 32)"
+   ```
+
+   Leave out `--key-id` here too. The sender may only decrypt with the default `aws/ssm` key. Several
+   comma-separated secrets in one parameter are allowed while one is rotating: the sender signs with each of
+   them, and a receiver that checks any one of them keeps working through the rotation.
+
+2. A webhook action that names its own `secretParameter`, and a relayer signer that sets
+   `webhook_secret_parameter`, read a different parameter. The sender can only read what the module granted it,
+   so list a signer's parameter in `actions.signer_webhook_secret_parameters`, and put a rule's own parameter
+   under one of `actions.outbound_secret_prefixes`. A prefix is a parameter name with an optional trailing
+   slash; `"/"` is not a prefix and is refused, because it would grant every parameter in the account.
+3. Build the bundle: `pnpm --filter @blockwarden/actions run build`
+4. Apply as for the monitor. Deliveries that used every attempt are copied to the `-deliveries-dlq` queue, which
+   is what the `actions-dead-letters` alarm watches. Redrive them, and clear the copies that hold the alarm on,
+   with:
+
+   ```bash
+   pnpm --filter @blockwarden/actions run delivery:redrive --table blockwarden-demo      --queue "$(terraform output -raw delivery_queue_url)" --dlq "$(terraform output -raw delivery_dead_letter_queue_url)" --all
+   ```
+
+   Without `--dlq` the deliveries are sent again but the alarm stays in ALARM until the copies expire.
+
+5. The `-stream-failures` queue is a different thing and nothing redrives it: it holds DynamoDB stream batches
+   Lambda gave up on, whose matches never became deliveries at all. Read those records back out of the stream
+   within its 24 hours, then delete the messages.
+
+Do not set `relayer_api_pair` on `modules/actions`. It carries nothing; it exists only to host the validation
+that refuses `relayer_api_url` without `relayer_api_key_parameter`, which a module cannot express otherwise.
+
 ## Deploying the relayer
 
 The demo stack in `infra/terraform/envs/demo` deploys the relayer next to the monitor and shares its table. To deploy the relayer on its own, use `infra/terraform/modules/relayer` as `infra/terraform/examples/relayer-only` does.
