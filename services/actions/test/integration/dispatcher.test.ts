@@ -70,6 +70,50 @@ describe('against a real table', () => {
     expect(sent).toHaveLength(1)
   })
 
+  // the half of lookup.rule that Terraform's own rules go through: it cannot build a nested DynamoDB map, so
+  // modules/blockwarden/rules.tf writes the body as one JSON string
+  it('reads a rule whose body Terraform wrote as a JSON string', async () => {
+    const input = {
+      chainId: 8453,
+      addresses: ['0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'],
+      event: 'event Transfer(address indexed from, address indexed to, uint256 value)',
+      confirmation: { mode: 'finalized' },
+      actions: [{ type: 'webhook', url: 'https://example.com/hook' }],
+    }
+    await dynamo.doc.send(
+      new PutCommand({
+        TableName: h.tableName,
+        Item: {
+          PK: 'RULE#rule-tf',
+          SK: 'META',
+          ruleId: 'rule-tf',
+          active: true,
+          inputJson: JSON.stringify(input),
+          chainId: 8453,
+          createdAt: 'terraform',
+          updatedAt: 'terraform',
+        },
+      }),
+    )
+    const rule = await createLookup(dynamo.doc, h.tableName).rule('rule-tf')
+    expect(rule?.eventName).toBe('Transfer')
+    expect(rule?.mode).toBe('finalized')
+    expect(rule?.actions.map((a) => a.action.type)).toEqual(['webhook'])
+  })
+
+  it('skips a rule whose JSON body cannot be parsed, and says which rule it was', async () => {
+    await dynamo.doc.send(
+      new PutCommand({
+        TableName: h.tableName,
+        Item: { PK: 'RULE#rule-broken', SK: 'META', ruleId: 'rule-broken', active: true, inputJson: '{ not json' },
+      }),
+    )
+    const warnings: string[] = []
+    const lookup = createLookup(dynamo.doc, h.tableName, { log: (_m, data) => warnings.push(String(data?.ruleId)) })
+    expect(await lookup.rule('rule-broken')).toBeUndefined()
+    expect(warnings).toEqual(['rule-broken'])
+  })
+
   it('caches a rule read', async () => {
     let reads = 0
     const doc = {
