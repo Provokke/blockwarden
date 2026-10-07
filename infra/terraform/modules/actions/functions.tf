@@ -44,8 +44,16 @@ data "aws_iam_policy_document" "dispatcher" {
 
   statement {
     sid       = "Stream"
-    actions   = ["dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:ListStreams"]
+    actions   = ["dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator"]
     resources = [var.table_stream_arn]
+  }
+
+  # ListStreams has no resource type in IAM, so a stream ARN grants nothing and Lambda refuses to create the
+  # event source mapping. It only lists stream ARNs; the three statements above are what read this stream.
+  statement {
+    sid       = "ListStreams"
+    actions   = ["dynamodb:ListStreams"]
+    resources = ["*"]
   }
 
   statement {
@@ -54,11 +62,12 @@ data "aws_iam_policy_document" "dispatcher" {
     resources = [aws_sqs_queue.deliveries.arn]
   }
 
-  # the reaper sweep writes its own dead-letter copy before marking a delivery dead
+  # the reaper sweep writes its own dead-letter copy before marking a delivery dead, and Lambda sends a
+  # discarded stream batch to the stream-failure queue under this same role
   statement {
     sid       = "DeadLetters"
     actions   = ["sqs:SendMessage"]
-    resources = [aws_sqs_queue.dead_letter.arn]
+    resources = [aws_sqs_queue.dead_letter.arn, aws_sqs_queue.stream_failures.arn]
   }
 
   dynamic "statement" {
@@ -202,7 +211,6 @@ resource "aws_lambda_function" "actions" {
         POWERTOOLS_LOG_LEVEL     = var.log_level
         NODE_OPTIONS             = "--enable-source-maps"
       },
-      var.outbound_queue ? { OUTBOUND_QUEUE_URL = aws_sqs_queue.outbound[0].url } : {},
       var.webhook_secret_parameter == null ? {} : { WEBHOOK_SECRET_PARAMETER = var.webhook_secret_parameter },
       var.telegram_token_parameter == null ? {} : { TELEGRAM_TOKEN_PARAMETER = var.telegram_token_parameter },
       var.ses_from_address == null ? {} : { SES_FROM_ADDRESS = var.ses_from_address },
@@ -229,9 +237,11 @@ resource "aws_lambda_event_source_mapping" "stream" {
   maximum_record_age_in_seconds  = 3600
   function_response_types        = ["ReportBatchItemFailures"]
 
+  # its own queue, not the delivery dead-letter queue: a discarded batch was never written as a delivery, so
+  # there is nothing for the redrive script to reset and send again
   destination_config {
     on_failure {
-      destination_arn = aws_sqs_queue.dead_letter.arn
+      destination_arn = aws_sqs_queue.stream_failures.arn
     }
   }
 
