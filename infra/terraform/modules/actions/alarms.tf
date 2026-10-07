@@ -32,6 +32,23 @@ resource "aws_cloudwatch_metric_alarm" "outbound_dead_letters" {
   ok_actions          = [var.alarm_topic_arn]
 }
 
+# a batch Lambda gave up on holds matches that never became deliveries, so nothing else would ever mention them
+resource "aws_cloudwatch_metric_alarm" "stream_failures" {
+  alarm_name          = "${var.name}-actions-stream-failures"
+  alarm_description   = "A DynamoDB stream batch was discarded before it became deliveries. Read it out of the stream within its 24 hours."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.stream_failures.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [var.alarm_topic_arn]
+  ok_actions          = [var.alarm_topic_arn]
+}
+
 resource "aws_cloudwatch_metric_alarm" "errors" {
   for_each            = local.functions
   alarm_name          = "${var.name}-actions-${each.key}-errors"

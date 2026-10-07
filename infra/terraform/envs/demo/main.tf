@@ -116,6 +116,14 @@ output "delivery_queue_url" {
   value = module.blockwarden.delivery_queue_url
 }
 
+output "delivery_dead_letter_queue_url" {
+  value = module.blockwarden.delivery_dead_letter_queue_url
+}
+
+output "stream_failure_queue_url" {
+  value = module.blockwarden.stream_failure_queue_url
+}
+
 output "relayer_api_url" {
   value = module.relayer.api_url
 }
