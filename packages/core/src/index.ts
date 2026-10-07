@@ -23,6 +23,8 @@ export {
   emailActionSchema,
   headerName,
   lambdaActionSchema,
+  MAX_HEADER_NAME_LENGTH,
+  MAX_RELAY_DATA_BYTES,
   parameterName,
   relayActionSchema,
   sqsActionSchema,
