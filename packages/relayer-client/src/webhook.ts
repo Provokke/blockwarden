@@ -19,7 +19,8 @@ export const DEFAULT_TOLERANCE_SECONDS = 300
 export const WEBHOOK_SPEC_VERSION = 1
 
 export type WebhookEvent = {
-  // the delivery id, also sent as X-Blockwarden-Delivery, for receiver-side idempotency
+  // the delivery id, and the only copy of it a receiver should dedupe on: the X-Blockwarden-Delivery header
+  // carries the same id but sits outside the signature, so a replay can change it
   id: string
   type: string
   createdAt: string
