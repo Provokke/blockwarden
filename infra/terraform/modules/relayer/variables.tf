@@ -76,6 +76,17 @@ variable "signers" {
     error_message = "A signer id is 1 to 64 letters, digits, underscores or hyphens."
   }
 
+  # The actions pipeline builds a webhook delivery per URL here, and the sender's destination guard refuses
+  # anything but https with no credentials in it - a URL that fails it dead-letters every transaction event
+  # this signer ever produces. Checked here as far as HCL can: the guard also refuses a private or loopback
+  # address, and resolves the host again when it sends.
+  validation {
+    condition = alltrue(flatten([for s in var.signers : [for u in coalesce(s.webhooks, []) :
+      length(u) <= 2048 && can(regex("^https://[^/?#@]+([/?#].*)?$", u))
+    ]]))
+    error_message = "every signer webhook must be an https URL of at most 2048 characters, with no credentials before the host."
+  }
+
   validation {
     condition     = alltrue([for s in var.signers : length(s.allowed_to) > 0])
     error_message = "allowed_to must have at least one entry."
