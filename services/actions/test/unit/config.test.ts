@@ -71,6 +71,18 @@ describe('loadConfig', () => {
     )
   })
 
+  // the sqs action schema accepts a .fifo ARN and the sender sets a group and deduplication id for one, so an
+  // allowlist that cannot hold one means a rule can name a queue the pipeline may never reach
+  it('takes a FIFO queue ARN, whose name is still 80 characters including the suffix', () => {
+    const arn = (name: string) => `arn:aws:sqs:us-east-1:111122223333:${name}`
+    expect(loadConfig({ ...base, ALLOWED_TARGET_ARNS: arn('ingest.fifo') }).allowedTargetArns).toEqual([
+      arn('ingest.fifo'),
+    ])
+    expect(() => loadConfig({ ...base, ALLOWED_TARGET_ARNS: arn(`${'q'.repeat(76)}.fifo`) })).toThrow(
+      'ALLOWED_TARGET_ARNS',
+    )
+  })
+
   it('refuses a target ARN that is not an SQS queue or a Lambda function', () => {
     for (const arn of ['not-an-arn', 'arn:aws:sns:us-east-1:111122223333:topic', 'arn:aws:sqs:us-east-1:1112:a:b']) {
       expect(() => loadConfig({ ...base, ALLOWED_TARGET_ARNS: arn }), arn).toThrow('ALLOWED_TARGET_ARNS')

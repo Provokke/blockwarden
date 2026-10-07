@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { actionSchema, DEFAULT_SIGNATURE_HEADER } from '../src/actions.js'
+import { actionSchema, DEFAULT_SIGNATURE_HEADER, MAX_HEADER_NAME_LENGTH, MAX_RELAY_DATA_BYTES } from '../src/actions.js'
 
 const parse = (action: unknown) => actionSchema.safeParse(action)
 const reason = (action: unknown) => {
@@ -23,6 +23,17 @@ describe('webhook actions', () => {
         deliveryHeader: 'Billwarden-Delivery',
       }).success,
     ).toBe(true)
+  })
+
+  // the item is capped at 400 KB and two header names of any length go into it beside the payload; the poison
+  // check covers an oversized payload, not an oversized action
+  it('holds a header name to a length a real header has', () => {
+    const ok = { type: 'webhook', url: 'https://example.com/hook', signatureHeader: 'x'.repeat(MAX_HEADER_NAME_LENGTH) }
+    expect(parse(ok).success).toBe(true)
+    expect(reason({ ...ok, signatureHeader: 'x'.repeat(MAX_HEADER_NAME_LENGTH + 1) })).toContain('header name')
+    expect(reason({ type: 'webhook', url: 'https://example.com/hook', deliveryHeader: 'y'.repeat(100_000) })).toContain(
+      'header name',
+    )
   })
 
   it('refuses a URL the destination rules refuse', () => {
@@ -152,6 +163,15 @@ describe('relay actions', () => {
     expect(reason({ ...base, value: 1 })).toBeTruthy()
   })
 
+  // the relayer refuses calldata over the same cap, so anything larger is stored once and then refused for ever
+  it('holds calldata to the size the relayer will accept', () => {
+    const base = { type: 'relay', signerId: 'd', chainId: 1, to: `0x${'2'.repeat(40)}` }
+    expect(parse({ ...base, data: `0x${'ab'.repeat(MAX_RELAY_DATA_BYTES)}` }).success).toBe(true)
+    expect(reason({ ...base, data: `0x${'ab'.repeat(MAX_RELAY_DATA_BYTES + 1)}` })).toContain(
+      `${MAX_RELAY_DATA_BYTES} bytes`,
+    )
+  })
+
   it('refuses calldata that is not hex', () => {
     expect(reason({ type: 'relay', signerId: 'd', chainId: 1, to: `0x${'2'.repeat(40)}`, data: 'abcd' })).toBeTruthy()
   })
@@ -182,6 +202,17 @@ describe('same-account actions', () => {
     expect(
       reason({ type: 'lambda', functionArn: 'arn:aws:lambda:us-east-1:111122223333:function:ingest:a/b' }),
     ).toContain('Lambda function ARN')
+  })
+
+  // the sender implements FIFO properly, so a FIFO ARN has to survive all three checks or none: the allowlist
+  // in services/actions/src/config.ts and the Terraform input mirror this regex
+  it('takes a FIFO queue ARN, and holds the whole name to the 80 characters SQS allows', () => {
+    const arn = (name: string) => `arn:aws:sqs:us-east-1:111122223333:${name}`
+    expect(parse({ type: 'sqs', queueArn: arn('ingest.fifo') }).success).toBe(true)
+    expect(parse({ type: 'sqs', queueArn: arn(`${'q'.repeat(75)}.fifo`) }).success).toBe(true)
+    expect(reason({ type: 'sqs', queueArn: arn(`${'q'.repeat(76)}.fifo`) })).toContain('SQS queue ARN')
+    expect(parse({ type: 'sqs', queueArn: arn('q'.repeat(80)) }).success).toBe(true)
+    expect(reason({ type: 'sqs', queueArn: arn('q'.repeat(81)) })).toContain('SQS queue ARN')
   })
 
   it('refuses an ARN of the wrong service', () => {

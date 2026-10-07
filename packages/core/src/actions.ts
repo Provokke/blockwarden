@@ -13,6 +13,13 @@ const hex = z
   .regex(/^0x([0-9a-fA-F]{2})*$/, 'expected 0x followed by whole bytes of hex')
   .transform((value) => value as Hex)
 const decimal = z.string().regex(/^(0|[1-9][0-9]*)$/, 'expected a decimal string')
+// what the relayer's own policy caps calldata at (MAX_DATA_BYTES in services/relayer/src/policy.ts). Without
+// the same cap here a rule stores calldata the relayer will refuse on every attempt until the delivery dies.
+export const MAX_RELAY_DATA_BYTES = 8 * 1024
+// No RFC caps a header name, but a server does, and two of these plus a payload have to fit in one DynamoDB
+// item. 128 is longer than any header anyone sends and short enough that no action can be sized to break the
+// item; parameterName is capped for the same reason.
+export const MAX_HEADER_NAME_LENGTH = 128
 // the headers the sender computes for itself, plus the ones that frame the message or steer the connection: a
 // rule naming one of these would either be overwritten or break the delivery, and Host in particular decides
 // which site a destination thinks it is serving
@@ -36,6 +43,7 @@ const RESERVED_HEADERS = new Set([
 // second, looser idea of what a header name is.
 export const headerName = z
   .string()
+  .max(MAX_HEADER_NAME_LENGTH, `expected a header name of at most ${MAX_HEADER_NAME_LENGTH} characters`)
   .regex(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/, 'expected a header name')
   .refine((name) => !RESERVED_HEADERS.has(name.toLowerCase()), 'expected a header name that is not reserved')
 // SSM: a hierarchy of at most fifteen non-empty levels, each of a-zA-Z0-9_.-, and at most 1011 characters.
@@ -96,14 +104,19 @@ export const relayActionSchema = z.strictObject({
   signerId: z.string().min(1).max(64),
   chainId: z.number().int().positive(),
   to: address,
-  data: hex,
+  data: hex.refine(
+    (value) => (value.length - 2) / 2 <= MAX_RELAY_DATA_BYTES,
+    `expected calldata of at most ${MAX_RELAY_DATA_BYTES} bytes`,
+  ),
   value: decimal.optional(),
   gasLimit: decimal.optional(),
 })
 
 export const sqsActionSchema = z.strictObject({
   type: z.literal('sqs'),
-  queueArn: z.string().regex(/^arn:aws[a-z-]*:sqs:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,80}(\.fifo)?$/, {
+  // an SQS queue name is at most 80 characters and ".fifo" is part of it, so a FIFO name has 75 left. The
+  // sender sets a group and deduplication id for a .fifo queue, and config.ts's allowlist takes the same shape.
+  queueArn: z.string().regex(/^arn:aws[a-z-]*:sqs:[a-z0-9-]+:\d{12}:([A-Za-z0-9_-]{1,80}|[A-Za-z0-9_-]{1,75}\.fifo)$/, {
     message: 'expected an SQS queue ARN',
   }),
 })
