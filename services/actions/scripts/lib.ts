@@ -1,4 +1,5 @@
-import type { DeliveryRecord } from '../src/records.js'
+import { DeleteMessageCommand, ReceiveMessageCommand, type SQSClient } from '@aws-sdk/client-sqs'
+import type { DeliveryRecord, DeliveryRef } from '../src/records.js'
 import type { DeadCursor, DeliveryStore } from '../src/store.js'
 
 // how much of the first path level is worth printing: enough to tell /services from /api, never a whole
@@ -34,6 +35,43 @@ export function positiveInt(raw: string | undefined): number | undefined {
 }
 
 type RedriveArgs = { table?: string | undefined; queue?: string | undefined; id?: string | undefined; all?: boolean }
+
+// One receive only ever returns what is visible now, and a message this redrive is not responsible for comes
+// back after its visibility timeout. So the loop stops at the first empty receive rather than at an empty queue.
+const RECEIVES_MAX = 200
+const DRAIN_VISIBILITY_SECONDS = 30
+
+// The dead-letter copy is what holds the dead-letters alarm in ALARM: it is a separate message, and resetting
+// the delivery item does not touch it. A redrive that left it there would fix the delivery and leave the alarm
+// latched until an operator purged the queue or the fourteen days ran out.
+export async function drainRedriven(
+  sqs: Pick<SQSClient, 'send'>,
+  queueUrl: string,
+  redriven: DeliveryRef[],
+): Promise<number> {
+  // both sides of this comparison are refOf()'s object serialised the same way, which is what makes it exact
+  const wanted = new Set(redriven.map((ref) => JSON.stringify(ref)))
+  let deleted = 0
+  for (let receives = 0; receives < RECEIVES_MAX && wanted.size > 0; receives++) {
+    const { Messages } = await sqs.send(
+      new ReceiveMessageCommand({
+        QueueUrl: queueUrl,
+        MaxNumberOfMessages: 10,
+        VisibilityTimeout: DRAIN_VISIBILITY_SECONDS,
+        WaitTimeSeconds: 1,
+      }),
+    )
+    if (!Messages || Messages.length === 0) return deleted
+    for (const message of Messages) {
+      // only a copy of a delivery this run redrove; anything else on the queue is someone else's to answer for
+      if (!message.Body || !wanted.has(message.Body) || !message.ReceiptHandle) continue
+      await sqs.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: message.ReceiptHandle }))
+      wanted.delete(message.Body)
+      deleted++
+    }
+  }
+  return deleted
+}
 
 // This command mutates production state, so the two selectors cannot both be honoured: "--id x --all" used to
 // redrive everything while the named id went unchecked.

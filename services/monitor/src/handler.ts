@@ -26,7 +26,10 @@ async function init(): Promise<Runtime> {
   const endpoint = process.env.DYNAMODB_ENDPOINT
   const doc = createDocumentClient(new DynamoDBClient(endpoint ? { endpoint } : {}))
   const chain = createChainReader(config.rpcUrls, requestTimeoutMs(config.timeBudgetMs, config.rpcUrls.length))
-  return { config, store: new MonitorStore(doc, config.tableName), chain }
+  const store = new MonitorStore(doc, config.tableName, () => new Date(), {
+    log: (message, data) => logger.info(message, data ?? {}),
+  })
+  return { config, store, chain }
 }
 
 // leaves time to release the lease and publish metrics before Lambda stops the invocation
