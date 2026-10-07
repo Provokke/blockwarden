@@ -1,5 +1,6 @@
 import type { ActionInput } from '@blockwarden/core'
 import type { DynamoDBBatchResponse, DynamoDBRecord } from 'aws-lambda'
+import { underAnyPrefix } from './config.js'
 import { changesFor, type Change } from './events.js'
 import { actionId, deliveryId } from './ids.js'
 import { DeliverySeqRangeError, keys, refOf } from './keys.js'
@@ -37,6 +38,17 @@ export type DispatcherDeps = {
   deadLetters: DeliveryQueue
   now: () => Date
   log: Log
+  // Terraform's list, its own rather than the outbound one; the sender's IAM policy grants the same paths
+  ruleSecretPrefixes: readonly string[]
+}
+
+// The sender reads whatever parameter a webhook action names and signs the delivery's body with it. Without a
+// list, a rule could name another party's secret, sign a body of its own choosing with it and post the result
+// anywhere: a signing oracle. The outbound queue checks the same thing about the same kind of name; the lists
+// are separate so that granting a rule's secret does not widen what an outbound caller may name.
+function namesAnAllowedSecret(deps: DispatcherDeps, action: ActionInput): boolean {
+  if (action.type !== 'webhook' || action.secretParameter === undefined) return true
+  return underAnyPrefix(deps.ruleSecretPrefixes, action.secretParameter)
 }
 
 function targetFor(action: ActionInput): DeliveryTarget {
@@ -83,7 +95,15 @@ async function plan(deps: DispatcherDeps, change: Change): Promise<NewDelivery[]
     // a provisional alert and its drop notice belong to a fast rule; a finalized rule hears only the final record
     if (change.event !== 'match.final' && rule.mode !== 'fast') return []
     const data = matchEventData(change.row, rule)
-    return rule.actions.map((entry) => {
+    return rule.actions.flatMap((entry) => {
+      if (!namesAnAllowedSecret(deps, entry.action)) {
+        deps.log(
+          'an action names a secret parameter that is not under an allowed prefix',
+          { matchKey: change.matchKey, ruleId: change.ruleId, actionId: entry.actionId },
+          'error',
+        )
+        return []
+      }
       const { SK } = keys.delivery(change.subject, entry.actionId, change.event, change.seq)
       const id = deliveryId(change.subject, SK)
       return {

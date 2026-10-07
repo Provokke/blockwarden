@@ -106,16 +106,16 @@ data "aws_iam_policy_document" "sender" {
   }
 
   dynamic "statement" {
-    for_each = length(local.secret_parameter_arns) + length(local.outbound_secret_arns) > 0 ? [1] : []
+    for_each = length(local.all_secret_arns) > 0 ? [1] : []
     content {
       sid       = "Secrets"
       actions   = ["ssm:GetParameter"]
-      resources = concat(local.secret_parameter_arns, local.outbound_secret_arns)
+      resources = local.all_secret_arns
     }
   }
 
   dynamic "statement" {
-    for_each = length(local.secret_parameter_arns) + length(local.outbound_secret_arns) > 0 ? [1] : []
+    for_each = length(local.all_secret_arns) > 0 ? [1] : []
     content {
       sid       = "DecryptSecrets"
       actions   = ["kms:Decrypt"]
@@ -208,6 +208,7 @@ resource "aws_lambda_function" "actions" {
         DELIVERY_DLQ_URL         = aws_sqs_queue.dead_letter.url
         ALLOWED_TARGET_ARNS      = join(",", var.allowed_target_arns)
         OUTBOUND_SECRET_PREFIXES = join(",", var.outbound_secret_prefixes)
+        RULE_SECRET_PREFIXES     = join(",", var.rule_secret_prefixes)
         POWERTOOLS_LOG_LEVEL     = var.log_level
         NODE_OPTIONS             = "--enable-source-maps"
       },
