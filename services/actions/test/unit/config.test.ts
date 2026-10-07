@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { loadConfig } from '../../src/config.js'
+import { loadConfig, underAnyPrefix } from '../../src/config.js'
 
 const base = {
   TABLE_NAME: 'blockwarden',
@@ -105,6 +105,30 @@ describe('loadConfig', () => {
     ).toThrow('RELAYER_API_URL')
   })
 
+  // the API key rides on every relay request; http would put it on the wire
+  it('refuses a relayer URL that is not https', () => {
+    expect(() =>
+      loadConfig({ ...base, RELAYER_API_URL: 'http://api.example.com', RELAYER_API_KEY_PARAMETER: '/bw/key' }),
+    ).toThrow('RELAYER_API_URL')
+    expect(
+      loadConfig({ ...base, RELAYER_API_URL: 'https://api.example.com', RELAYER_API_KEY_PARAMETER: '/bw/key' })
+        .relayerApiUrl,
+    ).toBe('https://api.example.com')
+  })
+
+  // its own list, so granting a rule's webhook secret does not also widen what an outbound caller may name
+  it('reads the rule secret prefixes separately from the outbound ones', () => {
+    const config = loadConfig({
+      ...base,
+      OUTBOUND_SECRET_PREFIXES: '/billwarden/',
+      RULE_SECRET_PREFIXES: '/blockwarden/rules/, /blockwarden/legacy',
+    })
+    expect(config.outboundSecretPrefixes).toEqual(['/billwarden/'])
+    expect(config.ruleSecretPrefixes).toEqual(['/blockwarden/rules/', '/blockwarden/legacy'])
+    expect(loadConfig(base).ruleSecretPrefixes).toEqual([])
+    expect(() => loadConfig({ ...base, RULE_SECRET_PREFIXES: '/' })).toThrow('RULE_SECRET_PREFIXES')
+  })
+
   it('refuses a secret prefix that names no level, so a lone slash cannot open every parameter', () => {
     for (const prefixes of ['/', '//', '/ ']) {
       expect(() => loadConfig({ ...base, OUTBOUND_SECRET_PREFIXES: prefixes }), prefixes).toThrow(
@@ -117,5 +141,16 @@ describe('loadConfig', () => {
     expect(
       loadConfig({ ...base, OUTBOUND_SECRET_PREFIXES: '/billwarden/, /gaswarden' }).outboundSecretPrefixes,
     ).toEqual(['/billwarden/', '/gaswarden'])
+  })
+})
+
+describe('underAnyPrefix', () => {
+  // a prefix is a level of the hierarchy, not a run of characters
+  it('admits a parameter under the prefix and refuses a name that merely starts with it', () => {
+    expect(underAnyPrefix(['/bw/merchants'], '/bw/merchants/acme')).toBe(true)
+    expect(underAnyPrefix(['/bw/merchants/'], '/bw/merchants/acme')).toBe(true)
+    expect(underAnyPrefix(['/bw/merchants'], '/bw/merchantsEvil')).toBe(false)
+    expect(underAnyPrefix(['/bw/merchants'], '/bw/merchants')).toBe(false)
+    expect(underAnyPrefix([], '/bw/merchants/acme')).toBe(false)
   })
 })

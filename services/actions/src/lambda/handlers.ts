@@ -34,6 +34,7 @@ export function createDispatcherHandler(runtime: () => Promise<Runtime>, ports: 
           deadLetters: r.deadLetters,
           now: () => new Date(),
           log: r.log,
+          ruleSecretPrefixes: r.config.ruleSecretPrefixes,
         },
         records as DynamoDBRecord[],
       )
@@ -58,6 +59,7 @@ export function createDispatcherHandler(runtime: () => Promise<Runtime>, ports: 
         queue: r.queue,
         deadLetters: r.deadLetters,
         now: () => new Date(),
+        ruleSecretPrefixes: r.config.ruleSecretPrefixes,
         log: r.log,
       },
       Date.now(),

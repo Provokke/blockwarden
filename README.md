@@ -170,8 +170,11 @@ The demo stack deploys the dispatcher and the sender alongside the monitor, thro
 2. A webhook action that names its own `secretParameter`, and a relayer signer that sets
    `webhook_secret_parameter`, read a different parameter. The sender can only read what the module granted it,
    so list a signer's parameter in `actions.signer_webhook_secret_parameters`, and put a rule's own parameter
-   under one of `actions.outbound_secret_prefixes`. A prefix is a parameter name with an optional trailing
-   slash; `"/"` is not a prefix and is refused, because it would grant every parameter in the account.
+   under one of `actions.rule_secret_prefixes`. The dispatcher refuses to build a delivery for an action naming
+   a parameter outside that list, because the sender would otherwise sign a body of the rule's choosing with
+   somebody else's secret. `actions.outbound_secret_prefixes` is the separate list for outbound requests, so
+   granting one does not widen the other. A prefix is a parameter name with an optional trailing slash; `"/"`
+   is not a prefix and is refused, because it would grant every parameter in the account.
 3. Build the bundle: `pnpm --filter @blockwarden/actions run build`
 4. Apply as for the monitor. Deliveries that used every attempt are copied to the `-deliveries-dlq` queue, which
    is what the `actions-dead-letters` alarm watches. Redrive them, and clear the copies that hold the alarm on,
