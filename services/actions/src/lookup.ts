@@ -76,12 +76,18 @@ export function createLookup(
         }
         try {
           const compiled = compileRule(ruleId, input)
+          // compiled.actions, not input.actions: an action compileRule dropped is one the sender could not
+          // deliver anyway, and a rule stored before milestone 3 has no actions key at all
+          if (compiled.warnings.length > 0) {
+            const warnings = compiled.warnings.map((w) => `${w.path}: ${w.message}`).join('; ')
+            log('part of a rule was dropped; the rest of it still delivers', { ruleId, warnings }, 'warn')
+          }
           return {
             ruleId,
             event: input.event,
             eventName: compiled.abiEvent.name,
             mode: input.confirmation.mode,
-            actions: input.actions.map((action) => ({ actionId: actionId(action), action })),
+            actions: compiled.actions.map((action) => ({ actionId: actionId(action), action })),
           }
         } catch (err) {
           // the monitor skips a rule that no longer compiles and keeps polling; the dispatcher does the same
