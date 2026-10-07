@@ -66,9 +66,10 @@ console.log(`${chosen.length} delivery/deliveries queued again`)
 // the delivery is on its way again, but its copy still sits on the dead-letter queue holding the alarm on
 if (args.dlq) {
   const deleted = await drainRedriven(sqs, args.dlq, redriven)
+  // one delivery can have several copies on the queue, so this counts messages, not deliveries
   console.log(`${deleted} dead-letter message(s) deleted`)
   if (deleted < redriven.length) {
-    console.log('some copies were not visible on this pass; run the command again to clear the alarm')
+    console.log('fewer copies than deliveries redriven: some were not visible on this pass, so run it again')
   }
 } else {
   console.log('no --dlq <url> or DELIVERY_DLQ_URL: the dead-letters alarm stays in ALARM until those copies go')
