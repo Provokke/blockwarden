@@ -43,23 +43,29 @@ TypeScript throughout, using viem for chain access. Lambdas run on the Node.js 2
 ```
 blockwarden/
   packages/
-    core/             pure logic: rule engine, match keys, adaptive log fetching, fee bump math, shared types
+    core/             pure logic: rule engine, match keys, adaptive log fetching, fee bump math, address and
+                      URL classification, action schemas, shared types
+    dynamo/           the shared DynamoDB document client and index names
     kms-signer/       viem LocalAccount backed by AWS KMS (secp256k1)
-    relayer-client/   typed client for the relayer API, used by downstream projects
+    relayer-client/   typed client for the relayer API and the webhook signature, used by downstream projects
   services/
     monitor/          poller Lambda: finalized durable scan and fast provisional scan
-    actions/          dispatcher and channel senders
+    actions/          dispatcher and reaper Lambda, sender Lambda, delivery store, channel senders, operator scripts
     relayer/          signer Lambda, sweeper Lambda
     api/              HTTP API handlers and the SIWE authorizer
   apps/
     dashboard/        Next.js static export
   contracts/          Foundry project
   infra/terraform/
-    modules/blockwarden/   full stack
+    modules/blockwarden/   full stack: table, monitor, alarms, and the actions module
+    modules/actions/       dispatcher, sender, queues and alarms; used by modules/blockwarden
     modules/relayer/       relayer only, for downstream projects
     envs/demo/
     envs/staging/
+    examples/relayer-only/
+    examples/monitor-actions-only/
   docs/design/
+  docs/webhooks/      the published webhook payload, version 1
 ```
 
 pnpm workspaces. `packages/core` has no AWS or network dependencies so it can be unit and property tested in isolation.
@@ -70,7 +76,7 @@ pnpm workspaces. `packages/core` has no AWS or network dependencies so it can be
 
 **Relayer.** `POST /v1/relayer/txs` validates the request against the signer's policy and enqueues it on an SQS FIFO queue with the signer id as the message group. The signer Lambda consumes the queue, so transactions for one signer are processed strictly in order. A sweeper Lambda runs every minute to track receipts, replace stuck transactions, requeue transactions that waited too long and resume paused signers. A transaction the node refuses after its nonce was reserved, when no node ever took any of its signatures, gets a filler transaction at that nonce, so later nonces are not blocked.
 
-**Actions.** A dispatcher Lambda reads the DynamoDB stream for match status changes and enqueues deliveries on SQS with a dead-letter queue. Channel senders handle webhook, SES email, Telegram and relayer calls.
+**Actions.** Two Lambdas. The dispatcher reads the DynamoDB stream for match and transaction status changes, writes a delivery item for each action the change fires, and enqueues it on SQS; the same function runs every minute as a reaper over a sparse due index, and reads the optional outbound queue. The sender consumes the delivery queue and carries all six channels — webhook, SES email, Telegram, a relayed transaction, an SQS queue and a Lambda function — in one function, because each extra function would need its own `Errors` alarm at $0.10 a month and would go cold between deliveries. A delivery that uses its attempts is marked dead and copied to a dead-letter queue, which is what the alarm watches.
 
 **API and dashboard.** API Gateway HTTP API with a Lambda authorizer. The dashboard is a static Next.js export on S3. CloudFront serves both, routing `/v1/*` to API Gateway, so the session cookie is same-site.
 
@@ -91,12 +97,12 @@ One DynamoDB table in on-demand mode, with TTL enabled and streams on (new and o
 | Chain lease | `CHAIN#<chainId>` | `LEASE` | `owner`, `leaseUntil` (epoch milliseconds); one poller per chain |
 | Rule | `RULE#<ruleId>` | `META` | GSI1: `CHAIN#<chainId>#RULES` / `RULE#<ruleId>`, set only while active |
 | Match | `MATCH#<matchKey>` | `META` | status `provisional`, `final` or `dropped`; block number, block hash and log index where first recorded; a final record updates them; TTL 30 days; GSI1: `RULE#<ruleId>` / `<blockNumber>#<logIndex>`; GSI2 while provisional: `CHAIN#<chainId>#PROVISIONAL` / `<blockNumber>` |
-| Delivery | `MATCH#<matchId>` | `DELIVERY#<actionId>#<event>` | attempts, last error, status |
+| Delivery | `MATCH#<matchKey>`, `TX#<txId>` or `OUTBOUND#<requestId>` | `DELIVERY#<actionId>#<event>#<seq>` | channel, target, the exact bytes to send, status, attempts, next attempt time, last error and status code, `version` for optimistic writes; TTL 30 days; GSI1 while dead: `DELIVERY#DEAD` / `<createdAt>#<deliveryId>`; GSI2 while not terminal: `DELIVERY#DUE#<shard>` / `<nextAttemptAt epoch ms>` |
 | Signer | `SIGNER#<signerId>` | `META` | KMS key id, chain ids, policy, `webhooks` (URLs subscribed to this signer's `tx.*` events) and the SSM name of their secret; written by Terraform and never changed at runtime. The address is derived from the key's public key, because Terraform has no keccak256 |
 | Signer nonce | `SIGNER#<signerId>` | `NONCE#<chainId>` | `nextNonce`, taken in one DynamoDB transaction with the write that puts the nonce on the transaction |
 | Signer pause | `SIGNER#<signerId>` | `PAUSE#<chainId>` | the balance the paused transaction needs and when the pause began; present only while paused |
 | Spend counter | `SIGNER#<signerId>` | `SPEND#<chainId>#<yyyy-mm-dd>` | `spentGwei`, the worst-case cost reserved today (value plus gas limit at the policy fee cap), TTL 2 days |
-| Transaction | `TX#<txId>` | `META` | kind (`relay` or `filler`), status, nonce, every signed attempt with its raw bytes and fees, the mined receipt, status history, `reference`, `dependsOn`, `version` for optimistic writes; GSI2 while unsettled: `TXPENDING#<chainId>` / `<createdAt epoch ms>` |
+| Transaction | `TX#<txId>` | `META` | kind (`relay` or `filler`), status, nonce, every signed attempt with its raw bytes and fees, the mined receipt, status history capped at the newest 64 entries with `historyBase` counting the ones dropped off the front so a delivery's `seq` keeps counting, `reference`, `dependsOn`, `version` for optimistic writes; GSI2 while unsettled: `TXPENDING#<chainId>` / `<createdAt epoch ms>` |
 | Idempotency | `IDEMP#<apiKeyHash>#<key>` | `META` | maps to `txId`, TTL 24 hours; DynamoDB deletes up to about a day late, so a key can stay a duplicate for about 48 hours |
 | API key | `APIKEY#<sha256>` | `META` | signer allowlist, label |
 | SIWE nonce | `SIWE#<nonce>` | `META` | TTL 5 minutes |
@@ -120,7 +126,7 @@ GSI2 is sparse: an item only appears in it while it has work outstanding, so dro
 
 - `conditions` supports `all` and `any` groups, nestable, with ops `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in` and `contains`. Numeric comparisons parse both sides as bigint.
 - `confirmation.mode` is `fast` (alert on the provisional match, then confirm or drop it) or `finalized` (alert only on the final match). A block-count mode is deliberately absent: a depth below finality can still reorg.
-- Rules are validated on create and update: the event signature must parse, every condition field must exist in the event's ABI, and every action must pass its channel's schema. Invalid rules are rejected with a field-level error.
+- Rules are validated on create and update: the event signature must parse, every condition field must exist in the event's ABI, and every action must pass its channel's schema. A field path is walked through the ABI's tuple components, so `args.permission.spender` is checked against the `spender` component of the `permission` tuple rather than only against `permission`; an index strips one array dimension, and `.length` is a number with no components of its own. `actions` is a discriminated union on `type`: `webhook`, `email`, `telegram`, `relay`, `sqs` and `lambda` each have their own strict schema, so an unknown field is a rejection rather than a setting that is silently dropped. Invalid rules are rejected with a field-level error.
 
 ## Data flow
 
@@ -162,7 +168,11 @@ The dispatcher reads stream records and enqueues a delivery when:
 - a match moves to `dropped` and its rule is in `fast` mode (a drop notice),
 - a transaction item changes status, in which case it enqueues a `tx.<status>` delivery to each URL in the signer's `webhooks`.
 
-Each delivery is keyed by `matchKey`, `actionId` and event, and written with a conditional put, so stream redelivery does not cause duplicate sends.
+A delivery is keyed under the item that caused it: `PK` is the match, the transaction or, for an outbound request, the caller's request id, and `SK` is `DELIVERY#<actionId>#<event>#<seq>`. `seq` is the index of the status-history entry that caused it, zero-padded to four digits so it sorts as a number; it is always `0` for a match. `actionId` is `a_` and the first 16 hex characters of a SHA-256 of the action canonicalised, so moving an action within a rule's list does not re-key its deliveries, and the delivery id is `dlv_` and the first 32 hex characters of a SHA-256 of the two key parts joined. The item is written with a conditional put, so stream redelivery does not create a second one.
+
+Delivery is **at least once**, not exactly once. A crash between claiming a delivery and sending it, an SQS redelivery, or the reaper acting on a delivery whose attempt is still in flight all send the same body twice with the same delivery id. Receivers dedupe on the `X-Blockwarden-Delivery` header.
+
+The dispatcher also runs on a one-minute schedule as a reaper. It queries a sparse `DELIVERY#DUE#<shard>` index, four shards taken from the delivery id, for anything whose next attempt time is more than 60 seconds past, and either queues it again or, once it has used its attempts, dead-letters it. That is what clears a delivery whose item was written but whose queue message was never sent, and a delivery whose sender died holding it: a claim leases a delivery for 120 seconds.
 
 Webhooks are POSTed with `X-Blockwarden-Signature` and `X-Blockwarden-Delivery` (the delivery id, for receiver-side idempotency). The signature header is `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw body>">`, and may carry several `v1` values while a secret rotates. The body is `{ id, type, createdAt, data }`, where `id` is the delivery id; for a `tx.*` event, `data` is the transaction as `GET /relayer/txs/{txId}` returns it. `verifyWebhook()` in `@blockwarden/relayer-client` checks the signature and a 300-second tolerance on `t`. A delivery id must be unique per status-history entry, not per transaction and status, so receivers do not drop the second `tx.mined` after a reorg as a duplicate.
 
@@ -200,11 +210,11 @@ Webhooks are POSTed with `X-Blockwarden-Signature` and `X-Blockwarden-Delivery` 
    The sweeper pages through every pending transaction, so one signer's backlog does not hide another's. An error on one transaction is logged and counted, and the sweep moves on. Chains are swept in parallel against a hard stop 3 seconds before the Lambda timeout. The invocation fails if any chain failed or did not finish, or any transaction errored, so the function's Errors alarm fires.
 6. A transaction with `dependsOn` names an earlier `txId` of a signer the same API key may use, on the same chain, and must carry `gasLimit`. It is not estimated when submitted. The signer leaves it queued, without a nonce, until the dependency is `confirmed`. Then it runs the estimate: a revert, or any other refusal (an unreachable RPC is retried instead), fails it without taking a nonce. The revert payload is stored in the error the same 256 characters at a time as a node's answer, since the node chooses how long it is; a 422 from the API still carries the whole of it. A dependency that fails, or is confirmed as reverted, fails the dependent transaction too. The sweeper requeues it once when the dependency settles.
 
-Status values: `queued`, `submitted`, `mined`, `confirmed`, `failed`, `cancelled`. `cancelled` is reserved for a cancel operation that no route offers yet. Every status change is appended to the transaction's history and arrives on the table stream. Milestone 3 turns those changes into `tx.*` events through the actions pipeline, so relayer users can subscribe by webhook instead of polling.
+Status values: `queued`, `submitted`, `mined`, `confirmed`, `failed`, `cancelled`. `cancelled` is reserved for a cancel operation that no route offers yet. Every status change is appended to the transaction's history and arrives on the table stream. Milestone 3 turns each new history entry into a `tx.<status>` delivery to every URL in the signer's `webhooks`, so relayer users subscribe by webhook instead of polling.
 
 ## HTTP API
 
-All routes are under `/v1`. Dashboard routes need a SIWE session. Relayer routes accept a session or an API key in `Authorization: Bearer <key>`. Milestone 2 ships the three relayer routes below that say so, with API keys only, on their own API Gateway HTTP API in `modules/relayer`; milestone 4 adds sessions and the rest.
+All routes are under `/v1`. Dashboard routes need a SIWE session. Relayer routes accept a session or an API key in `Authorization: Bearer <key>`. Milestone 2 ships the three relayer routes below that say so, with API keys only, on their own API Gateway HTTP API in `modules/relayer`; milestone 4 adds sessions and the rest. The two delivery routes are milestone 4 as well: milestone 3 ships the `delivery:list` and `delivery:redrive` scripts in `services/actions` instead, which an operator runs against the table with AWS credentials.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -214,8 +224,8 @@ All routes are under `/v1`. Dashboard routes need a SIWE session. Relayer routes
 | GET, POST | `/rules` | list, create |
 | GET, PATCH, DELETE | `/rules/{ruleId}` | read, update, delete |
 | GET | `/matches?ruleId=&cursor=` | match history |
-| GET | `/deliveries?status=&cursor=` | delivery history |
-| POST | `/deliveries/{deliveryId}/redrive` | resend from the dead-letter queue |
+| GET | `/deliveries?status=&cursor=` | delivery history (milestone 4) |
+| POST | `/deliveries/{deliveryId}/redrive` | resend from the dead-letter queue (milestone 4) |
 | GET | `/relayer/signers` | signers the key may use, with their addresses (milestone 2) |
 | POST | `/relayer/txs` | submit (milestone 2) |
 | GET | `/relayer/txs/{txId}` | status (milestone 2) |
@@ -229,7 +239,7 @@ Sessions are HS256 JWTs in an `HttpOnly; Secure; SameSite=Strict` cookie, 12-hou
 Two follow-up projects depend on this one, so these interfaces are treated as public and versioned with semver from the first release:
 
 - **`@blockwarden/kms-signer`** exports `toKmsAccount({ keyId, region?, client? })`, resolving to a viem `LocalAccount` that implements `sign`, `signTransaction`, `signMessage` and `signTypedData`. It reads the public key once and keeps the address, and accepts an existing KMS client. It refuses blob transactions, including an untyped transaction viem infers as one from its blob fields, and a digest that is not 32 bytes. `@blockwarden/kms-signer/testing` exports `createLocalDigestSigner(privateKey)`, an in-memory key behind the same interface, which returns DER with high `s` about half the time as KMS does, for downstream integration tests. The gas-sponsorship project uses `signTypedData` for paymaster approvals.
-- **`@blockwarden/relayer-client`** exports `relay()`, `getTx()`, `listSigners()`, `verifyWebhook()`, `signWebhook()`, `isTxEvent()` and `parseTx()`. A transaction reports `receiptStatus` (`success` or `reverted`), `hash` and `blockNumber`, and a 422 from a reverting estimate carries `revertData`. `verifyWebhook()` refuses an empty or non-string secret and a tolerance that is not a finite, non-negative number. `relay()`, `getTx()` and `listSigners()` reject only with `RelayerApiError`, whose codes include `network_error` (status 0), `invalid_response` and `throttled`. Every API key allowed a signer can read that signer's transactions. The subscriptions project uses it to call `charge()` each billing period.
+- **`@blockwarden/relayer-client`** exports `relay()`, `getTx()`, `listSigners()`, `verifyWebhook()`, `signWebhook()`, `isTxEvent()` and `parseTx()`. 0.2.0 adds `isMatchEvent()` for the `match.*` events milestone 3 sends, `toDecodedValue()` for the decimal-string form every integer in a decoded argument takes on the wire, `MATCH_STATUSES`, `WEBHOOK_SPEC_VERSION`, and `revertData` on a transaction; everything added is additive, and nothing existing changed shape. A transaction reports `receiptStatus` (`success` or `reverted`), `hash` and `blockNumber`, and a 422 from a reverting estimate carries `revertData`. `verifyWebhook()` refuses an empty or non-string secret and a tolerance that is not a finite, non-negative number. `relay()`, `getTx()` and `listSigners()` reject only with `RelayerApiError`, whose codes include `network_error` (status 0), `invalid_response` and `throttled`. Every API key allowed a signer can read that signer's transactions. The subscriptions project uses it to call `charge()` each billing period.
 - **`modules/relayer`** is a Terraform module that deploys only the relayer, signer keys and sweeper, so a downstream project does not have to deploy the monitor. It creates its own table and alarm topic unless given the full stack's. Its variable validations mirror the relayer's runtime schemas, so a policy the relayer would refuse fails at plan. It takes signers with their policies, webhook URLs and webhook secret parameter, and optional API keys, which it stores in SSM. It outputs the API URL, the signer key ARNs and the API key parameter names; signer addresses come from `GET /relayer/signers`.
 
 ## Error handling
@@ -247,9 +257,10 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 - A stored rule that no longer compiles is skipped and logged, and polling continues for every other rule.
 
 **Actions**
-- Exponential backoff with jitter, 8 attempts, then the dead-letter queue.
-- A webhook response of 4xx other than 429 is not retried.
-- Dead-lettered deliveries appear in the dashboard with a redrive button.
+- Eight attempts, then the dead-letter queue. The step before attempt *n* is `min(10 × 3^(n-1), 900)` seconds, 900 being the longest delay SQS accepts. Each wait is then jittered: the band is 40% of the step wide and its top is `min(step × 1.2, 900)`, so it hangs below the cap rather than being clipped onto it — jittering around 900 and clamping would put every draw in the top half of the band on exactly 900, and a herd that failed together would come back together on the attempts that matter most. That gives about 10, 30, 90 and 270 seconds, and from the fifth attempt 9 to 15 minutes. A delivery that never succeeds is dead about 43 minutes after it was made, 33 to 53 minutes across the jitter band.
+- A `Retry-After` on a 429 or a 5xx, and Telegram's `parameters.retry_after`, can only lengthen a wait. A destination asking for less than the backoff is not honoured, or the last attempts would become a hot loop against a server that is already struggling.
+- A webhook response of 4xx other than 429 is not retried. Neither is a 3xx: a redirect is never followed, so it is permanent too, and the delivery is dead-lettered at once.
+- A dead delivery is both `status: dead` on its item and a message on the dead-letter queue, which is what the alarm watches. Milestone 3 ships `delivery:list` and `delivery:redrive` scripts; the dashboard's redrive button is milestone 4.
 
 **Relayer**
 
@@ -274,9 +285,11 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 - **SIWE.**
   - The server checks domain, URI, nonce (single use, 5-minute TTL), chain id and expiry.
   - Smart contract wallets are verified through EIP-1271 using viem's `verifyMessage`.
-- **Webhooks (SSRF).**
-  - The destination hostname is resolved, and the request is refused if any resolved address is private, loopback, link-local (including `169.254.169.254`) or unique-local IPv6.
-  - HTTPS only. Redirects are not followed.
+- **Webhooks (SSRF).** The guard runs twice: once on the URL when a rule is created or an outbound request is accepted, and once on the resolved addresses when the delivery is sent.
+  - The URL must be `https`, must carry no username or password, and must not use port 0, which a client turns back into 443 without saying so. A URL whose host is already a literal address is classified there and then. Every spelling of an address normalises through `URL` first, so `0x7f.1`, `127.1` and `2130706433` are all `127.0.0.1`.
+  - At send time the host is resolved and **every** returned address must pass. Refused: `0.0.0.0/8`, `10/8`, `100.64/10` (carrier-grade NAT), `127/8`, `169.254/16` (which is where `169.254.169.254` lives), `172.16/12`, `192.0.0/24`, `192.0.2/24`, `192.88.99/24` (the 6to4 relay anycast prefix), `192.168/16`, `198.18/15` (benchmarking), `198.51.100/24`, `203.0.113/24`, `224/4` and `240/4`; and in IPv6 `::/64`, `64:ff9b::/96` (NAT64), `fc00::/7`, `fe80::/10`, `fec0::/10`, `ff00::/8`, `2001::/32`, `2001:db8::/32` and `2002::/16`. An IPv4-mapped address is judged as the IPv4 address it wears.
+  - The connection is then pinned to the address that passed, through the request's own `lookup`, with `agent: false` so no pooled socket can skip it, so a name that answers differently a moment later cannot move it. The certificate is still checked against the name. `node:https` is used rather than `fetch`, which ignores a `lookup` option and so cannot pin at all.
+  - Redirects are not followed; a 3xx is a permanent failure.
 - **Secrets.** RPC URLs, the JWT secret, webhook HMAC secrets and the Telegram bot token live in SSM Parameter Store as SecureString parameters. RPC URLs can hold provider API keys, so the relayer keeps them out of its logs and thrown errors.
 - **Demo abuse.**
   - API Gateway route throttling, plus per-wallet quotas in DynamoDB: 5 rules and 20 relayed transactions per day.
@@ -305,10 +318,14 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 - `anvil_dropTransaction` simulates a stuck transaction; the test asserts the sweeper replaces it at the same nonce.
 - SQS FIFO ordering and deduplication run against moto server 5.2.3, which was measured to keep FIFO order, deduplicate, and block a group while a message is in flight.
 - The relayer end-to-end test runs `@blockwarden/relayer-client` against the API handler, moto, the signer, Anvil and the sweeper: confirmation, signing order, idempotency, revert data, a reverted receipt, a dropped transaction replaced at its nonce, a reorged receipt, a filler after a refused transaction, a paused and resumed signer, nonce reconciliation and a dependent transaction.
+- The actions end-to-end test drives the whole pipeline off DynamoDB Local's own stream, read with `@aws-sdk/client-dynamodb-streams`: a match row and a transaction row are written, the dispatcher turns the stream records into deliveries, and the sender delivers them to a local receiver and to moto's SES v2 and SQS. It asserts that the webhook verifies with `verifyWebhook()` against the secret that delivery's own action names, that a reorged transaction sends two `tx.mined` deliveries with different ids, and that a delivery which keeps failing dies, lands on the dead-letter queue and goes again after a redrive that also clears the copy. The destination guard is the one piece it stands in for — `127.0.0.1` is refused on purpose, so the test resolves the destination itself — and the guard has its own integration test against a self-signed HTTPS server.
+- Two things DynamoDB Local cannot show, so they are covered elsewhere: it suppresses a `MODIFY` for a write that changes nothing, which real DynamoDB does not promise, so the dispatcher's idempotence is proved by its conditional put in the integration test rather than by the absence of a record; and it never expires a TTL item, so no TTL `REMOVE` record is ever produced, and that the dispatcher ignores every `REMOVE` is a unit test.
+- Two branches the end-to-end test does not reach, both covered only by unit tests against fakes: the reaper's own dead-letter branch, where a sweep finds a delivery that has used all eight attempts and sends the dead-letter copy before marking it dead; and the dispatcher's skip of a stream record it cannot read, which reports that record alone as a batch item failure and lets the rest of the batch through. The end-to-end test does reach the reaper's requeue branch, and the sender's dead-letter path, which is a different piece of code from the reaper's.
 - KMS signing: moto 5.2.3 hashes a `DIGEST` message again before signing (0 of 20 signatures recovered against the digest, 20 of 20 against its SHA-256), so integration tests use the in-process secp256k1 signer behind the same interface. One test signs against a real KMS key and runs only when `BLOCKWARDEN_KMS_TEST_KEY_ID` is set.
 
 **Infrastructure**
-- `terraform fmt -check`, `terraform validate`, tflint and checkov on every pull request.
+- `terraform fmt -check`, `terraform validate`, tflint and checkov on every pull request, over three roots: `envs/demo`, which uses every module, and the two examples, each of which deploys one slice on its own defaults.
+- The module's variable validations mirror the runtime schemas they stand for — the target ARN allowlist, the SSM parameter names and prefixes, a signer's policy — so a value the code would refuse at cold start fails at plan instead.
 - `terraform plan` output posted as a PR comment.
 
 **End to end (nightly GitHub Actions)**
@@ -319,9 +336,23 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 
 ## Observability
 
-- **Logs.** Structured JSON logs through Powertools for AWS Lambda (TypeScript), with a correlation id carried from match to delivery and from API request to transaction.
-- **Metrics** (CloudWatch embedded metric format): durable lag and finalized block age per chain, matches per rule, delivery failures, dead-letter depth, `pendingAgeSeconds` (the oldest unsettled relayed transaction) per chain, and `signerBalanceGwei` per signer and chain for signers with a balance alarm.
-- **Alarms** go to SNS email: durable lag, finalized block older than 60 minutes, dead-letter depth above zero, relayer pending age (which covers a paused signer, a fee cap below the replacement minimum and a stuck nonce), signer balance below threshold, relayer function errors, the relayer sweeper not invoked for 10 minutes, and API 5xx responses.
+- **Logs.** Structured JSON logs through Powertools for AWS Lambda (TypeScript), with a correlation id carried from match to delivery and from API request to transaction. `POWERTOOLS_LOG_LEVEL` sets the level on both actions functions, from the module's `log_level` input.
+- **Metrics** (CloudWatch embedded metric format): durable lag and finalized block age per chain, matches per rule (still deferred from milestone 1, and not emitted yet), `pendingAgeSeconds` (the oldest unsettled relayed transaction) per chain, and `signerBalanceGwei` per signer and chain for signers with a balance alarm. Actions adds `deliveriesDead`, published by the sender when a delivery dies and by the reaper when a sweep kills one, and `deliveryBatchFailures`, published when the sender hands part of an SQS batch back. Both are billed custom metrics, so each is published only when it happens, and neither carries a channel dimension: six channels would be six billed metrics instead of one. Dead-letter depth is not a custom metric — SQS publishes it.
+- **Alarms** go to SNS email: durable lag, finalized block older than 60 minutes, relayer pending age (which covers a paused signer, a fee cap below the replacement minimum and a stuck nonce), signer balance below threshold, relayer function errors, the relayer sweeper not invoked for 10 minutes, API 5xx responses, and the relayer's dead-letter depth. Actions adds four: `ApproximateNumberOfMessagesVisible` above zero on the delivery dead-letter queue, the same on the stream-failure queue that holds batches Lambda gave up on, and an `Errors` alarm on each of the dispatcher and the sender. A fifth watches the outbound dead-letter queue when `outbound_queue` is set.
+
+## Known limitations
+
+As of milestone 3:
+
+1. **Delivery is at least once.** A crash between claiming a delivery and sending it, an SQS redelivery, or the reaper acting on a delivery whose attempt is still in flight all send the same body twice with the same delivery id. Receivers dedupe on `X-Blockwarden-Delivery`.
+2. **The reaper's grace is 60 seconds and the claim lease is 120.** A sender that takes longer than the lease can have its delivery re-enqueued underneath it, which is one of the ways the line above happens.
+3. **A webhook action with no secret at all is refused with nothing sent.** `secretParameter` is optional on a webhook action and `WEBHOOK_SECRET_PARAMETER` is optional on the deployment. When an action names neither, the delivery is created, refused permanently on its first attempt, marked dead and copied to the dead-letter queue, so the alarm fires and the sender logs it — but nothing is sent and no retry can help. Neither setting can be made mandatory on its own without breaking a legitimate deployment: a deployment whose webhook actions all name their own parameter, or that has no webhook actions at all, needs no default, and a rule author cannot know from the rule whether the deployment has one. The pairing is only knowable where the sender already checks it, at delivery time. An outbound request is different — `secretParameter` is required by its schema, because there is no rule behind it to carry one.
+4. **A FIFO queue cannot be a delivery target, although two of the three places that handle one accept it.** The `sqs` action schema accepts a `.fifo` queue ARN and the sender sets `MessageGroupId` and `MessageDeduplicationId` when it sees one, but the allowlist the sender is configured with does not: the `ALLOWED_TARGET_ARNS` regex in `services/actions/src/config.ts` has no `.` in the queue-name class, and `modules/actions`'s `allowed_target_arns` validation mirrors it. So Terraform refuses a FIFO ARN at plan, and an `ALLOWED_TARGET_ARNS` set any other way kills both functions at cold start, because the configuration is validated at load. Either the allowlist should accept `.fifo` or the action schema should refuse it; as it stands a rule can name a queue the pipeline will never be allowed to reach.
+5. **A rule's own webhook `secretParameter` has no Terraform input of its own.** A relayer signer's does — `actions.signer_webhook_secret_parameters` — and Task 15 added the IAM grant for it. A rule's does not, so an operator has to list the parameter under `actions.outbound_secret_prefixes` to get it granted, which is the input for outbound requests and widens what an outbound caller may name at the same time. Without that the sender cannot read the parameter and the delivery fails on `ssm:GetParameter`.
+6. **The dead-letter copies a redrive leaves behind.** `delivery:redrive` deletes the copies of the deliveries it redrove only when it is given `--dlq`. Without it they expire with the queue's retention and the alarm stays on until they do, which is the safe default: draining a queue an operator has not read yet loses what is on it.
+7. **A rule Terraform writes is validated only as far as HCL can.** `conditions` and each action are JSON strings, so the module checks what it can and the monitor and the dispatcher skip and log a rule that does not compile. A bad rule is silent except in the log.
+8. **The Telegram 429 shape is from Telegram's documentation, not measured.** Only the 401 and 404 shapes were seen, because the rest needs a real bot token. A missing `parameters.retry_after` falls back to the sender's own backoff, so a wrong guess about the field name costs a longer wait and nothing else.
+9. **The stream filter matches `SK = META` exactly.** `prefix` is not documented for DynamoDB event source filters, so items like `RULE#`, `SIGNER#` and `IDEMP#` still reach the dispatcher and are dropped in code. The same code also drops anything whose sort key is not `META`, which is what keeps a delivery — which shares its partition key with the match it belongs to — from causing a delivery of its own.
 
 ## Cost estimate (demo instance, idle)
 
@@ -337,11 +368,19 @@ These are estimates from published AWS pricing and have to be measured after the
 | API Gateway HTTP API | cents at demo traffic |
 | CloudFront, S3 | within free tier at demo traffic |
 | SSM standard parameters | free |
-| CloudWatch alarms: 9 for the monitor and, from milestone 2, 10 for the relayer on 2 chains with 1 signer | the first 10 are free, then $0.10/alarm/month, so $0.90 |
-| CloudWatch custom metrics: up to 5 per monitored chain. `durableLag` and `finalizedAgeSeconds` are emitted on most runs. `deadlineSkips` is emitted whenever a run stops for time, which includes normal catch-up after a start block or an outage. `busySkips` and `laggingNodeSkips` are emitted only when they occur. Across 3 chains that is up to 15 metrics. The relayer adds `pendingAgeSeconds` per chain and `signerBalanceGwei` per signer per chain: 4 more, so 10 in a month without skips and up to 19 | the first 10 are free, then $0.30/metric/month, so nothing to $2.70 |
-| **Total** | **about $2 to $5.60 per month:** KMS about $1, DynamoDB under $1, alarms $0.90, custom metrics nothing to $2.70. The upper end is above the $5 goal and needs every occasional monitor metric in the same month |
+| DynamoDB Streams | free: AWS does not charge for `GetRecords` calls made by a Lambda trigger |
+| SQS: the delivery queue, its dead-letter queue, the stream-failure queue, and the optional outbound pair | within the 1M free requests at demo traffic |
+| Lambda: the dispatcher at 1/min plus a few stream batches, and the sender per delivery | within the always-free 1M requests and 400k GB-seconds |
+| SES | $0.10 per 1,000 emails; nothing while idle |
+| CloudWatch alarms: 9 for the monitor, 10 for the relayer on 2 chains with 1 signer, and, from milestone 3, 4 for actions (delivery dead letters, stream failures, and an `Errors` alarm on each of the two functions) — 5 with the outbound queue. 23 in all | the first 10 are free, then $0.10/alarm/month, so $1.30 |
+| CloudWatch custom metrics: up to 5 per monitored chain. `durableLag` and `finalizedAgeSeconds` are emitted on most runs. `deadlineSkips` is emitted whenever a run stops for time, which includes normal catch-up after a start block or an outage. `busySkips` and `laggingNodeSkips` are emitted only when they occur. Across 3 chains that is up to 15 metrics. The relayer adds `pendingAgeSeconds` per chain and `signerBalanceGwei` per signer per chain: 4 more. Milestone 3 adds `deliveriesDead` and `deliveryBatchFailures`, published only when they happen: 2 more, so 10 in a month where nothing skips and nothing dies, and up to 21 | the first 10 are free, then $0.30/metric/month, so nothing to $3.30 |
+| **Total** | **about $2.40 to $6.60 per month:** KMS about $1, DynamoDB under $1, alarms $1.30, custom metrics nothing to $3.30. The upper end is above the $5 goal and needs every occasional monitor metric, and a failed delivery, in the same month |
 
 The fast scan adds one `eth_getLogs` call per run on each chain that has `fast` rules.
+
+Milestone 3 raised the ceiling: it adds $0.40 a month that is always charged (four alarms, all of them past CloudWatch's free ten) and up to $0.60 more in a month where a delivery dies or a stream batch fails, so up to $1.00 in all, and $0.10 more again with `outbound_queue`. The plan for milestone 3 estimated $0.30 to $0.40 of alarms because it counted three; the stream-failure alarm is the fourth. The worst month is now $1.60 above the $5 goal in the Scope section.
+
+What would bring it back under $5, if that matters more than the observability: the monitor's three occasional skip metrics are nine of the eleven billed ones. Without `deadlineSkips`, `busySkips` and `laggingNodeSkips` the worst month publishes 12 metrics, 2 of them billed, and the total is about $3.90. Dropping `deliveriesDead` and `deliveryBatchFailures` as well leaves 10 published metrics, all free, and a total of about $3.30; the dead-letter alarm still pages on a dead delivery, and both functions log every one. Neither cut touches an alarm or any behaviour.
 
 ## Milestones
 
@@ -349,18 +388,22 @@ Each milestone gets its own implementation plan.
 
 1. **Monitor.** `packages/core`, durable and fast scans with a per-chain lease, DynamoDB table, Terraform for the monitor, CI with lint, unit and Anvil integration tests.
 2. **Relayer.** `packages/kms-signer`, relayer API routes, signer, sweeper, `modules/relayer`, `packages/relayer-client`, including the subscriptions and gas-sponsorship projects' relayer requirements: receipt outcome, revert data, caller reference, calldata policy, transaction dependencies, module inputs and outputs, and a public test signer.
-3. **Actions.** Dispatcher, webhook, SES, Telegram and relayer senders, dead-letter handling, SSRF guard.
+3. **Actions.** Dispatcher and reaper, webhook, SES, Telegram, relayer, SQS and Lambda senders, the delivery store with its retry and dead-letter handling, the two-stage SSRF guard, the outbound delivery queue, `modules/actions`, and the `delivery:list` and `delivery:redrive` scripts.
 4. **API and dashboard.** SIWE auth, rules, matches, deliveries and relayer views, CloudFront routing.
 5. **Contracts, staging and demo.** Foundry contracts and tests, nightly end-to-end workflow, public demo deploy, README and operator docs.
 
+Milestones 1, 2 and 3 are done.
+
 **Deferred from milestone 1:** the GitHub OIDC deploy role, `terraform plan` posted as a PR comment, and per-rule match metrics.
+
+**Deferred from milestone 3:** `GET /deliveries` and `POST /deliveries/{deliveryId}/redrive`, which are milestone 4 along with the dashboard's delivery view; Base Sepolia in the monitor, which is milestone 5 with the demo contracts; and a contract-state rule type, which is Project C item 7 and is not scheduled.
 
 ## Prerequisites
 
 The user provides:
 - an AWS account, with an IAM role for GitHub OIDC created during milestone 1,
 - RPC URLs for the five chains (free tiers from Alchemy, Infura or similar),
-- a verified SES sender address,
+- a verified SES sender address. `ses_from_address` creates the identity, but only the owner of the address can confirm it, and the sender's IAM policy allows `ses:SendEmail` only with that address as the from address. A new AWS account's SES is in the sandbox, where every **recipient** has to be verified as well and sending is capped; leaving the sandbox is a support request the operator makes,
 - a Telegram bot token (milestone 3, optional),
 - testnet ETH for the signer on Base Sepolia and Arbitrum Sepolia.
 - the npm organisation `@blockwarden`. Its availability is unconfirmed because npm's site refused the automated check; if it is taken, the packages publish unscoped as `blockwarden-kms-signer` and `blockwarden-relayer-client`.
