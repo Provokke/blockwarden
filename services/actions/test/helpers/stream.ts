@@ -41,6 +41,9 @@ export async function streamReader(client: DynamoDBClient, endpoint: string, tab
             seen.add(id)
             fresh.push(record as unknown as DynamoDBRecord)
           }
+          // an empty page is the end of the shard for DynamoDB Local, which is what makes a read here finite.
+          // Real DynamoDB returns empty pages on a live shard as well, so a reader against it stops on a null
+          // NextShardIterator (a closed shard) and keeps polling otherwise.
           if ((page.Records ?? []).length === 0) break
           iterator = page.NextShardIterator
         }
