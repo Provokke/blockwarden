@@ -11,12 +11,14 @@ import {
 import type { DeliveryRecord, DeliveryRef } from '../../src/records.js'
 import type { DeadPage } from '../../src/store.js'
 
-const SLACK = 'https://hooks.example.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX'
+// the path shape of a Slack incoming webhook, on a host that is not Slack's: a fixture carrying the real
+// host matches secret scanning on every push, and nothing here reads the host
+const SLACK_SHAPED = 'https://hooks.example.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX'
 const DISCORD = 'https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz-secret'
 
 describe('redactedUrl', () => {
   it('keeps the origin and drops the part of the path that is the credential', () => {
-    for (const raw of [SLACK, DISCORD]) {
+    for (const raw of [SLACK_SHAPED, DISCORD]) {
       const shown = redactedUrl(raw)
       expect(shown, raw).toContain(new URL(raw).origin)
       // whatever it prints must not be a URL anyone could send to
@@ -37,7 +39,9 @@ describe('redactedUrl', () => {
 
 describe('describeTarget', () => {
   it('redacts a webhook URL and names the channel for everything else', () => {
-    expect(describeTarget({ channel: 'webhook', target: { channel: 'webhook', url: SLACK } })).toBe(redactedUrl(SLACK))
+    expect(describeTarget({ channel: 'webhook', target: { channel: 'webhook', url: SLACK_SHAPED } })).toBe(
+      redactedUrl(SLACK_SHAPED),
+    )
     expect(describeTarget({ channel: 'telegram', target: { channel: 'telegram', chatId: '1' } })).toBe('telegram')
   })
 })
