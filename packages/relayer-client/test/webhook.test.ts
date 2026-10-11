@@ -1,7 +1,9 @@
 import { createHmac } from 'node:crypto'
 import fc from 'fast-check'
+import { decodeEventLog, encodeAbiParameters, encodeEventTopics, parseAbi, parseAbiParameters } from 'viem'
 import { describe, expect, it } from 'vitest'
-import type { RelayerTxBody } from '../src/types.js'
+import { isMatchEvent, toDecodedValue, WEBHOOK_SPEC_VERSION, type MatchEventData } from '../src/index.js'
+import type { DecodedValue, Hex, RelayerTxBody } from '../src/types.js'
 import { isTxEvent, parseTx, signWebhook, verifyWebhook, WebhookVerificationError } from '../src/webhook.js'
 
 const NOW = 1_800_000_000_000
@@ -178,6 +180,7 @@ const TX: RelayerTxBody = {
   blockHash: `0x${'cd'.repeat(32)}`,
   receiptStatus: 'success',
   error: null,
+  revertData: null,
   fillerTxId: null,
   idempotencyKey: 'charge-1',
   reference: null,
@@ -198,6 +201,20 @@ describe('isTxEvent and parseTx', () => {
     expect(isTxEvent(verified)).toBe(true)
     expect(isTxEvent({ ...verified, type: 'match.final' })).toBe(false)
     if (isTxEvent(verified)) expect(parseTx(verified.data).value).toBe(10n ** 21n)
+  })
+
+  // isTxEvent used to vouch for a body with no revertData while the type promised one, so a caller's
+  // `revertData !== null` guard passed and the .slice() behind it threw on undefined
+  it('refuses a body that has no revertData, which the type says is always there', async () => {
+    const { revertData: _absent, ...old } = TX
+    const payload = event('tx.failed', old)
+    const verified = await verifyWebhook({
+      payload,
+      signature: await signWebhook({ payload, secret: 's', nowMs: NOW }),
+      secret: 's',
+      nowMs: NOW,
+    })
+    expect(isTxEvent(verified)).toBe(false)
   })
 
   it('refuses an event whose type is not a known status or whose data is not a transaction', () => {
@@ -223,6 +240,14 @@ describe('isTxEvent and parseTx', () => {
   })
 })
 
+describe('hex that has no fixed width', () => {
+  it('accepts calldata and revert data of any length, which is what makes the loose check worth keeping', () => {
+    const base = { id: 'del_1', createdAt: '2026-09-17T00:00:00Z', type: 'tx.failed' }
+    expect(isTxEvent({ ...base, data: { ...TX, data: '0x', revertData: '0x08c379a0' } })).toBe(true)
+    expect(isTxEvent({ ...base, data: { ...TX, data: `0x${'ab'.repeat(500)}`, revertData: '0x' } })).toBe(true)
+  })
+})
+
 describe('secrets that are not strings', () => {
   it('refuses to sign with an empty secret', async () => {
     await expect(signWebhook({ payload: '{}', secret: '', nowMs: NOW })).rejects.toThrow(/must not be empty/)
@@ -236,5 +261,156 @@ describe('secrets that are not strings', () => {
         WebhookVerificationError,
       )
     }
+  })
+})
+
+const matchData: MatchEventData = {
+  matchKey: '0x1111111111111111111111111111111111111111111111111111111111111111',
+  ruleId: 'f0c2a1e6-0000-4000-8000-000000000001',
+  status: 'final',
+  chainId: 8453,
+  address: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+  transactionHash: '0x2222222222222222222222222222222222222222222222222222222222222222',
+  blockNumber: 12345678,
+  blockHash: '0x3333333333333333333333333333333333333333333333333333333333333333',
+  logIndex: 4,
+  ordinal: 0,
+  event: 'event Transfer(address indexed from, address indexed to, uint256 value)',
+  eventName: 'Transfer',
+  args: {
+    from: '0x4444444444444444444444444444444444444444',
+    to: '0x5555555555555555555555555555555555555555',
+    value: '1000000000000000000',
+  },
+  firstSeenAt: '2026-09-20T10:00:00.000Z',
+  finalizedAt: '2026-09-20T10:19:00.000Z',
+}
+
+const eventFor = (type: string, data: unknown) => ({
+  id: 'dlv_0',
+  type,
+  createdAt: '2026-09-20T10:19:00.000Z',
+  specVersion: WEBHOOK_SPEC_VERSION,
+  data,
+})
+
+describe('isMatchEvent', () => {
+  it('accepts the three match types with a whole match body', () => {
+    for (const type of ['match.provisional', 'match.final', 'match.dropped']) {
+      expect(isMatchEvent(eventFor(type, matchData)), type).toBe(true)
+    }
+  })
+
+  it('refuses a type that is not a match event', () => {
+    expect(isMatchEvent(eventFor('tx.mined', matchData))).toBe(false)
+    expect(isMatchEvent(eventFor('match.nope', matchData))).toBe(false)
+    expect(isMatchEvent(eventFor('match', matchData))).toBe(false)
+  })
+
+  it('refuses a body missing a field, so a reader can trust every field it reads', () => {
+    for (const key of Object.keys(matchData)) {
+      const partial = { ...matchData } as Record<string, unknown>
+      delete partial[key]
+      expect(isMatchEvent(eventFor('match.final', partial)), key).toBe(false)
+    }
+  })
+
+  it('refuses a body whose types are wrong', () => {
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, blockNumber: '12345678' }))).toBe(false)
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, args: null }))).toBe(false)
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, status: 'sometimes' }))).toBe(false)
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, args: ['a'] }))).toBe(false)
+  })
+
+  it('refuses a hash or an address that is not the width the schema publishes', () => {
+    for (const key of ['matchKey', 'transactionHash', 'blockHash', 'address'] as const) {
+      expect(isMatchEvent(eventFor('match.final', { ...matchData, [key]: '0x' })), key).toBe(false)
+      expect(isMatchEvent(eventFor('match.final', { ...matchData, [key]: `${matchData[key]}ff` })), key).toBe(false)
+    }
+  })
+
+  // the doc no longer promises a lowercase address, so a checksummed one has to be accepted
+  it('accepts an address in the case the node returned it', () => {
+    const checksummed = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, address: checksummed }))).toBe(true)
+  })
+
+  it('accepts finalizedAt as null on a provisional match', () => {
+    expect(
+      isMatchEvent(eventFor('match.provisional', { ...matchData, status: 'provisional', finalizedAt: null })),
+    ).toBe(true)
+  })
+
+  it('accepts nested tuple args', () => {
+    const nested = {
+      ...matchData,
+      args: { permission: { account: '0xabc', spender: '0xdef', allowance: '1' }, hash: '0x00' },
+    }
+    expect(isMatchEvent(eventFor('match.final', nested))).toBe(true)
+  })
+})
+
+describe('the envelope', () => {
+  it('carries a spec version of 1', () => {
+    expect(WEBHOOK_SPEC_VERSION).toBe(1)
+  })
+
+  it('verifies a body that carries specVersion and returns it', async () => {
+    const payload = JSON.stringify(eventFor('match.final', matchData))
+    const nowMs = 1789000000000
+    const signature = await signWebhook({ payload, secret: 's', nowMs })
+    const verified = await verifyWebhook({ payload, signature, secret: 's', nowMs })
+    expect(verified.specVersion).toBe(1)
+    expect(isMatchEvent(verified)).toBe(true)
+  })
+
+  it('still verifies a body with no specVersion, so an older sender is not refused', async () => {
+    const payload = JSON.stringify({ id: 'dlv_1', type: 'match.final', createdAt: 'x', data: matchData })
+    const nowMs = 1789000000000
+    const signature = await signWebhook({ payload, secret: 's', nowMs })
+    const verified = await verifyWebhook({ payload, signature, secret: 's', nowMs })
+    expect(verified.specVersion).toBeUndefined()
+    expect(isMatchEvent(verified)).toBe(true)
+  })
+})
+
+describe('toDecodedValue', () => {
+  // viem decodes an integer of 48 bits or fewer as a JS number, so a stored arg really can hold one
+  const abi = parseAbi(['event Tick(int24 tick, uint8 decimals, uint256 amount)'])
+  const decoded = decodeEventLog({
+    abi,
+    // nothing in the event is indexed, so the only topic is the event's own selector
+    topics: encodeEventTopics({ abi, eventName: 'Tick' }) as [Hex],
+    data: encodeAbiParameters(parseAbiParameters('int24, uint8, uint256'), [-201_234, 8, 10n ** 18n]),
+  })
+
+  it('turns the numbers a real viem decode returns into the decimal strings the guard accepts', () => {
+    const raw = decoded.args as Record<string, unknown>
+    expect(typeof raw.tick).toBe('number')
+    expect(typeof raw.decimals).toBe('number')
+
+    const args = toDecodedValue(raw) as Record<string, DecodedValue>
+    expect(args).toEqual({ tick: '-201234', decimals: '8', amount: '1000000000000000000' })
+    expect(isMatchEvent(eventFor('match.final', { ...matchData, args }))).toBe(true)
+  })
+
+  it('converts a number nested in an array and in a tuple', () => {
+    expect(toDecodedValue({ ticks: [1, [2]], permission: { fee: 3000, to: '0xab', unlimited: true } })).toEqual({
+      ticks: ['1', ['2']],
+      permission: { fee: '3000', to: '0xab', unlimited: true },
+    })
+  })
+
+  it('leaves a string, a boolean and hex alone', () => {
+    expect(toDecodedValue({ to: '0xab', ok: false, amounts: ['1', '2'] })).toEqual({
+      to: '0xab',
+      ok: false,
+      amounts: ['1', '2'],
+    })
+  })
+
+  it('refuses a number that is not an integer, because no ABI integer decodes to one', () => {
+    expect(() => toDecodedValue({ fee: 0.5 })).toThrow(/not an integer/)
+    expect(() => toDecodedValue({ ticks: [[1.5]] })).toThrow(/not an integer/)
   })
 })

@@ -71,6 +71,8 @@ const BUSY: CycleResult = {
   dropped: 0,
   laggingNode: false,
   deadlineHit: false,
+  ruleSkips: 0,
+  ruleWarnings: 0,
 }
 
 describe('handler', () => {
@@ -238,6 +240,46 @@ describe('handler', () => {
       expect(metricNames(quiet!)).not.toContain('deadlineSkips')
     },
   )
+
+  // a rule that stops matching, or stops delivering part of what it says, is silent otherwise: these two are
+  // what an alarm can watch
+  it('publishes the rule counters only when a rule was skipped or polled with something dropped', async () => {
+    const observed = { ...BUSY, status: 'ok' as const, head: 100, finalized: 36, durableBlock: 30, durableLag: 6 }
+    vi.mocked(runCycle).mockResolvedValueOnce({ ...observed, ruleSkips: 1, ruleWarnings: 2 })
+
+    await handler(undefined)
+
+    const [line] = metricLines(output)
+    expect(metricNames(line!)).toEqual(expect.arrayContaining(['ruleSkips', 'ruleWarnings']))
+    expect(line!.ruleSkips).toBe(1)
+    expect(line!.ruleWarnings).toBe(2)
+
+    output.length = 0
+    vi.mocked(runCycle).mockResolvedValueOnce(observed)
+    await handler(undefined)
+
+    const [quiet] = metricLines(output)
+    expect(metricNames(quiet!)).not.toContain('ruleSkips')
+    expect(metricNames(quiet!)).not.toContain('ruleWarnings')
+  })
+
+  it('logs a cycle line the cycle marked warn at warn', async () => {
+    vi.mocked(runCycle).mockImplementation(async (deps: CycleDeps) => {
+      deps.log?.('a rule is being polled with part of it dropped', { ruleId: 'r1' }, 'warn')
+      return BUSY
+    })
+
+    await handler(undefined)
+
+    const warned = output
+      .join('\n')
+      .split('\n')
+      .filter((line) => line.trim().startsWith('{'))
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((line) => line.message === 'a rule is being polled with part of it dropped')
+    expect(warned).toHaveLength(1)
+    expect(warned[0]?.level).toBe('WARN')
+  })
 })
 
 describe('requestTimeoutMs', () => {

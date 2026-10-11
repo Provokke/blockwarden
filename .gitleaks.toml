@@ -15,3 +15,13 @@ regexes = ['''^0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913$''']
 description = "Made-up RPC provider key the sweeper Lambda test checks never reaches a log"
 regexTarget = "secret"
 regexes = ['''^k3y-4f9c2e7a1b$''']
+
+[[allowlists]]
+description = "Throwaway self-signed certificate and key for pinned.invalid, in the TLS test that proves the connection is pinned to the address the guard passed"
+targetRules = ["private-key"]
+paths = ['''^services/actions/test/integration/self-signed\.ts$''']
+
+[[allowlists]]
+description = "Slack's own documentation placeholder, in the test that the redrive scripts redact a webhook URL"
+regexTarget = "secret"
+regexes = ['''^https://hooks\.slack\.com/services/T00000000/B00000000/X{24}$''']

@@ -1,19 +1,42 @@
-import { TX_STATUSES, type RelayerTx, type RelayerTxBody, type TxStatus } from './types.js'
-import { isTxBody } from './validate.js'
+import {
+  MATCH_STATUSES,
+  TX_STATUSES,
+  type DecodedValue,
+  type MatchEventData,
+  type MatchStatus,
+  type RelayerTx,
+  type RelayerTxBody,
+  type TxStatus,
+} from './types.js'
+import { isMatchBody, isTxBody } from './validate.js'
 
 export const SIGNATURE_HEADER = 'x-blockwarden-signature'
 export const DELIVERY_HEADER = 'x-blockwarden-delivery'
 export const DEFAULT_TOLERANCE_SECONDS = 300
 
+// The schema published at docs/webhooks/v1.md. A body's shape changes only with this number, which is why a
+// reader should branch on it rather than on the presence of a field.
+export const WEBHOOK_SPEC_VERSION = 1
+
 export type WebhookEvent = {
-  // the delivery id, also sent as X-Blockwarden-Delivery, for receiver-side idempotency
+  // the delivery id, and the only copy of it a receiver should dedupe on: the X-Blockwarden-Delivery header
+  // carries the same id but sits outside the signature, so a replay can change it
   id: string
   type: string
   createdAt: string
+  // the schema version of data; every version of Blockwarden sends 1. Optional because verifyWebhook checks
+  // id, type and createdAt and nothing else, so the type promises only what was actually looked at.
+  specVersion?: number
   data: unknown
 }
 
 export type TxEvent = WebhookEvent & { type: `tx.${TxStatus}`; data: RelayerTxBody }
+
+export type MatchEvent = WebhookEvent & { type: `match.${MatchStatus}`; data: MatchEventData }
+
+export function isMatchEvent(event: WebhookEvent): event is MatchEvent {
+  return (MATCH_STATUSES as readonly string[]).some((s) => event.type === `match.${s}`) && isMatchBody(event.data)
+}
 
 export class WebhookVerificationError extends Error {
   constructor(message: string) {
@@ -87,6 +110,24 @@ export function isTxEvent(event: WebhookEvent): event is TxEvent {
 
 export function parseTx(body: RelayerTxBody): RelayerTx {
   return { ...body, value: BigInt(body.value), gasLimit: BigInt(body.gasLimit) }
+}
+
+// The sending half of the wire form, where parseTx is the receiving half. viem decodes an ABI integer of 48
+// bits or fewer as a JS number and anything wider as a bigint, but the schema publishes every integer as a
+// decimal string, so a sender converts here and the guard stays strict for everyone reading a payload.
+export function toDecodedValue(value: unknown): DecodedValue {
+  if (typeof value === 'bigint') return value.toString()
+  if (typeof value === 'number') {
+    // no ABI integer decodes to a fraction, so this is a bug in whatever built the value, not a value to round
+    if (!Number.isSafeInteger(value)) throw new TypeError(`${value} is not an integer, so it is not a decoded value`)
+    return value.toString()
+  }
+  if (Array.isArray(value)) return value.map(toDecodedValue)
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, toDecodedValue(v)]))
+  }
+  // a string, a hex string and a boolean are already the wire form
+  return value as DecodedValue
 }
 
 function parseHeader(header: string | null | undefined): { timestamp: number; signatures: string[] } {
