@@ -28,6 +28,7 @@ const TX: RelayerTxBody = {
   blockHash: null,
   receiptStatus: null,
   error: null,
+  revertData: null,
   fillerTxId: null,
   idempotencyKey: 'charge-1',
   reference: 'sub_1:period_3',
@@ -128,6 +129,15 @@ describe('relayer client', () => {
     const tx = await getTx({ baseUrl, apiKey: 'k' }, 'a/b')
     expect(seen[0]).toMatchObject({ method: 'GET', url: '/v1/relayer/txs/a%2Fb', contentType: undefined, body: '' })
     expect(tx.receiptStatus).toBe('reverted')
+  })
+
+  // the field has been part of every published version, so a body without it is not a transaction; the type
+  // said it was always there while the guard let it through, and a caller's `!== null` check then passed on
+  // undefined
+  it('refuses a transaction body with no revertData', async () => {
+    const { revertData: _absent, ...old } = TX
+    answer = { status: 200, body: JSON.stringify(old) }
+    await expect(getTx({ baseUrl, apiKey: 'k' }, 'tx-1')).rejects.toMatchObject({ code: 'invalid_response' })
   })
 
   it('lists signers', async () => {

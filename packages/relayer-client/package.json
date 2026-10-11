@@ -1,6 +1,6 @@
 {
   "name": "@blockwarden/relayer-client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Typed client for the Blockwarden relayer API, and webhook verification",
   "license": "MIT",
   "repository": {
@@ -14,6 +14,7 @@
     ".": "./src/index.ts"
   },
   "publishConfig": {
+    "access": "public",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "exports": {
@@ -24,8 +25,12 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
+  "devDependencies": {
+    "viem": "2.56.3"
+  },
   "engines": {
     "node": ">=22"
   },

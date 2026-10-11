@@ -58,6 +58,13 @@ module "blockwarden" {
       lag_alarm_blocks   = 300
     }
   }
+
+  # webhooks only: no SES identity and no Telegram bot token exist for the demo yet. Both senders still deploy
+  # and fail closed on the channels that are not configured.
+  actions = {
+    source_dir               = "${path.root}/../../../../services/actions/dist"
+    webhook_secret_parameter = "/blockwarden-demo/webhook-secret"
+  }
 }
 
 # Testnet relaying only. Until the milestone 5 demo contracts exist, the allowlist holds only the burn address, and
@@ -103,6 +110,18 @@ output "monitor_function_names" {
 
 output "alarm_topic_arn" {
   value = module.blockwarden.alarm_topic_arn
+}
+
+output "delivery_queue_url" {
+  value = module.blockwarden.delivery_queue_url
+}
+
+output "delivery_dead_letter_queue_url" {
+  value = module.blockwarden.delivery_dead_letter_queue_url
+}
+
+output "stream_failure_queue_url" {
+  value = module.blockwarden.stream_failure_queue_url
 }
 
 output "relayer_api_url" {

@@ -22,3 +22,23 @@ output "alarm_topic_arn" {
   description = "SNS topic that receives every alarm."
   value       = aws_sns_topic.alarms.arn
 }
+
+output "delivery_queue_url" {
+  description = "Queue the actions dispatcher puts delivery pointers on."
+  value       = var.actions == null ? null : module.actions[0].delivery_queue_url
+}
+
+output "delivery_dead_letter_queue_url" {
+  description = "Queue a dead delivery is copied to."
+  value       = var.actions == null ? null : module.actions[0].delivery_dead_letter_queue_url
+}
+
+output "stream_failure_queue_url" {
+  description = "Queue holding stream batches the dispatcher never turned into deliveries."
+  value       = var.actions == null ? null : module.actions[0].stream_failure_queue_url
+}
+
+output "outbound_queue_url" {
+  description = "Queue for signed deliveries that did not come from a match."
+  value       = var.actions == null ? null : module.actions[0].outbound_queue_url
+}
