@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { hashApiKey } from '@blockwarden/core'
 import type { RelayerTxBody } from '@blockwarden/relayer-client'
 import type { Address, Hex } from 'viem'
 import { z } from 'zod'
@@ -51,9 +52,8 @@ export function error(
   return { status, body: { error: { code, message, ...extra } } satisfies ErrorBody }
 }
 
-export function hashApiKey(apiKey: string): string {
-  return createHash('sha256').update(apiKey).digest('hex')
-}
+// src/api.ts imports hashApiKey from here; keep the re-export instead of chasing it to core
+export { hashApiKey }
 
 type RelayRequest = z.infer<typeof relayRequestSchema>
 
