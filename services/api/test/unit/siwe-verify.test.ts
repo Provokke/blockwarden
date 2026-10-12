@@ -51,6 +51,14 @@ describe('checkSiweMessage', () => {
     expect(outcome).toMatchObject({ ok: false, code: 'siwe_uri' })
   })
 
+  it('refuses a non-http uri even when it and a non-http configured origin both parse to "null"', () => {
+    // the URL standard makes .origin the literal string "null" for a scheme it doesn't special-case, so two
+    // different non-http schemes would compare equal unless both are required to be http or https first
+    const nonHttpOrigin: SiweSettings = { ...settings, origin: 'app://blockwarden' }
+    const outcome = checkSiweMessage(message({ uri: 'evil://anything' }), nonHttpOrigin, now)
+    expect(outcome).toMatchObject({ ok: false, code: 'siwe_uri' })
+  })
+
   it('refuses a chain the deployment does not monitor, which viem does not check', () => {
     const outcome = checkSiweMessage(message({ chainId: 1 }), settings, now)
     expect(outcome).toMatchObject({ ok: false, code: 'siwe_chain' })
