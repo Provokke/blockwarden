@@ -43,7 +43,8 @@ function allow(caller: Caller): AuthorizerResult {
 }
 
 export function callerFromContext(event: APIGatewayProxyEventV2): Caller | undefined {
-  const raw = (event.requestContext as { authorizer?: { lambda?: { caller?: unknown } } }).authorizer?.lambda?.caller
+  const context = event.requestContext as { authorizer?: { lambda?: { caller?: unknown } } } | undefined
+  const raw = context?.authorizer?.lambda?.caller
   if (typeof raw !== 'string') return undefined
   let parsed: unknown
   try {
