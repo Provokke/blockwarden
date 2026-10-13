@@ -1,8 +1,29 @@
 import { GSI1, isConditionFailure, toStorable } from '@blockwarden/dynamo'
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb'
+import {
+  DeleteCommand,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  UpdateCommand,
+  type DynamoDBDocumentClient,
+} from '@aws-sdk/lib-dynamodb'
 import { ruleInputSchema, type RuleInput } from '@blockwarden/core'
 
 export const NONCE_SECONDS = 300
+
+// `@blockwarden/api` has no dependency on `@blockwarden/actions` (services/* depend on packages/*, not on each
+// other), so this is a copied literal of services/actions/src/keys.ts's DUE_SHARDS/dueShard/dueDeliveries, not
+// an import of it. A delivery a redrive puts in the wrong shard is one the reaper never sweeps again, so any
+// change to that file's shard math must be mirrored here by hand.
+const DUE_SHARDS = 4
+
+function dueIndexKeyFor(deliveryId: string): string {
+  // the id ends in the hex of a sha256 (services/actions/src/ids.ts's deliveryId), so one digit already
+  // spreads evenly over four shards
+  const digit = Number.parseInt(deliveryId.slice(-1), 16)
+  const shard = Number.isNaN(digit) ? 0 : digit % DUE_SHARDS
+  return `DELIVERY#DUE#${shard}`
+}
 
 export type StoredRule = {
   ruleId: string
@@ -56,7 +77,42 @@ export type MatchStore = {
   ): Promise<{ matches: MatchRow[]; cursor?: Record<string, unknown> }>
 }
 
-export type ApiStore = NonceStore & ApiKeyStore & RuleStore & MatchStore
+// what the list hands back per row addresses a delivery: its subject (the table's partition key) and its own
+// sort key. Neither is the delivery id, which is not itself a lookup key.
+export type DeliveryRef = { subject: string; sk: string }
+
+export type DeliveryItem = {
+  deliveryId: string
+  subject: string
+  sk: string
+  channel: string
+  // the channel's one identifying string - a webhook's raw URL (toRow redacts it), an email address, a chat
+  // id, a contract address, a queue or function ARN, or the channel name alone if the shape is not recognised.
+  // never the stored target object itself: for a webhook that object also carries secretParameter and
+  // caller-supplied headers, neither of which belongs on a listing
+  target: string
+  status: string
+  attempts: number
+  createdAt: string
+  updatedAt: string
+  lastError?: string
+  lastStatusCode?: number
+  version: number
+}
+
+export type DeliveryStore = {
+  listDead(
+    limit: number,
+    cursor?: Record<string, unknown>,
+  ): Promise<{ deliveries: DeliveryItem[]; cursor?: Record<string, unknown> }>
+  listBySubject(subject: string, limit: number): Promise<{ deliveries: DeliveryItem[] }>
+  getDelivery(ref: DeliveryRef): Promise<DeliveryItem | undefined>
+  // takes the row the caller already read (rather than a bare ref) so the handler's one read is the only one:
+  // the due shard is computed from the delivery id, which the ref alone does not carry
+  requeueDelivery(delivery: DeliveryItem, nowMs: number): Promise<boolean>
+}
+
+export type ApiStore = NonceStore & ApiKeyStore & RuleStore & MatchStore & DeliveryStore
 
 export type StoreDeps = {
   doc: DynamoDBDocumentClient
@@ -194,6 +250,83 @@ export function createStore(deps: StoreDeps): ApiStore {
       const matches = (result.Items ?? []).map(toMatchRow)
       return { matches, ...(result.LastEvaluatedKey ? { cursor: result.LastEvaluatedKey } : {}) }
     },
+
+    async listDead(limit, cursor) {
+      const result = await doc.send(
+        new QueryCommand({
+          TableName: table,
+          IndexName: GSI1,
+          KeyConditionExpression: 'GSI1PK = :pk',
+          // mirrors services/actions/src/keys.ts's keys.deliveriesByStatus('dead'); GSI1 is sparse and only
+          // ever holds a delivery while it is dead, which is what makes this the one status worth an index read
+          ExpressionAttributeValues: { ':pk': 'DELIVERY#DEAD' },
+          Limit: limit,
+          ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+        }),
+      )
+      const deliveries: DeliveryItem[] = []
+      for (const item of result.Items ?? []) {
+        const row = toDeliveryItem(item, log)
+        if (row) deliveries.push(row)
+      }
+      return { deliveries, ...(result.LastEvaluatedKey ? { cursor: result.LastEvaluatedKey } : {}) }
+    },
+
+    async listBySubject(subject, limit) {
+      const result = await doc.send(
+        new QueryCommand({
+          TableName: table,
+          KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+          ExpressionAttributeValues: { ':pk': subject, ':sk': 'DELIVERY#' },
+          Limit: limit,
+        }),
+      )
+      const deliveries: DeliveryItem[] = []
+      for (const item of result.Items ?? []) {
+        const row = toDeliveryItem(item, log)
+        if (row) deliveries.push(row)
+      }
+      return { deliveries }
+    },
+
+    async getDelivery(ref) {
+      const result = await doc.send(new GetCommand({ TableName: table, Key: { PK: ref.subject, SK: ref.sk } }))
+      return toDeliveryItem(result.Item, log)
+    },
+
+    async requeueDelivery(delivery, nowMs) {
+      try {
+        await doc.send(
+          new UpdateCommand({
+            TableName: table,
+            Key: { PK: delivery.subject, SK: delivery.sk },
+            // the row is reset to pending before deliveries.ts's handleRedrive enqueues a message: a pending
+            // delivery with a due time is the reaper's to sweep, so a lost enqueue is swept rather than lost.
+            // GSI1 is sparse (dead only), so leaving the row is what takes it out of the dead index
+            UpdateExpression:
+              'SET #status = :pending, attempts = :zero, nextAttemptAt = :now, updatedAt = :updated, ' +
+              '#version = #version + :one, GSI2PK = :due, GSI2SK = :now REMOVE GSI1PK, GSI1SK',
+            // only a dead delivery may be redriven, and only the one this caller read: a row that changed
+            // underneath it loses this condition rather than being redriven a second time
+            ConditionExpression: '#status = :dead',
+            ExpressionAttributeNames: { '#status': 'status', '#version': 'version' },
+            ExpressionAttributeValues: {
+              ':pending': 'pending',
+              ':dead': 'dead',
+              ':zero': 0,
+              ':one': 1,
+              ':now': nowMs,
+              ':updated': new Date(nowMs).toISOString(),
+              ':due': dueIndexKeyFor(delivery.deliveryId),
+            },
+          }),
+        )
+        return true
+      } catch (err) {
+        if (isConditionFailure(err)) return false
+        throw err
+      }
+    },
   }
 }
 
@@ -229,6 +362,80 @@ function toStoredRule(
     active: item.active === true,
     createdAt: String(item.createdAt ?? ''),
     updatedAt: String(item.updatedAt ?? ''),
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+// The stored target is the channel's own shape (services/actions/src/records.ts's DeliveryTarget union), and
+// for a webhook that shape also carries secretParameter and caller-supplied headers. A listing must show only
+// the one field that identifies where an action goes - never the object, not even as a fallback, or an
+// operator's screen (and the logs) gets more than the route intends. Redacting the webhook URL itself is
+// toRow's job (deliveries.ts), so this returns it raw.
+function targetString(channel: string, target: unknown): string {
+  const record = isRecord(target) ? target : undefined
+  switch (channel) {
+    case 'webhook':
+      return typeof record?.url === 'string' ? record.url : channel
+    case 'email':
+      return Array.isArray(record?.to)
+        ? record.to.filter((to): to is string => typeof to === 'string').join(', ')
+        : channel
+    case 'telegram':
+      return typeof record?.chatId === 'string' ? record.chatId : channel
+    case 'relay':
+      return typeof record?.to === 'string' ? record.to : channel
+    case 'sqs':
+      return typeof record?.queueArn === 'string' ? record.queueArn : channel
+    case 'lambda':
+      return typeof record?.functionArn === 'string' ? record.functionArn : channel
+    // a channel this build does not recognise still names itself, never the raw object behind it
+    default:
+      return channel
+  }
+}
+
+function toDeliveryItem(
+  item: Record<string, unknown> | undefined,
+  log: (message: string, data?: Record<string, unknown>, level?: 'warn' | 'error') => void,
+): DeliveryItem | undefined {
+  if (!item) return undefined
+  const deliveryId = item.deliveryId
+  const subject = item.subject ?? item.PK
+  const sk = item.SK
+  const channel = item.channel
+  const status = item.status
+  if (
+    typeof deliveryId !== 'string' ||
+    typeof subject !== 'string' ||
+    typeof sk !== 'string' ||
+    typeof channel !== 'string' ||
+    typeof status !== 'string'
+  ) {
+    // a row that fails to read is invisible through the API from here on - log its id (if it has a readable
+    // one) so it can be found and repaired directly, same reasoning as toStoredRule above
+    log(
+      'skipping a delivery row that cannot be read',
+      { deliveryId: typeof deliveryId === 'string' ? deliveryId : undefined },
+      'error',
+    )
+    return undefined
+  }
+  return {
+    deliveryId,
+    subject,
+    sk,
+    channel,
+    target: targetString(channel, item.target),
+    status,
+    attempts: Number(item.attempts ?? 0),
+    createdAt: String(item.createdAt ?? ''),
+    updatedAt: String(item.updatedAt ?? ''),
+    ...(typeof item.lastError === 'string' ? { lastError: item.lastError } : {}),
+    ...(typeof item.lastStatusCode === 'number' ? { lastStatusCode: item.lastStatusCode } : {}),
+    version: Number(item.version ?? 0),
   }
 }
 
