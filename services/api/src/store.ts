@@ -90,6 +90,9 @@ export function createStore(deps: StoreDeps): ApiStore {
       return { hash, signerIds: item.signerIds as string[], label }
     },
 
+    // `@blockwarden/api` has no dependency on `@blockwarden/monitor` (services/* depend on packages/*, not on
+    // each other), so the key shapes below are copied literals, not an import of services/monitor/src/keys.ts's
+    // `keys.rule`/`keys.ruleOrder`/`keys.activeRules`. Any change there must be mirrored here by hand.
     async putRule(rule) {
       const item: Record<string, unknown> = {
         PK: `RULE#${rule.ruleId}`,
@@ -107,7 +110,7 @@ export function createStore(deps: StoreDeps): ApiStore {
 
     async getRule(ruleId) {
       const result = await doc.send(new GetCommand({ TableName: table, Key: { PK: `RULE#${ruleId}`, SK: 'META' } }))
-      return toStoredRule(result.Item)
+      return toStoredRule(result.Item, log)
     },
 
     async deleteRule(ruleId) {
@@ -139,7 +142,7 @@ export function createStore(deps: StoreDeps): ApiStore {
       )
       const rules: StoredRule[] = []
       for (const item of result.Items ?? []) {
-        const rule = toStoredRule(item)
+        const rule = toStoredRule(item, log)
         if (rule) rules.push(rule)
       }
       return { rules, ...(result.LastEvaluatedKey ? { cursor: result.LastEvaluatedKey } : {}) }
@@ -147,13 +150,32 @@ export function createStore(deps: StoreDeps): ApiStore {
   }
 }
 
-function toStoredRule(item: Record<string, unknown> | undefined): StoredRule | undefined {
+// a row that cannot be read is skipped, not thrown: one malformed item on a page must not fail its neighbours
+// (mirrors services/monitor/src/store.ts's parseInput)
+function parseInput(value: unknown): unknown {
+  if (typeof value !== 'string') return undefined
+  try {
+    return JSON.parse(value)
+  } catch {
+    return undefined
+  }
+}
+
+function toStoredRule(
+  item: Record<string, unknown> | undefined,
+  log: (message: string, data?: Record<string, unknown>, level?: 'warn' | 'error') => void,
+): StoredRule | undefined {
   if (!item) return undefined
   // Terraform has no way to build a nested DynamoDB map from an arbitrary rule, so a rule it writes keeps its
   // body as one JSON string; the monitor reads both shapes and so does this
-  const raw = typeof item.inputJson === 'string' ? JSON.parse(item.inputJson) : item.input
-  const parsed = ruleInputSchema.safeParse(raw)
-  if (!parsed.success) return undefined
+  const raw = typeof item.inputJson === 'string' ? parseInput(item.inputJson) : item.input
+  const parsed = raw === undefined ? undefined : ruleInputSchema.safeParse(raw)
+  if (!parsed || !parsed.success) {
+    // a row that fails to parse or fails the schema is invisible through the API from here on - log its id
+    // (never the body, which can carry a secretParameter name) so it can be found and repaired directly
+    log('skipping a rule whose body cannot be read', { ruleId: item.ruleId }, 'error')
+    return undefined
+  }
   return {
     ruleId: String(item.ruleId),
     input: parsed.data,

@@ -1,5 +1,14 @@
+import type { APIGatewayProxyEventV2 } from 'aws-lambda'
+import type { RuleInput } from '@blockwarden/core'
 import { describe, expect, it } from 'vitest'
-import { validateRuleInput, type RuleSettings } from '../../src/rules.js'
+import { decodeCursor } from '../../src/http.js'
+import { handleListRules, pageSize, validateRuleInput, type RuleDeps, type RuleSettings } from '../../src/rules.js'
+import type { RuleStore, StoredRule } from '../../src/store.js'
+
+// narrowed to the real event type rather than to `never`, same helper as the integration test's apiEvent
+function apiEvent(over: Partial<APIGatewayProxyEventV2>): APIGatewayProxyEventV2 {
+  return { version: '2.0', headers: {}, ...over } as APIGatewayProxyEventV2
+}
 
 const settings: RuleSettings = { ruleSecretPrefixes: ['/bw/rules/'], chainIds: [8453, 42161] }
 
@@ -127,5 +136,77 @@ describe('validateRuleInput', () => {
 
   it('refuses a body that is not an object', () => {
     for (const bad of [null, 42, 'rule', []]) expect(validateRuleInput(bad, settings).ok).toBe(false)
+  })
+})
+
+describe('pageSize', () => {
+  it('passes through a limit inside the cap', () => {
+    expect(pageSize('7')).toBe(7)
+  })
+
+  it('clamps a limit above the cap to the cap', () => {
+    expect(pageSize('500')).toBe(100)
+  })
+
+  it('falls back to the cap for a limit that is not a positive integer', () => {
+    for (const raw of [undefined, '0', '-1', '1.5', 'abc', '']) expect(pageSize(raw), JSON.stringify(raw)).toBe(100)
+  })
+})
+
+// a fake in full control of each chain's page, to force the one case real DynamoDB pagination rarely lines up
+// on by itself: a chain whose remaining rows exactly fill the page, with no cursor of its own. Both chainId
+// and limit are read and used to slice each chain's fixture, not ignored.
+function fakeRuleStore(pages: Record<number, StoredRule[]>): RuleStore {
+  return {
+    async putRule() {
+      throw new Error('not exercised by this test')
+    },
+    async getRule() {
+      return undefined
+    },
+    async deleteRule() {
+      return false
+    },
+    async listRules(chainId, limit) {
+      return { rules: (pages[chainId] ?? []).slice(0, limit) }
+    },
+  }
+}
+
+function fixtureRule(ruleId: string, chainId: number): StoredRule {
+  const input: RuleInput = {
+    chainId,
+    addresses: ['0x4200000000000000000000000000000000000006'],
+    event: 'event Transfer(address indexed from, address indexed to, uint256 value)',
+    confirmation: { mode: 'finalized' },
+    actions: [],
+  }
+  return { ruleId, input, active: true, createdAt: '2026-09-21T00:00:00.000Z', updatedAt: '2026-09-21T00:00:00.000Z' }
+}
+
+describe('handleListRules across a chain boundary', () => {
+  it('continues into the next chain when one ends exactly at the page limit, with no duplicate and no missing row', async () => {
+    const store = fakeRuleStore({
+      8453: [fixtureRule('a1', 8453), fixtureRule('a2', 8453)],
+      42161: [fixtureRule('b1', 42161)],
+    })
+    const deps: RuleDeps = {
+      store,
+      settings: { ruleSecretPrefixes: [], chainIds: [8453, 42161] },
+      now: () => '2026-09-21T00:00:00.000Z',
+    }
+    const list = (query: Record<string, string>) =>
+      handleListRules(deps, apiEvent({ routeKey: 'GET /v1/rules', queryStringParameters: query }))
+
+    const first = await list({ limit: '2' })
+    const firstBody = first.body as { rules: { ruleId: string }[]; cursor?: string }
+    expect(firstBody.rules.map((r) => r.ruleId)).toEqual(['a1', 'a2'])
+    expect(firstBody.cursor).toBeDefined()
+    expect(decodeCursor(firstBody.cursor!)).toMatchObject({ chainId: 42161 })
+
+    const second = await list({ limit: '2', cursor: firstBody.cursor! })
+    const secondBody = second.body as { rules: { ruleId: string }[]; cursor?: string }
+    expect(secondBody.rules.map((r) => r.ruleId)).toEqual(['b1'])
+    expect(secondBody.cursor).toBeUndefined()
   })
 })

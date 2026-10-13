@@ -1,9 +1,12 @@
 import type { APIGatewayProxyEventV2 } from 'aws-lambda'
+import { PutCommand } from '@aws-sdk/lib-dynamodb'
+import type { RuleInput } from '@blockwarden/core'
 import { startDynamo, type Dynamo } from '@blockwarden/dynamo/testing'
 import { MonitorStore } from '../../../monitor/src/store.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { handleCreateRule, handleDeleteRule, handleListRules, handlePatchRule } from '../../src/rules.js'
-import { createStore, type ApiStore } from '../../src/store.js'
+import { encodeCursor } from '../../src/http.js'
+import { handleCreateRule, handleDeleteRule, handleGetRule, handleListRules, handlePatchRule } from '../../src/rules.js'
+import { createStore, type ApiStore, type StoredRule } from '../../src/store.js'
 
 let dynamo: Dynamo
 let store: ApiStore
@@ -144,5 +147,166 @@ describe('rules through the API and back through the monitor', () => {
     const chains = new Set(((result.body as { rules: { chainId: number }[] }).rules ?? []).map((r) => r.chainId))
     expect(chains.has(8453)).toBe(true)
     expect(chains.has(42161)).toBe(true)
+  })
+
+  it('gets a rule by id, and 404s for one that has never existed', async () => {
+    const created = await handleCreateRule(deps(), body())
+    const { ruleId } = created.body as { ruleId: string }
+
+    const found = await handleGetRule(
+      deps(),
+      apiEvent({ routeKey: 'GET /v1/rules/{ruleId}', pathParameters: { ruleId } }),
+    )
+    expect(found.status).toBe(200)
+    expect((found.body as { ruleId: string }).ruleId).toBe(ruleId)
+
+    const missing = await handleGetRule(
+      deps(),
+      apiEvent({ routeKey: 'GET /v1/rules/{ruleId}', pathParameters: { ruleId: 'never-existed' } }),
+    )
+    expect(missing.status).toBe(404)
+  })
+
+  it('404s patching a rule that has never existed, instead of creating one', async () => {
+    const result = await handlePatchRule(
+      deps(),
+      apiEvent({
+        routeKey: 'PATCH /v1/rules/{ruleId}',
+        pathParameters: { ruleId: 'never-existed' },
+        body: JSON.stringify({
+          chainId: 8453,
+          addresses: ['0x4200000000000000000000000000000000000006'],
+          event: 'event Transfer(address indexed from, address indexed to, uint256 value)',
+          confirmation: { mode: 'finalized' },
+          actions: [],
+        }),
+      }),
+    )
+    expect(result.status).toBe(404)
+  })
+
+  it('refuses a chainId this deployment does not monitor', async () => {
+    const result = await handleListRules(
+      deps(),
+      apiEvent({ routeKey: 'GET /v1/rules', queryStringParameters: { chainId: '1' } }),
+    )
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe('unknown_chain')
+  })
+
+  it('refuses a cursor naming a chain this deployment does not monitor, instead of walking only the last chain', async () => {
+    // proven shape: {chainId: 8453, chainId: 42161} are the only monitored chains; a cursor naming 999999
+    // used to send chains.indexOf(startChain) to -1 and chains.slice(-1) to the last chain only
+    const cursor = encodeCursor({ chainId: 999999 })
+    const result = await handleListRules(
+      deps(),
+      apiEvent({ routeKey: 'GET /v1/rules', queryStringParameters: { cursor } }),
+    )
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe('invalid_cursor')
+  })
+
+  it('refuses a cursor whose key is not shaped like a real page key, instead of forwarding it to DynamoDB', async () => {
+    for (const key of [
+      { PK: 'RULE#x' },
+      { PK: 'RULE#x', SK: 'META', GSI1PK: 'CHAIN#8453#RULES', GSI1SK: 5 },
+      { PK: 'RULE#x', SK: 'META', GSI1PK: 'CHAIN#8453#RULES', GSI1SK: 'RULE#x', extra: 'nope' },
+      'not-an-object',
+    ]) {
+      const cursor = encodeCursor({ chainId: 8453, key })
+      const result = await handleListRules(
+        deps(),
+        apiEvent({ routeKey: 'GET /v1/rules', queryStringParameters: { chainId: '8453', cursor } }),
+      )
+      expect(result.status, JSON.stringify(key)).toBe(400)
+      expect((result.body as { error: { code: string } }).error.code, JSON.stringify(key)).toBe('invalid_cursor')
+    }
+  })
+})
+
+describe('store resilience to a row it cannot fully read', () => {
+  const NOW = '2026-09-21T00:00:00.000Z'
+  const goodInput = (chainId: number): RuleInput => ({
+    chainId,
+    addresses: ['0x4200000000000000000000000000000000000006'],
+    event: 'event Transfer(address indexed from, address indexed to, uint256 value)',
+    confirmation: { mode: 'finalized' },
+    actions: [],
+  })
+
+  it('skips a row whose inputJson does not parse, and does not fail the rest of the page', async () => {
+    const chainId = 999001
+    const good1: StoredRule = {
+      ruleId: 'good-1',
+      input: goodInput(chainId),
+      active: true,
+      createdAt: NOW,
+      updatedAt: NOW,
+    }
+    const good2: StoredRule = {
+      ruleId: 'good-2',
+      input: goodInput(chainId),
+      active: true,
+      createdAt: NOW,
+      updatedAt: NOW,
+    }
+    await store.putRule(good1)
+    await store.putRule(good2)
+    // Terraform-shaped: inputJson is a string, and this one is not valid JSON
+    await dynamo.doc.send(
+      new PutCommand({
+        TableName: table,
+        Item: {
+          PK: 'RULE#bad-json',
+          SK: 'META',
+          ruleId: 'bad-json',
+          chainId,
+          active: true,
+          createdAt: NOW,
+          updatedAt: NOW,
+          inputJson: '{not valid json',
+          GSI1PK: `CHAIN#${chainId}#RULES`,
+          GSI1SK: 'RULE#bad-json',
+        },
+      }),
+    )
+
+    await expect(store.getRule('bad-json')).resolves.toBeUndefined()
+    const page = await store.listRules(chainId, 10)
+    expect(page.rules.map((r) => r.ruleId).sort()).toEqual(['good-1', 'good-2'])
+  })
+
+  it('logs, at error, the id of a row that fails ruleInputSchema - never its body', async () => {
+    const chainId = 999002
+    const logs: { message: string; data?: Record<string, unknown>; level?: string }[] = []
+    const scratchStore = createStore({
+      doc: dynamo.doc,
+      table,
+      log: (message, data, level) => logs.push({ message, data, level }),
+    })
+    await dynamo.doc.send(
+      new PutCommand({
+        TableName: table,
+        Item: {
+          PK: 'RULE#bad-schema',
+          SK: 'META',
+          ruleId: 'bad-schema',
+          chainId,
+          active: true,
+          createdAt: NOW,
+          updatedAt: NOW,
+          // missing addresses/event/confirmation, and carries a secretParameter - proves the row is unreadable
+          // without ever putting that secret name into a log line
+          input: { chainId, secretParameter: '/bw/rules/should-never-be-logged' },
+          GSI1PK: `CHAIN#${chainId}#RULES`,
+          GSI1SK: 'RULE#bad-schema',
+        },
+      }),
+    )
+
+    await expect(scratchStore.getRule('bad-schema')).resolves.toBeUndefined()
+    expect(logs).toHaveLength(1)
+    expect(logs[0]?.level).toBe('error')
+    expect(logs[0]?.data).toEqual({ ruleId: 'bad-schema' })
   })
 })
