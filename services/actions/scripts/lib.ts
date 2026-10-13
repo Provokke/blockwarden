@@ -1,26 +1,10 @@
 import { DeleteMessageCommand, ReceiveMessageCommand, type SQSClient } from '@aws-sdk/client-sqs'
+import { redactedUrl } from '@blockwarden/core'
 import type { DeliveryRecord, DeliveryRef } from '../src/records.js'
 import type { DeadCursor, DeliveryStore } from '../src/store.js'
 
-// how much of the first path level is worth printing: enough to tell /services from /api, never a whole
-// path segment that could be a token
-const PATH_SHOWN = 12
-
-// A webhook URL is the credential: for a Discord or Slack hook the path is the secret, and an operator's
-// terminal, shell history and screenshots are not where it belongs. Enough here to recognise the destination,
-// not enough to send to it - the same rule senders/telegram.ts keeps for the token in its path.
-export function redactedUrl(raw: string): string {
-  let url: URL
-  try {
-    url = new URL(raw)
-  } catch {
-    return '(unreadable url)'
-  }
-  const [, first = ''] = url.pathname.split('/')
-  const head = first.slice(0, PATH_SHOWN)
-  const hidden = url.pathname.length > head.length + 1 || url.search !== '' || url.hash !== ''
-  return `${url.origin}/${head}${hidden ? '...' : ''}`
-}
+// re-exported so the two callers (this script and the api service's delivery routes) share one definition
+export { redactedUrl }
 
 export function describeTarget(delivery: Pick<DeliveryRecord, 'channel' | 'target'>): string {
   return delivery.target.channel === 'webhook' ? redactedUrl(delivery.target.url) : delivery.channel
