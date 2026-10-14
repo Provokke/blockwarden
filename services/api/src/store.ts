@@ -105,7 +105,11 @@ export type DeliveryStore = {
     limit: number,
     cursor?: Record<string, unknown>,
   ): Promise<{ deliveries: DeliveryItem[]; cursor?: Record<string, unknown> }>
-  listBySubject(subject: string, limit: number): Promise<{ deliveries: DeliveryItem[] }>
+  listBySubject(
+    subject: string,
+    limit: number,
+    cursor?: Record<string, unknown>,
+  ): Promise<{ deliveries: DeliveryItem[]; cursor?: Record<string, unknown> }>
   getDelivery(ref: DeliveryRef): Promise<DeliveryItem | undefined>
   // takes the row the caller already read (rather than a bare ref) so the handler's one read is the only one:
   // the due shard is computed from the delivery id, which the ref alone does not carry
@@ -272,13 +276,14 @@ export function createStore(deps: StoreDeps): ApiStore {
       return { deliveries, ...(result.LastEvaluatedKey ? { cursor: result.LastEvaluatedKey } : {}) }
     },
 
-    async listBySubject(subject, limit) {
+    async listBySubject(subject, limit, cursor) {
       const result = await doc.send(
         new QueryCommand({
           TableName: table,
           KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
           ExpressionAttributeValues: { ':pk': subject, ':sk': 'DELIVERY#' },
           Limit: limit,
+          ...(cursor ? { ExclusiveStartKey: cursor } : {}),
         }),
       )
       const deliveries: DeliveryItem[] = []
@@ -286,7 +291,7 @@ export function createStore(deps: StoreDeps): ApiStore {
         const row = toDeliveryItem(item, log)
         if (row) deliveries.push(row)
       }
-      return { deliveries }
+      return { deliveries, ...(result.LastEvaluatedKey ? { cursor: result.LastEvaluatedKey } : {}) }
     },
 
     async getDelivery(ref) {
@@ -302,10 +307,14 @@ export function createStore(deps: StoreDeps): ApiStore {
             Key: { PK: delivery.subject, SK: delivery.sk },
             // the row is reset to pending before deliveries.ts's handleRedrive enqueues a message: a pending
             // delivery with a due time is the reaper's to sweep, so a lost enqueue is swept rather than lost.
-            // GSI1 is sparse (dead only), so leaving the row is what takes it out of the dead index
+            // GSI1 is sparse (dead only), so leaving the row is what takes it out of the dead index.
+            // lastError, lastStatusCode and firstAttemptAt are removed to match services/actions/src/store.ts's
+            // own reset(): a redrive is a new life, and a stale firstAttemptAt would make latency measured
+            // from it wrong for ever
             UpdateExpression:
               'SET #status = :pending, attempts = :zero, nextAttemptAt = :now, updatedAt = :updated, ' +
-              '#version = #version + :one, GSI2PK = :due, GSI2SK = :now REMOVE GSI1PK, GSI1SK',
+              '#version = #version + :one, GSI2PK = :due, GSI2SK = :now ' +
+              'REMOVE GSI1PK, GSI1SK, lastError, lastStatusCode, firstAttemptAt',
             // only a dead delivery may be redriven, and only the one this caller read: a row that changed
             // underneath it loses this condition rather than being redriven a second time
             ConditionExpression: '#status = :dead',
