@@ -1,4 +1,4 @@
-import { GSI1, isConditionFailure, toStorable } from '@blockwarden/dynamo'
+import { GSI1, GSI2, isConditionFailure, toStorable } from '@blockwarden/dynamo'
 import {
   DeleteCommand,
   GetCommand,
@@ -24,6 +24,21 @@ function dueIndexKeyFor(deliveryId: string): string {
   const shard = Number.isNaN(digit) ? 0 : digit % DUE_SHARDS
   return `DELIVERY#DUE#${shard}`
 }
+
+// `@blockwarden/api` has no dependency on `services/relayer` (services/* depend on packages/*, not on each
+// other), so these are copied literals of services/relayer/src/keys.ts's `keys.tx`/`keys.pendingTxs`, not an
+// import of them. Any change there must be mirrored here by hand.
+function txKey(txId: string): { PK: string; SK: string } {
+  return { PK: `TX#${txId}`, SK: 'META' }
+}
+
+function pendingTxsKey(chainId: number): string {
+  return `TXPENDING#${chainId}`
+}
+
+// the fixed GSI1 partition infra/terraform/modules/relayer/signers.tf writes onto every signer row so the
+// whole small set can be listed with a Query instead of a Scan of this shared table; GSI1SK is the signer id
+const SIGNERS_INDEX_KEY = 'SIGNER#ALL'
 
 export type StoredRule = {
   ruleId: string
@@ -116,7 +131,54 @@ export type DeliveryStore = {
   requeueDelivery(delivery: DeliveryItem, nowMs: number): Promise<boolean>
 }
 
-export type ApiStore = NonceStore & ApiKeyStore & RuleStore & MatchStore & DeliveryStore
+export type StoredSigner = {
+  signerId: string
+  chainIds: number[]
+  // Terraform never writes this attribute (no keccak256 there) - the relayer derives it from the KMS public
+  // key at read time, and this API does not call KMS on a listing. The field is present only for a row that
+  // really carries one; a dashboard shows the signer without it rather than guessing
+  address?: string
+}
+
+export type StoredTx = {
+  txId: string
+  signerId: string
+  chainId: number
+  status: string
+  createdAt: string
+  kind?: string
+  from?: string
+  to?: string
+  data?: string
+  // decimal strings, not numbers: the document client reads a number back wrong past 2^53, and both a value
+  // and a gas limit can get there on some chains
+  value?: string
+  gasLimit?: string
+  nonce?: number
+  hash?: string
+  blockNumber?: string
+  blockHash?: string
+  receiptStatus?: 'success' | 'reverted'
+  error?: string
+  revertData?: string
+  fillerTxId?: string
+  idempotencyKey?: string
+  reference?: string
+  dependsOn?: string
+  updatedAt?: string
+}
+
+export type RelayerStore = {
+  listSigners(): Promise<StoredSigner[]>
+  getTx(txId: string): Promise<StoredTx | undefined>
+  listPendingTxs(
+    chainId: number,
+    limit: number,
+    cursor?: Record<string, unknown>,
+  ): Promise<{ txs: StoredTx[]; cursor?: Record<string, unknown> }>
+}
+
+export type ApiStore = NonceStore & ApiKeyStore & RuleStore & MatchStore & DeliveryStore & RelayerStore
 
 export type StoreDeps = {
   doc: DynamoDBDocumentClient
@@ -336,6 +398,57 @@ export function createStore(deps: StoreDeps): ApiStore {
         throw err
       }
     },
+
+    async listSigners() {
+      // the signer set is small and operator-configured, but this table also carries every match, delivery
+      // and nonce, so even a bounded listing walks the sparse GSI1 index rather than ever scanning the table.
+      // Paged fully in a loop (not exposed to the caller) because "every signer" must never truncate silently
+      const signers: StoredSigner[] = []
+      let startKey: Record<string, unknown> | undefined
+      do {
+        const result = await doc.send(
+          new QueryCommand({
+            TableName: table,
+            IndexName: GSI1,
+            KeyConditionExpression: 'GSI1PK = :pk',
+            ExpressionAttributeValues: { ':pk': SIGNERS_INDEX_KEY },
+            ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+          }),
+        )
+        for (const item of result.Items ?? []) {
+          const signer = toStoredSigner(item, log)
+          if (signer) signers.push(signer)
+        }
+        startKey = result.LastEvaluatedKey
+      } while (startKey)
+      return signers
+    },
+
+    async getTx(txId) {
+      const result = await doc.send(new GetCommand({ TableName: table, Key: txKey(txId) }))
+      return toStoredTx(result.Item, log)
+    },
+
+    async listPendingTxs(chainId, limit, cursor) {
+      const result = await doc.send(
+        new QueryCommand({
+          TableName: table,
+          IndexName: GSI2,
+          KeyConditionExpression: 'GSI2PK = :pk',
+          ExpressionAttributeValues: { ':pk': pendingTxsKey(chainId) },
+          // GSI2SK is the createdAt epoch millisecond (services/relayer/src/store.ts's txItem), so ascending
+          // is oldest first - the transaction an operator most wants to see waiting
+          Limit: limit,
+          ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+        }),
+      )
+      const txs: StoredTx[] = []
+      for (const item of result.Items ?? []) {
+        const tx = toStoredTx(item, log)
+        if (tx) txs.push(tx)
+      }
+      return { txs, ...(result.LastEvaluatedKey ? { cursor: result.LastEvaluatedKey } : {}) }
+    },
   }
 }
 
@@ -463,5 +576,79 @@ function toMatchRow(item: Record<string, unknown>): MatchRow {
     status: item.status as MatchRow['status'],
     firstSeenAt: String(item.firstSeenAt ?? ''),
     ...(item.finalizedAt ? { finalizedAt: String(item.finalizedAt) } : {}),
+  }
+}
+
+function toStoredSigner(
+  item: Record<string, unknown>,
+  log: (message: string, data?: Record<string, unknown>, level?: 'warn' | 'error') => void,
+): StoredSigner | undefined {
+  const signerId = item.signerId
+  if (typeof signerId !== 'string' || !Array.isArray(item.chainIds)) {
+    log(
+      'skipping a signer row that cannot be read',
+      { signerId: typeof signerId === 'string' ? signerId : undefined },
+      'error',
+    )
+    return undefined
+  }
+  return {
+    signerId,
+    chainIds: item.chainIds.map(Number),
+    // present only if the row really carries one - see StoredSigner's own comment; never derived here
+    ...(typeof item.address === 'string' ? { address: item.address } : {}),
+  }
+}
+
+function toStoredTx(
+  item: Record<string, unknown> | undefined,
+  log: (message: string, data?: Record<string, unknown>, level?: 'warn' | 'error') => void,
+): StoredTx | undefined {
+  if (!item) return undefined
+  const txId = item.txId
+  const signerId = item.signerId
+  const status = item.status
+  if (typeof txId !== 'string' || typeof signerId !== 'string' || typeof status !== 'string') {
+    log(
+      'skipping a transaction row that cannot be read',
+      { txId: typeof txId === 'string' ? txId : undefined },
+      'error',
+    )
+    return undefined
+  }
+  // mirrors services/relayer/src/records.ts's toTxBody/latestAttempt: the latest signed hash until mined,
+  // then the mined hash. Not imported (services/* depend on packages/*, not on each other) - a copied literal
+  const mined = isRecord(item.mined) ? item.mined : undefined
+  const attempts = Array.isArray(item.attempts) ? item.attempts : []
+  const latest = attempts.length > 0 ? attempts[attempts.length - 1] : undefined
+  const latestHash = isRecord(latest) && typeof latest.hash === 'string' ? latest.hash : undefined
+  const hash = (typeof mined?.hash === 'string' ? mined.hash : undefined) ?? latestHash
+  const receiptStatus = mined?.status === 'success' || mined?.status === 'reverted' ? mined.status : undefined
+  return {
+    txId,
+    kind: String(item.kind ?? ''),
+    signerId,
+    chainId: Number(item.chainId ?? 0),
+    from: String(item.from ?? ''),
+    to: String(item.to ?? ''),
+    data: String(item.data ?? '0x'),
+    // written as decimal strings already, but coerced the same defensive way as blockNumber below - a value
+    // or gas limit large enough to matter must never round-trip through the document client as a Number
+    value: String(item.value ?? '0'),
+    gasLimit: String(item.gasLimit ?? '0'),
+    status,
+    ...(typeof item.nonce === 'number' ? { nonce: item.nonce } : {}),
+    ...(hash ? { hash } : {}),
+    ...(typeof mined?.blockNumber === 'number' ? { blockNumber: String(mined.blockNumber) } : {}),
+    ...(typeof mined?.blockHash === 'string' ? { blockHash: mined.blockHash } : {}),
+    ...(receiptStatus ? { receiptStatus } : {}),
+    ...(typeof item.error === 'string' ? { error: item.error } : {}),
+    ...(typeof item.revertData === 'string' ? { revertData: item.revertData } : {}),
+    ...(typeof item.fillerTxId === 'string' ? { fillerTxId: item.fillerTxId } : {}),
+    ...(typeof item.idempotencyKey === 'string' ? { idempotencyKey: item.idempotencyKey } : {}),
+    ...(typeof item.reference === 'string' ? { reference: item.reference } : {}),
+    ...(typeof item.dependsOn === 'string' ? { dependsOn: item.dependsOn } : {}),
+    createdAt: String(item.createdAt ?? ''),
+    updatedAt: String(item.updatedAt ?? ''),
   }
 }

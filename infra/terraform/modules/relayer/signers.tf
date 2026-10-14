@@ -55,8 +55,13 @@ locals {
   # DynamoDB JSON for each signer item, in the shape RelayerStore.getSigner validates
   signer_items = { for id, s in var.signers : id => merge(
     {
-      PK       = { S = "SIGNER#${id}" }
-      SK       = { S = "META" }
+      PK = { S = "SIGNER#${id}" }
+      SK = { S = "META" }
+      # every signer row carries this sparse GSI1 entry so the dashboard API can list every signer with a
+      # Query instead of a Scan of the shared table; GSI1PK is a fixed partition because the whole set is
+      # small, and GSI1SK is the signer id so the index is also naturally sorted and de-duplicated by it
+      GSI1PK   = { S = "SIGNER#ALL" }
+      GSI1SK   = { S = id }
       signerId = { S = id }
       keyId    = { S = aws_kms_key.signer[id].arn }
       chainIds = { L = [for c in s.chain_ids : { N = tostring(c) }] }
