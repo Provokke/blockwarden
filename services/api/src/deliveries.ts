@@ -20,10 +20,20 @@ function isDeadListKey(value: unknown): value is Record<(typeof DEAD_LIST_KEY_AT
   return DEAD_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')
 }
 
+// listBySubject queries the base table, not GSI1, so its own LastEvaluatedKey is the table's own key alone -
+// same reasoning as DEAD_LIST_KEY_ATTRS above, one attribute pair narrower
+const SUBJECT_LIST_KEY_ATTRS = ['PK', 'SK'] as const
+
+function isSubjectListKey(value: unknown): value is Record<(typeof SUBJECT_LIST_KEY_ATTRS)[number], string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length !== SUBJECT_LIST_KEY_ATTRS.length) return false
+  return SUBJECT_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')
+}
+
 export type DeliveryDeps = {
   store: DeliveryStore
   queue: { send(body: string): Promise<void> }
-  queueUrl: string
   now(): number
 }
 
@@ -31,12 +41,27 @@ export async function handleListDeliveries(deps: DeliveryDeps, event: APIGateway
   const query = event.queryStringParameters ?? {}
   const limit = pageSize(query.limit)
 
+  if (query.subject && query.status !== undefined) {
+    // a subject and a status answer two different questions; picking one and dropping the other silently
+    // would leave the caller thinking a filter applied when it never did
+    return error(400, 'subject_and_status', 'give a subject or a status, not both')
+  }
+
   if (query.subject) {
     if (!SUBJECT_KINDS.some((kind) => query.subject!.startsWith(kind))) {
       return error(400, 'invalid_subject', 'a subject is MATCH#…, TX#… or OUTBOUND#…')
     }
-    const page = await deps.store.listBySubject(query.subject, limit)
-    return ok({ deliveries: page.deliveries.map(toRow) })
+    let startKey: Record<string, unknown> | undefined
+    if (query.cursor) {
+      const cursor = decodeCursor(query.cursor)
+      if (!cursor || !isSubjectListKey(cursor)) return error(400, 'invalid_cursor', 'that cursor cannot be read')
+      startKey = cursor
+    }
+    const page = await deps.store.listBySubject(query.subject, limit, startKey)
+    return ok({
+      deliveries: page.deliveries.map(toRow),
+      ...(page.cursor ? { cursor: encodeCursor(page.cursor) } : {}),
+    })
   }
 
   if (query.status === undefined) return error(400, 'filter_required', 'status=dead or a subject is required')
