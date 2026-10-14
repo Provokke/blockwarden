@@ -59,7 +59,7 @@ locals {
       SK = { S = "META" }
       # every signer row carries this sparse GSI1 entry so the dashboard API can list every signer with a
       # Query instead of a Scan of the shared table; GSI1PK is a fixed partition because the whole set is
-      # small, and GSI1SK is the signer id so the index is also naturally sorted and de-duplicated by it
+      # small, and GSI1SK is the signer id so the index is also naturally sorted by it
       GSI1PK   = { S = "SIGNER#ALL" }
       GSI1SK   = { S = id }
       signerId = { S = id }
