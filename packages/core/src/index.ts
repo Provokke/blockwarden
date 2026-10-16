@@ -1,4 +1,5 @@
 export { hashApiKey } from './api-keys.js'
+export { describeError, rpcAnswer, short } from './errors.js'
 export { compileRule, RuleValidationError, type CompiledRule, type ValidationIssue } from './compile.js'
 export { evaluate, resolveField } from './conditions.js'
 export { buildLogFilter, type LogFilter } from './filter.js'
