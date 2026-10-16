@@ -1,0 +1,35 @@
+name: gated
+on: pull_request
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo no AWS here, so no gate
+  plan:
+    runs-on: ubuntu-latest
+    env:
+      ROLE_ARN: ${{ vars.BLOCKWARDEN_PLAN_ROLE_ARN }}
+      ROLE_VARIABLE: BLOCKWARDEN_PLAN_ROLE_ARN
+    steps:
+      - name: Skip until the role variable is set
+        id: gate
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$ROLE_VARIABLE is not set, so this job did nothing."
+            echo "The repository variable \`$ROLE_VARIABLE\` is not set, so this job did nothing." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.gate.outputs.enabled == 'true'
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ap-southeast-2
+      - run: echo comment
+        if: ${{ steps.gate.outputs.enabled == 'true' && !cancelled() }}

@@ -1,0 +1,51 @@
+name: broken
+on: push
+jobs:
+  no-role-env:
+    runs-on: ubuntu-latest
+    steps:
+      - id: gate
+        run: echo "enabled=true" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+  mismatched-variable:
+    runs-on: ubuntu-latest
+    env:
+      ROLE_ARN: ${{ vars.BLOCKWARDEN_DEMO_APPLY_ROLE_ARN }}
+      ROLE_VARIABLE: BLOCKWARDEN_STAGING_APPLY_ROLE_ARN
+    steps:
+      - id: gate
+        run: echo "enabled=true" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+  gate-not-first:
+    runs-on: ubuntu-latest
+    env:
+      ROLE_ARN: ${{ vars.BLOCKWARDEN_PLAN_ROLE_ARN }}
+      ROLE_VARIABLE: BLOCKWARDEN_PLAN_ROLE_ARN
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: gate
+        run: echo "enabled=true" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+  ungated-and-or:
+    runs-on: ubuntu-latest
+    env:
+      ROLE_ARN: ${{ vars.BLOCKWARDEN_PLAN_ROLE_ARN }}
+      ROLE_VARIABLE: BLOCKWARDEN_PLAN_ROLE_ARN
+    steps:
+      - id: gate
+        run: echo "enabled=${{ vars.BLOCKWARDEN_PLAN_ROLE_ARN != '' }}" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: steps.gate.outputs.enabled == 'true' || always()
+        with:
+          role-to-assume: ${{ vars.BLOCKWARDEN_PLAN_ROLE_ARN }}
+      - name: terraform plan
+        run: terraform plan
