@@ -99,6 +99,13 @@ ${jobPermissions}    steps:
     ).toHaveLength(1)
   })
 
+  it('is refused with write-all, which includes id-token, at either level', () => {
+    expect(checkWorkflow(workflow('pull_request_target', 'permissions: write-all\n')).problems).toEqual([
+      'workflow: pull_request_target with id-token: write',
+    ])
+    expect(checkWorkflow(workflow('workflow_run', '', '    permissions: write-all\n')).problems).toHaveLength(1)
+  })
+
   it('is accepted without id-token, and id-token is accepted on an ordinary trigger', () => {
     expect(checkWorkflow(workflow('pull_request_target', 'permissions:\n  contents: read\n')).problems).toEqual([])
     expect(checkWorkflow(workflow('pull_request', wide)).problems).toEqual([])

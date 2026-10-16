@@ -19,7 +19,8 @@ const PRIVILEGED_TRIGGERS = ['pull_request_target', 'workflow_run']
 // `on:` is a string, a list or a map of event names
 const triggers = (on) => (typeof on === 'string' ? [on] : Array.isArray(on) ? on : Object.keys(on ?? {}))
 const grantsIdToken = (permissions) =>
-  permissions !== null && typeof permissions === 'object' && permissions['id-token'] === 'write'
+  permissions === 'write-all' ||
+  (permissions !== null && typeof permissions === 'object' && permissions['id-token'] === 'write')
 
 // The gated jobs in one workflow, as { job, roleVariable, gate }, where gate is the first step's script, and the
 // problems found, each naming its job.
