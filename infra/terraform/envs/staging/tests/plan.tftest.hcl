@@ -14,6 +14,11 @@ mock_provider "aws" {
   }
 }
 
+# every provider configuration in the root is mocked, the us-east-1 one included, so none can reach AWS
+mock_provider "aws" {
+  alias = "us_east_1"
+}
+
 mock_provider "archive" {}
 
 mock_provider "random" {}

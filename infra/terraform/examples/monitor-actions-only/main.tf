@@ -17,8 +17,18 @@ provider "aws" {
   region = "us-east-1"
 }
 
+# modules/blockwarden requires it for the API's optional custom domain, even with the API left out
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+}
+
 module "blockwarden" {
   source = "../../modules/blockwarden"
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
 
   name               = "bw-example"
   monitor_source_dir = "${path.root}/../../../../services/monitor/dist/monitor"

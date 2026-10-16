@@ -68,6 +68,20 @@ provider "aws" {
   }
 }
 
+# modules/api takes the optional custom domain's certificate from here, since CloudFront reads us-east-1 only.
+# Every root that uses modules/blockwarden passes it, domain or not.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      project     = "blockwarden"
+      environment = "demo"
+    }
+  }
+}
+
 data "aws_caller_identity" "current" {}
 
 data "aws_partition" "current" {}
@@ -78,7 +92,11 @@ locals {
 }
 
 module "blockwarden" {
-  source                   = "../../modules/blockwarden"
+  source = "../../modules/blockwarden"
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
   name                     = "blockwarden-demo"
   permissions_boundary_arn = local.permissions_boundary_arn
   monitor_source_dir       = "${path.root}/../../../../services/monitor/dist/monitor"
@@ -198,6 +216,10 @@ output "site_bucket" {
 
 output "distribution_id" {
   value = module.blockwarden.distribution_id
+}
+
+output "domain_records" {
+  value = module.blockwarden.domain_records
 }
 
 output "site_url" {

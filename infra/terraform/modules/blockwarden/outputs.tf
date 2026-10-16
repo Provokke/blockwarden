@@ -76,6 +76,11 @@ output "distribution_id" {
   value       = var.api == null ? null : module.api[0].distribution_id
 }
 
+output "domain_records" {
+  description = "DNS records for the API's custom domain, or null when none is set or the API is not deployed."
+  value       = var.api == null ? null : module.api[0].domain_records
+}
+
 output "site_url" {
   description = "Where the dashboard is served, or null when the API is not deployed."
   value       = var.api == null ? null : module.api[0].site_url

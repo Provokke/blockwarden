@@ -111,6 +111,41 @@ variable "siwe_domain" {
   }
 }
 
+variable "domain" {
+  description = "A custom host name for the distribution, such as demo.example.com. Leave null to serve on the distribution's own cloudfront.net name. With create_certificate, the module requests a certificate in us-east-1 with DNS validation; otherwise certificate_arn names an issued us-east-1 certificate for the host. site_origin and siwe_domain follow the host name unless set."
+  type = object({
+    host_name          = string
+    create_certificate = optional(bool, true)
+    certificate_arn    = optional(string)
+  })
+  default = null
+
+  # the same host-name rule as siwe_domain, since the host name becomes it
+  validation {
+    condition = var.domain == null ? true : (
+      can(regex("^([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])+[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.domain.host_name)) &&
+      !can(regex("(^|[.])([0-9]+|0x[0-9a-f]*)$", var.domain.host_name))
+    )
+    error_message = "domain.host_name must be a lowercase host name with at least one dot, and no scheme, port or path."
+  }
+
+  validation {
+    condition     = var.domain == null ? true : var.domain.create_certificate == (var.domain.certificate_arn == null)
+    error_message = "set domain.certificate_arn when domain.create_certificate is false, and only then."
+  }
+
+  validation {
+    condition     = var.domain == null ? true : var.domain.certificate_arn == null ? true : can(regex("^arn:aws[a-z-]*:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]+$", var.domain.certificate_arn))
+    error_message = "domain.certificate_arn must be an ACM certificate in us-east-1, the only region CloudFront reads."
+  }
+
+  # a site_origin for another host would accept sign-ins for a name the distribution does not answer to
+  validation {
+    condition     = var.domain == null ? true : var.site_origin == null ? true : var.site_origin == "https://${var.domain.host_name}"
+    error_message = "with domain set, leave site_origin out or set it to https:// and domain.host_name."
+  }
+}
+
 variable "site_script_hashes" {
   description = "sha256 hashes of the dashboard export's inline scripts, from apps/dashboard/scripts/csp-hashes.mjs for the build being uploaded. The CSP admits exactly these; an upload without the matching hashes renders but never hydrates."
   type        = list(string)

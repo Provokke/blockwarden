@@ -4,7 +4,11 @@
 # sign-in a 401.
 
 locals {
-  site_origin = var.site_origin != null ? var.site_origin : "https://${aws_cloudfront_distribution.site.domain_name}"
+  site_origin = (
+    var.site_origin != null ? var.site_origin :
+    var.domain != null ? "https://${var.domain.host_name}" :
+    "https://${aws_cloudfront_distribution.site.domain_name}"
+  )
   siwe_domain = var.siwe_domain != null ? var.siwe_domain : trimprefix(local.site_origin, "https://")
 
   # Next's app router inlines its bootstrap and flight data into every page, and the flight data changes with each
@@ -25,6 +29,30 @@ locals {
     "form-action 'self'",
     "object-src 'none'",
   ])
+}
+
+# Only with var.domain. The validation resource waits until the validation records exist at the domain's DNS host,
+# so the first apply with a domain requests the certificate on its own (README, The dashboard's distribution).
+resource "aws_acm_certificate" "site" {
+  count             = try(var.domain.create_certificate, false) ? 1 : 0
+  provider          = aws.us_east_1
+  domain_name       = var.domain.host_name
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_acm_certificate_validation" "site" {
+  count                   = length(aws_acm_certificate.site)
+  provider                = aws.us_east_1
+  certificate_arn         = aws_acm_certificate.site[0].arn
+  validation_record_fqdns = [for o in aws_acm_certificate.site[0].domain_validation_options : o.resource_record_name]
+}
+
+locals {
+  certificate_arn = try(var.domain.create_certificate, false) ? one(aws_acm_certificate_validation.site[*].certificate_arn) : try(var.domain.certificate_arn, null)
 }
 
 data "aws_cloudfront_cache_policy" "caching_optimized" {
@@ -312,12 +340,15 @@ resource "aws_cloudfront_response_headers_policy" "site" {
 resource "aws_cloudfront_distribution" "site" {
   #checkov:skip=CKV_AWS_68:no WAF, on cost grounds: see Non-goals in the design's Scope section
   #checkov:skip=CKV2_AWS_47:no WAF, on cost grounds: see Non-goals in the design's Scope section
-  #checkov:skip=CKV_AWS_174:the default *.cloudfront.net certificate fixes the minimum protocol; a custom domain and its certificate come with the public demo
-  #checkov:skip=CKV2_AWS_42:the default *.cloudfront.net certificate until the public demo's custom domain
+  #checkov:skip=CKV_AWS_174:without var.domain the default *.cloudfront.net certificate fixes the minimum protocol; with it the minimum is TLSv1.2_2021
+  #checkov:skip=CKV2_AWS_42:a stack without var.domain is served with the default *.cloudfront.net certificate
   #checkov:skip=CKV_AWS_310:each path has one origin, and a second copy of either would be a second deployment
   #checkov:skip=CKV_AWS_374:the dashboard is not restricted by country
-  enabled             = true
-  comment             = "${var.name} dashboard and API"
+  enabled = true
+  comment = "${var.name} dashboard and API"
+  # null without a domain, as is every certificate setting below except the default certificate, so the
+  # distribution of a stack without one is unchanged
+  aliases             = var.domain == null ? null : [var.domain.host_name]
   default_root_object = "index.html"
   http_version        = "http2and3"
   is_ipv6_enabled     = true
@@ -385,7 +416,10 @@ resource "aws_cloudfront_distribution" "site" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = var.domain == null
+    acm_certificate_arn            = local.certificate_arn
+    ssl_support_method             = var.domain == null ? null : "sni-only"
+    minimum_protocol_version       = var.domain == null ? null : "TLSv1.2_2021"
   }
 
   depends_on = [aws_s3_bucket_ownership_controls.logs, aws_s3_bucket_policy.logs]

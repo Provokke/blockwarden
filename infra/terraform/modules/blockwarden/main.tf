@@ -4,6 +4,8 @@ terraform {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 6.64"
+      # passed through to modules/api, for the optional custom domain's certificate
+      configuration_aliases = [aws.us_east_1]
     }
     archive = {
       source  = "hashicorp/archive"

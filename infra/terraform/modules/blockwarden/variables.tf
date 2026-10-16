@@ -150,6 +150,12 @@ variable "api" {
     siwe_domain = optional(string)
     # from apps/dashboard/scripts/csp-hashes.mjs for the build being uploaded
     site_script_hashes = optional(list(string), [])
+    # modules/api's domain: a custom host name and its certificate, off when left out
+    domain = optional(object({
+      host_name          = string
+      create_certificate = optional(bool, true)
+      certificate_arn    = optional(string)
+    }))
   })
   default = null
 
@@ -182,6 +188,29 @@ variable "api" {
   validation {
     condition     = var.api == null ? true : var.api.siwe_domain == null ? true : var.api.site_origin == null ? false : var.api.siwe_domain == trimprefix(var.api.site_origin, "https://")
     error_message = "api.siwe_domain must be the host of api.site_origin, and can only be set with it; leave it out to use that host."
+  }
+
+  validation {
+    condition = var.api == null ? true : var.api.domain == null ? true : (
+      can(regex("^([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])+[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.api.domain.host_name)) &&
+      !can(regex("(^|[.])([0-9]+|0x[0-9a-f]*)$", var.api.domain.host_name))
+    )
+    error_message = "api.domain.host_name must be a lowercase host name with at least one dot, and no scheme, port or path."
+  }
+
+  validation {
+    condition     = var.api == null ? true : var.api.domain == null ? true : var.api.domain.create_certificate == (var.api.domain.certificate_arn == null)
+    error_message = "set api.domain.certificate_arn when api.domain.create_certificate is false, and only then."
+  }
+
+  validation {
+    condition     = var.api == null ? true : var.api.domain == null ? true : var.api.domain.certificate_arn == null ? true : can(regex("^arn:aws[a-z-]*:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]+$", var.api.domain.certificate_arn))
+    error_message = "api.domain.certificate_arn must be an ACM certificate in us-east-1, the only region CloudFront reads."
+  }
+
+  validation {
+    condition     = var.api == null ? true : var.api.domain == null ? true : var.api.site_origin == null ? true : var.api.site_origin == "https://${var.api.domain.host_name}"
+    error_message = "with api.domain set, leave api.site_origin out or set it to https:// and api.domain.host_name."
   }
 
   # names another variable, so this one waits for a plan

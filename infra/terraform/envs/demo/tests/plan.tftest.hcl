@@ -16,6 +16,11 @@ mock_provider "aws" {
   }
 }
 
+# every provider configuration in the root is mocked, the us-east-1 one included, so none can reach AWS
+mock_provider "aws" {
+  alias = "us_east_1"
+}
+
 mock_provider "archive" {}
 
 mock_provider "random" {}
@@ -63,6 +68,13 @@ run "monitor_roles_have_the_boundary" {
     source = "../../modules/blockwarden"
   }
 
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+    archive       = archive
+    random        = random
+  }
+
   variables {
     name                     = "blockwarden-demo"
     monitor_source_dir       = "/nonexistent"
@@ -106,6 +118,13 @@ run "api_roles_have_the_boundary" {
 
   module {
     source = "../../modules/api"
+  }
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+    archive       = archive
+    random        = random
   }
 
   variables {

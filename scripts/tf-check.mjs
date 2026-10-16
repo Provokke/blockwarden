@@ -25,7 +25,9 @@ run('terraform fmt', [...asCaller, '-w', '/tf', terraform, 'fmt', '-check', '-re
 const roots = ['bootstrap', 'envs/staging', 'envs/demo', 'examples/relayer-only', 'examples/monitor-actions-only']
 for (const root of roots) {
   run(`terraform init ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'init', '-backend=false', '-input=false'])
-  run(`terraform validate ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'validate'])
+  // terraform test below checks the test files: validate reports a run that hands a module the us-east-1 provider
+  // as missing it, though terraform test runs that same file
+  run(`terraform validate ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'validate', '-no-tests'])
 }
 // every provider in these tests is a mock_provider, so they reach no AWS endpoint
 for (const root of ['bootstrap', 'envs/staging', 'envs/demo']) {
