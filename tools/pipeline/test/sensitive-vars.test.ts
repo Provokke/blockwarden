@@ -51,6 +51,25 @@ describe('variables', () => {
   })
 })
 
+describe('sensitive', () => {
+  it('counts only the top-level attribute, not one inside a nested block', () => {
+    const nested = `variable "a" {
+  type = string
+  validation {
+    sensitive = true
+  }
+}
+`
+    const top = `variable "b" {
+  sensitive = true
+  type = string
+}
+`
+    expect(variables(nested)[0]?.sensitive).toBe(false)
+    expect(variables(top)[0]?.sensitive).toBe(true)
+  })
+})
+
 describe('check', () => {
   it('passes names, references and sensitive variables', async () => {
     const result = await check(fixtures('clean'), new Map())
