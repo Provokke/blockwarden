@@ -14,6 +14,7 @@ const SCRIPT = fileURLToPath(new URL('../src/workflow-gates.mjs', import.meta.ur
 // fails this test until it is listed here.
 const EXPECTED: Record<string, Record<string, string>> = {
   'ci.yml': {},
+  'plan.yml': { plan: 'BLOCKWARDEN_PLAN_ROLE_ARN' },
 }
 
 let dir: string
