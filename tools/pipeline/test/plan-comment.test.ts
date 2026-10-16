@@ -97,7 +97,7 @@ describe('render', () => {
       sha: 'abcdef0123',
     })
     expect(text.match(/^\| create \|/gm)).toHaveLength(MAX_ROWS)
-    expect(text).toContain('And 5 more; the run has the rest.')
+    expect(text).toContain('And 5 more, not listed.')
   })
 })
 

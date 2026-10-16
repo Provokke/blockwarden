@@ -14,12 +14,27 @@ const GATED = /^(\$\{\{\s*)?steps\.gate\.outputs\.enabled == 'true'(\s*&&[^|]*)?
 // GitHub resolves an action's owner and name without regard to case
 const isAwsAction = (step) => typeof step?.uses === 'string' && step.uses.toLowerCase().startsWith(AWS_ACTION)
 
+// Workflows that run on the base repository's token with the base repository's trust, whatever the pull request holds
+const PRIVILEGED_TRIGGERS = ['pull_request_target', 'workflow_run']
+// `on:` is a string, a list or a map of event names
+const triggers = (on) => (typeof on === 'string' ? [on] : Array.isArray(on) ? on : Object.keys(on ?? {}))
+const grantsIdToken = (permissions) =>
+  permissions !== null && typeof permissions === 'object' && permissions['id-token'] === 'write'
+
 // The gated jobs in one workflow, as { job, roleVariable, gate }, where gate is the first step's script, and the
 // problems found, each naming its job.
 export function checkWorkflow(text) {
   const workflow = parse(text)
   const jobs = []
   const problems = []
+  const privileged = triggers(workflow?.on ?? workflow?.[true]).filter((t) => PRIVILEGED_TRIGGERS.includes(t))
+  if (
+    privileged.length > 0 &&
+    (grantsIdToken(workflow?.permissions) ||
+      Object.values(workflow?.jobs ?? {}).some((j) => grantsIdToken(j?.permissions)))
+  ) {
+    problems.push(`workflow: ${privileged[0]} with id-token: write`)
+  }
   for (const [name, job] of Object.entries(workflow?.jobs ?? {})) {
     const steps = Array.isArray(job?.steps) ? job.steps : []
     if (!steps.some(isAwsAction)) continue

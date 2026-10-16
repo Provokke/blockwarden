@@ -3,6 +3,10 @@ name: plan
 on:
   pull_request:
 
+concurrency:
+  group: plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   id-token: write
   contents: read
@@ -27,8 +31,10 @@ jobs:
 
   plan:
     needs: sensitive-variables
-    # GitHub gives a pull request from a fork no OIDC token, so there is nothing for it to plan with
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # GitHub gives a pull request from a fork no OIDC token, so there is nothing for it to plan with. Dependabot's
+    # branches live in this repository but carry bumped third-party code that the build would run while the plan
+    # role is held, so its pull requests skip the plan (a skipped check counts as passing).
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

@@ -95,9 +95,9 @@ jobs:
           -backend-config="bucket=$STATE_BUCKET"
           -backend-config="key=$ENVIRONMENT/terraform.tfstate"
           -backend-config="region=$TF_VAR_region"
-      # The plan's text and the apply's (resource ids, and every output with its ARNs and account id) hold the
-      # stack's values and this repository's logs are public, so both go nowhere; errors are on stderr and still
-      # reach the log. The apply takes the saved plan, so what is applied is exactly what was planned here.
+      # The plan's text and the apply's (resource ids, and every output with its queue URLs, API endpoint and ARNs)
+      # hold the stack's values and this repository's logs are public, so both go nowhere; errors are on stderr and
+      # still reach the log. The apply takes the saved plan, so what is applied is exactly what was planned here.
       - name: terraform plan
         if: steps.gate.outputs.enabled == 'true'
         working-directory: infra/terraform/envs/staging

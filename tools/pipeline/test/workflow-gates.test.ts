@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -69,6 +69,39 @@ describe('checkWorkflow', () => {
       'action-in-other-case: env.ROLE_ARN must be ${{ vars.BLOCKWARDEN_<NAME>_ROLE_ARN }}',
       'action-in-other-case: the first step must be the ungated run step with id gate',
     ])
+  })
+})
+
+describe('a privileged trigger', () => {
+  const workflow = (on: string, permissions: string, jobPermissions = '') => `name: x
+on: ${on}
+${permissions}jobs:
+  build:
+    runs-on: ubuntu-latest
+${jobPermissions}    steps:
+      - run: echo hi
+`
+  const wide = 'permissions:\n  id-token: write\n'
+
+  it('is refused with id-token: write, given as a map', async () => {
+    const { problems } = checkWorkflow(await readFile(fixture('privileged-trigger.yml'), 'utf8'))
+    expect(problems).toEqual(['workflow: pull_request_target with id-token: write'])
+  })
+
+  it('is refused whether `on` is a string, a list or a map, and at job level too', () => {
+    expect(checkWorkflow(workflow('workflow_run', wide)).problems).toEqual([
+      'workflow: workflow_run with id-token: write',
+    ])
+    expect(checkWorkflow(workflow('[push, pull_request_target]', wide)).problems).toHaveLength(1)
+    expect(checkWorkflow(workflow('{ workflow_run: { workflows: [a] } }', wide)).problems).toHaveLength(1)
+    expect(
+      checkWorkflow(workflow('pull_request_target', '', '    permissions:\n      id-token: write\n')).problems,
+    ).toHaveLength(1)
+  })
+
+  it('is accepted without id-token, and id-token is accepted on an ordinary trigger', () => {
+    expect(checkWorkflow(workflow('pull_request_target', 'permissions:\n  contents: read\n')).problems).toEqual([])
+    expect(checkWorkflow(workflow('pull_request', wide)).problems).toEqual([])
   })
 })
 
@@ -170,5 +203,27 @@ describe("this repository's workflows", () => {
     expect(broken.status).toBe(1)
     expect(broken.stderr).toContain('broken.yml no-role-env: env.ROLE_ARN must be')
     expect(broken.stdout).toContain('gated.yml plan: gated on BLOCKWARDEN_PLAN_ROLE_ARN')
+  })
+})
+
+describe("the variables this repository's workflows read", () => {
+  // set by the owner, not by the bootstrap's github_variables output: the README's Deploying section has them set by hand
+  const OWNER_SET = ['BLOCKWARDEN_ALLOWED_WALLETS', 'BLOCKWARDEN_ALARM_EMAIL']
+
+  it('are all set by the bootstrap output, or documented as the owner will set', async () => {
+    const outputs = await readFile(
+      fileURLToPath(new URL('../../../infra/terraform/bootstrap/outputs.tf', import.meta.url)),
+      'utf8',
+    )
+    const bootstrap = new Set([...outputs.matchAll(/gh variable set (BLOCKWARDEN_[A-Z_]+)/g)].map((m) => m[1]))
+    const used = new Set<string>()
+    for (const file of (await readdir(WORKFLOWS)).filter((f) => /\.ya?ml$/.test(f))) {
+      const text = await readFile(join(WORKFLOWS, file), 'utf8')
+      for (const m of text.matchAll(/vars\.(BLOCKWARDEN_[A-Z_]+)/g)) used.add(m[1]!)
+    }
+    expect(bootstrap.size).toBeGreaterThan(0)
+    expect([...used].filter((v) => !bootstrap.has(v) && !OWNER_SET.includes(v))).toEqual([])
+    const readme = await readFile(fileURLToPath(new URL('../../../README.md', import.meta.url)), 'utf8')
+    for (const v of OWNER_SET) expect(readme, v).toContain(v)
   })
 })

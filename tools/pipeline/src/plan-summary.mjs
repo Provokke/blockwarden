@@ -48,8 +48,7 @@ export function render({ environment, summary, failed = false, runUrl, sha }) {
     if (summary.forget > 0) counts.push(`${summary.forget} to forget`)
     lines.push(`**${counts.join(', ')}.**`, '', '| Action | Resource |', '|---|---|')
     for (const c of summary.changes.slice(0, MAX_ROWS)) lines.push(`| ${c.action} | ${cell(c.address)} |`)
-    if (summary.changes.length > MAX_ROWS)
-      lines.push('', `And ${summary.changes.length - MAX_ROWS} more; the run has the rest.`)
+    if (summary.changes.length > MAX_ROWS) lines.push('', `And ${summary.changes.length - MAX_ROWS} more, not listed.`)
   }
   const at = sha === undefined ? '' : ` at \`${sha.slice(0, 7)}\``
   lines.push(
