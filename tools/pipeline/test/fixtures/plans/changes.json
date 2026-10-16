@@ -1,0 +1,109 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.16.2",
+  "variables": {
+    "allowed_wallets": { "value": ["0x52908400098527886E0F7030069857D2E4169EE7"] },
+    "alarm_email": { "value": "canary-variable@example.com" }
+  },
+  "planned_values": {
+    "root_module": {
+      "child_modules": [
+        {
+          "address": "module.blockwarden.module.api[0]",
+          "resources": [
+            {
+              "address": "module.blockwarden.module.api[0].aws_ssm_parameter.session_secret",
+              "values": { "name": "/blockwarden-staging/api/session-secret", "value": "canary-planned-secret" },
+              "sensitive_values": { "value": true }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "module.blockwarden.module.api[0].aws_ssm_parameter.session_secret",
+      "mode": "managed",
+      "type": "aws_ssm_parameter",
+      "name": "session_secret",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": { "name": "/blockwarden-staging/api/session-secret", "value": "canary-after-secret" },
+        "after_unknown": { "arn": true },
+        "before_sensitive": false,
+        "after_sensitive": { "value": true }
+      }
+    },
+    {
+      "address": "module.blockwarden.aws_lambda_function.monitor[\"base\"]",
+      "mode": "managed",
+      "type": "aws_lambda_function",
+      "name": "monitor",
+      "index": "base",
+      "change": {
+        "actions": ["update"],
+        "before": { "environment": [{ "variables": { "RPC_URLS_PARAMETER": "canary-before-value" } }] },
+        "after": { "environment": [{ "variables": { "RPC_URLS_PARAMETER": "canary-after-value" } }] }
+      }
+    },
+    {
+      "address": "module.relayer.aws_sqs_queue.dead_letter",
+      "mode": "managed",
+      "type": "aws_sqs_queue",
+      "name": "dead_letter",
+      "change": { "actions": ["delete"], "before": { "name": "canary-deleted-name" }, "after": null }
+    },
+    {
+      "address": "module.relayer.aws_kms_key.signer[\"demo\"]",
+      "mode": "managed",
+      "type": "aws_kms_key",
+      "name": "signer",
+      "index": "demo",
+      "action_reason": "replace_because_cannot_update",
+      "change": {
+        "actions": ["delete", "create"],
+        "before": { "policy": "canary-old-policy" },
+        "after": { "policy": "canary-new-policy" }
+      }
+    },
+    {
+      "address": "module.blockwarden.module.api[0].aws_cloudfront_distribution.site",
+      "mode": "managed",
+      "type": "aws_cloudfront_distribution",
+      "name": "site",
+      "change": { "actions": ["create", "delete"], "before": {}, "after": {} }
+    },
+    {
+      "address": "module.blockwarden.aws_dynamodb_table.main",
+      "mode": "managed",
+      "type": "aws_dynamodb_table",
+      "name": "main",
+      "change": {
+        "actions": ["no-op"],
+        "before": { "name": "canary-unchanged" },
+        "after": { "name": "canary-unchanged" }
+      }
+    },
+    {
+      "address": "module.blockwarden.data.aws_kms_alias.ssm",
+      "mode": "data",
+      "type": "aws_kms_alias",
+      "name": "ssm",
+      "change": { "actions": ["read"], "before": null, "after": { "target_key_arn": "canary-data-value" } }
+    },
+    {
+      "address": "aws_sns_topic.retired",
+      "mode": "managed",
+      "type": "aws_sns_topic",
+      "name": "retired",
+      "change": { "actions": ["forget"], "before": { "name": "canary-forgotten" }, "after": null }
+    }
+  ],
+  "output_changes": {
+    "session_secret_parameter": { "actions": ["create"], "after": "canary-output-value" }
+  },
+  "prior_state": { "values": { "root_module": { "resources": [{ "values": { "secret": "canary-prior-state" } }] } } },
+  "configuration": { "root_module": { "variables": { "alarm_email": { "default": "canary-config-default" } } } }
+}
