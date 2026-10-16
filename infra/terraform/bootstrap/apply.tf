@@ -390,6 +390,18 @@ locals {
         Resource  = ["arn:${local.partition}:acm:us-east-1:${local.account_id}:certificate/*"]
         Condition = { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
       },
+      {
+        # RequestCertificate with tags may also be authorized as acm:AddTagsToCertificate, on a certificate that
+        # carries no tag yet; see KeyCreateTags
+        Sid      = "CertificateCreateTags"
+        Effect   = "Allow"
+        Action   = ["acm:AddTagsToCertificate"]
+        Resource = ["arn:${local.partition}:acm:us-east-1:${local.account_id}:certificate/*"]
+        Condition = {
+          StringEquals = { "aws:RequestTag/environment" = env }
+          Null         = { "aws:ResourceTag/environment" = "true" }
+        }
+      },
     ]
   } }
 

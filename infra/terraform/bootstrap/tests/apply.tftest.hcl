@@ -389,7 +389,7 @@ run "tag_held_statements_are_pinned" {
         for s in concat(jsondecode(aws_iam_role_policy.apply[env].policy).Statement, jsondecode(aws_iam_policy.apply_edge[env].policy).Statement) : s.Sid => s
         if contains([
           "CreateKeys", "Keys", "KeyTags", "KeyCreateTags", "DistributionCreateTags", "RequestCertificates", "Certificates",
-          "CertificateTags", "EventSourceMappings", "EventSourceMappingTags", "EventSourceMappingCreateTags",
+          "CertificateTags", "CertificateCreateTags", "EventSourceMappings", "EventSourceMappingTags", "EventSourceMappingCreateTags",
           "EventSourceMappingUntags",
         ], s.Sid)
       }
@@ -459,6 +459,16 @@ run "tag_held_statements_are_pinned" {
           Action    = ["acm:AddTagsToCertificate"]
           Resource  = ["arn:aws:acm:us-east-1:123456789012:certificate/*"]
           Condition = { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
+        }
+        CertificateCreateTags = {
+          Sid      = "CertificateCreateTags"
+          Effect   = "Allow"
+          Action   = ["acm:AddTagsToCertificate"]
+          Resource = ["arn:aws:acm:us-east-1:123456789012:certificate/*"]
+          Condition = {
+            StringEquals = { "aws:RequestTag/environment" = env }
+            Null         = { "aws:ResourceTag/environment" = "true" }
+          }
         }
         EventSourceMappings = {
           Sid       = "EventSourceMappings"
