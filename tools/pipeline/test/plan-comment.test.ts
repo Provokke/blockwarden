@@ -28,6 +28,19 @@ describe('summarize', () => {
     ])
   })
 
+  it('never counts a data source, whatever actions it carries', () => {
+    const entry = (address: string, mode: string, actions: string[]) => ({ address, mode, change: { actions } })
+    const summary = summarize({
+      resource_changes: [
+        entry('data.aws_kms_alias.a', 'data', ['create']),
+        entry('data.aws_kms_alias.b', 'data', ['delete']),
+        entry('aws_sqs_queue.q', 'managed', ['create']),
+      ],
+    })
+    expect(summary.changes).toEqual([{ address: 'aws_sqs_queue.q', action: 'create' }])
+    expect(summary).toMatchObject({ add: 1, change: 0, destroy: 0, forget: 0 })
+  })
+
   it('reads nothing from a plan but addresses and actions', async () => {
     const text = render({ environment: 'staging', summary: summarize(await plan()), runUrl: RUN, sha: 'abcdef0123' })
     const canaries = (await readFile(PLAN, 'utf8')).match(/canary-[a-z-]+/g) ?? []
