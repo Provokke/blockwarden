@@ -27,7 +27,7 @@ afterEach(async () => {
 })
 
 // runs a gate script as GitHub would, with bash and the two files it writes to
-async function runGate(script: string, roleArn: string) {
+async function runGate(script: string, roleArn: string, roleVariable = 'BLOCKWARDEN_PLAN_ROLE_ARN') {
   const output = join(dir, 'output')
   const summary = join(dir, 'summary')
   await writeFile(output, '')
@@ -37,7 +37,7 @@ async function runGate(script: string, roleArn: string) {
     env: {
       ...process.env,
       ROLE_ARN: roleArn,
-      ROLE_VARIABLE: 'BLOCKWARDEN_PLAN_ROLE_ARN',
+      ROLE_VARIABLE: roleVariable,
       GITHUB_OUTPUT: output,
       GITHUB_STEP_SUMMARY: summary,
     },
@@ -63,6 +63,9 @@ describe('checkWorkflow', () => {
       "ungated-and-or: step 2 (aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd) must run only if steps.gate.outputs.enabled == 'true'",
       'ungated-and-or: configure-aws-credentials must assume ${{ env.ROLE_ARN }}',
       "ungated-and-or: step 3 (terraform plan) must run only if steps.gate.outputs.enabled == 'true'",
+      'gate-not-named: the first step must be the ungated run step with id gate',
+      'action-in-other-case: env.ROLE_ARN must be ${{ vars.BLOCKWARDEN_<NAME>_ROLE_ARN }}',
+      'action-in-other-case: the first step must be the ungated run step with id gate',
     ])
   })
 })
@@ -127,10 +130,11 @@ describe("this repository's workflows", () => {
   it('skips with a summary notice, and runs once the variable is set, in every gated job', async () => {
     for (const { file, jobs } of await checkDirectory(WORKFLOWS)) {
       for (const job of jobs) {
-        const shut = await runGate(job.gate, '')
+        const shut = await runGate(job.gate, '', job.roleVariable)
         expect(shut.output, `${file} ${job.job}`).toBe('enabled=false\n')
-        expect(shut.summary, `${file} ${job.job}`).toContain('is not set')
-        const open = await runGate(job.gate, 'arn:aws:iam::123456789012:role/r')
+        expect(shut.stdout, `${file} ${job.job}`).toContain(`::notice::${job.roleVariable} is not set`)
+        expect(shut.summary, `${file} ${job.job}`).toContain(`\`${job.roleVariable}\` is not set`)
+        const open = await runGate(job.gate, 'arn:aws:iam::123456789012:role/r', job.roleVariable)
         expect(open.output, `${file} ${job.job}`).toBe('enabled=true\n')
       }
     }

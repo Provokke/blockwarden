@@ -49,3 +49,21 @@ jobs:
           role-to-assume: ${{ vars.BLOCKWARDEN_PLAN_ROLE_ARN }}
       - name: terraform plan
         run: terraform plan
+  gate-not-named:
+    runs-on: ubuntu-latest
+    env:
+      ROLE_ARN: ${{ vars.BLOCKWARDEN_PLAN_ROLE_ARN }}
+      ROLE_VARIABLE: BLOCKWARDEN_PLAN_ROLE_ARN
+    steps:
+      - id: setup
+        run: echo "enabled=true" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+  action-in-other-case:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: AWS-Actions/Configure-AWS-Credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.BLOCKWARDEN_PLAN_ROLE_ARN }}

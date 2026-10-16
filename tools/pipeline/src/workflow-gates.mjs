@@ -11,6 +11,8 @@ export const ROLE_VARIABLE = /^BLOCKWARDEN_[A-Z_]+_ROLE_ARN$/
 const ROLE_EXPRESSION = /^\$\{\{\s*vars\.([A-Za-z0-9_]+)\s*\}\}$/
 // the gate's output, alone or first in a conjunction; an || could run the step with the gate shut
 const GATED = /^(\$\{\{\s*)?steps\.gate\.outputs\.enabled == 'true'(\s*&&[^|]*)?(\s*\}\})?$/
+// GitHub resolves an action's owner and name without regard to case
+const isAwsAction = (step) => typeof step?.uses === 'string' && step.uses.toLowerCase().startsWith(AWS_ACTION)
 
 // The gated jobs in one workflow, as { job, roleVariable, gate }, where gate is the first step's script, and the
 // problems found, each naming its job.
@@ -20,7 +22,7 @@ export function checkWorkflow(text) {
   const problems = []
   for (const [name, job] of Object.entries(workflow?.jobs ?? {})) {
     const steps = Array.isArray(job?.steps) ? job.steps : []
-    if (!steps.some((s) => typeof s?.uses === 'string' && s.uses.startsWith(AWS_ACTION))) continue
+    if (!steps.some(isAwsAction)) continue
     const problem = (message) => problems.push(`${name}: ${message}`)
 
     const roleVariable = ROLE_EXPRESSION.exec(String(job.env?.ROLE_ARN ?? ''))?.[1]
@@ -42,11 +44,7 @@ export function checkWorkflow(text) {
           `step ${index + 2} (${step?.name ?? step?.uses ?? 'run'}) must run only if steps.gate.outputs.enabled == 'true'`,
         )
       }
-      if (
-        typeof step?.uses === 'string' &&
-        step.uses.startsWith(AWS_ACTION) &&
-        step.with?.['role-to-assume'] !== '${{ env.ROLE_ARN }}'
-      ) {
+      if (isAwsAction(step) && step.with?.['role-to-assume'] !== '${{ env.ROLE_ARN }}') {
         problem('configure-aws-credentials must assume ${{ env.ROLE_ARN }}')
       }
     }
