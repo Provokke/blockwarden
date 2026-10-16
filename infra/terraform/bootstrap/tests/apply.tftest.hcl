@@ -496,3 +496,56 @@ run "tag_held_statements_are_pinned" {
     error_message = "keys, certificates and event source mappings are held to the stack by tag or function exactly as designed"
   }
 }
+
+run "edge_grants_name_the_stack_or_reach_availability_only" {
+  command = apply
+
+  assert {
+    condition = alltrue([
+      for p in concat(values(aws_iam_role_policy.apply), values(aws_iam_policy.apply_edge)) : !anytrue([
+        for s in jsondecode(p.policy).Statement : anytrue([for a in s.Action : strcontains(a, "ResponseHeadersPolic")])
+      ])
+    ])
+    error_message = "no apply role may create, change or delete a response headers policy, which neither a name nor a tag can hold to one stack"
+  }
+
+  assert {
+    condition = {
+      for env in ["staging", "demo"] : env => {
+        for s in concat(jsondecode(aws_iam_role_policy.apply[env].policy).Statement, jsondecode(aws_iam_policy.apply_edge[env].policy).Statement) : s.Sid => s
+        if contains(["EdgePolicies", "CreateEdgePolicies", "CloudFrontFunctions"], s.Sid)
+      }
+      } == {
+      for env in ["staging", "demo"] : env => {
+        EdgePolicies = {
+          Sid      = "EdgePolicies"
+          Effect   = "Allow"
+          Action   = ["cloudfront:DeleteOriginAccessControl", "cloudfront:UpdateOriginAccessControl"]
+          Resource = ["arn:aws:cloudfront::123456789012:origin-access-control/*"]
+        }
+        CreateEdgePolicies = {
+          Sid      = "CreateEdgePolicies"
+          Effect   = "Allow"
+          Action   = ["cloudfront:CreateOriginAccessControl"]
+          Resource = ["*"]
+        }
+        CloudFrontFunctions = {
+          Sid      = "CloudFrontFunctions"
+          Effect   = "Allow"
+          Action   = ["cloudfront:DeleteFunction", "cloudfront:PublishFunction", "cloudfront:UpdateFunction"]
+          Resource = ["arn:aws:cloudfront::123456789012:function/blockwarden-${env}-*"]
+        }
+      }
+    }
+    error_message = "origin access controls are the only unnamed edge grant, and the function grant names the stack, which holds its security headers"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in concat(values(aws_iam_policy.apply_read), [aws_iam_policy.read]) : toset(flatten([
+        for s in jsondecode(p.policy).Statement : [for a in s.Action : a if strcontains(a, "ResponseHeadersPolic")]
+      ])) == toset(["cloudfront:GetResponseHeadersPolicy", "cloudfront:ListResponseHeadersPolicies"])
+    ])
+    error_message = "the read policies may look up the managed security headers policy by name, and nothing more"
+  }
+}

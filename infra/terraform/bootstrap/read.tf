@@ -147,12 +147,13 @@ locals {
       Resource = ["arn:${local.partition}:acm:us-east-1:${local.account_id}:certificate/*"]
     },
     {
-      # These list or describe across the account and take no resource ARN: the managed cache and origin request
-      # policies the site looks up by name, the alias lookup for aws/ssm, the log group and alarm descriptions,
-      # and the parameter metadata, which never includes a value.
+      # These list or describe across the account and take no resource ARN: the managed
+      # policies (cache, origin request and response headers) the site looks up by name, the alias lookup for
+      # aws/ssm, the log group and alarm descriptions, and the parameter metadata, which never includes a value.
       Sid = "AccountWideReads"
       Action = [
-        "cloudfront:ListCachePolicies", "cloudfront:ListOriginRequestPolicies", "cloudwatch:DescribeAlarms",
+        "cloudfront:ListCachePolicies", "cloudfront:ListOriginRequestPolicies",
+        "cloudfront:ListResponseHeadersPolicies", "cloudwatch:DescribeAlarms",
         "kms:ListAliases", "logs:DescribeLogGroups", "ssm:DescribeParameters",
       ]
       Resource = ["*"]

@@ -311,6 +311,7 @@ The API reads the same `chains` map — and the same RPC URL parameters — as t
 `modules/api` also creates the dashboard's S3 bucket and one CloudFront distribution with two origins: `/v1/*` goes to the API, and every other path to the bucket. They share one host because the session cookie is `SameSite=Strict` and has no `Domain`, so a browser sends it only to the host that set it, and only from a page on the same site. Call the API at its own `execute-api` name from the dashboard and every request after sign-in is a 401.
 
 - The bucket is private. Only this distribution reads it, through Origin Access Control, and the bucket policy names the distribution's ARN.
+- The security headers come from two places, on the dashboard's paths and `/v1/*` alike. AWS's managed `Managed-SecurityHeadersPolicy`, which no role in the account can change, adds a baseline to every response, errors included: `Strict-Transport-Security: max-age=31536000`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: strict-origin-when-cross-origin` and `X-XSS-Protection: 1; mode=block`. A CloudFront function, `<name>-security-headers`, then replaces those on every successful response with the Content-Security-Policy and stricter values: HSTS with `includeSubDomains; preload`, `DENY`, `same-origin`, and no `X-XSS-Protection`. CloudFront does not run a viewer-response function on an error status from the origin, so a 4xx or 5xx response has the baseline and no CSP; an S3 error's XML and the API's JSON errors run no script, so the CSP has nothing to restrict there. It is a function rather than a response headers policy of the stack's own because a function's name is in its ARN, so each stack's deploy role can be limited to its own; such a policy has neither a name nor a tag to hold it to one stack.
 - `/v1/*` is never cached. It forwards every viewer header except `Host`, which is meant to carry the cookie and `Authorization` through to API Gateway. Nothing has been deployed, so whether `AllViewerExceptHostHeader` passes `Authorization` on a GET is unproven; the `execute-api` endpoint stays available to API-key callers as a fallback.
 - The dashboard is a static export built with `trailingSlash: true`, so the page for `/rules` is the object `rules/index.html`. A CloudFront function on the dashboard's paths makes that rewrite, and a route with no exported page is an error from S3, not a fallback to the home page.
 - The distribution's standard log and the bucket's access log go to a separate log bucket, where they expire after 30 days. Cookies are left out of the log.
@@ -328,9 +329,9 @@ aws s3 sync ../../../../apps/dashboard/out "s3://$(terraform output -raw site_bu
 aws cloudfront create-invalidation --distribution-id "$(terraform output -raw distribution_id)" --paths '/*'
 ```
 
-`site.auto.tfvars.json` is a build output that Terraform loads by itself, and it is git-ignored. The script refuses an export with an inline `style`, `<style>`, event handler or `javascript:` URL on any page (the not-found pages' styles are exempt, and it says so), and refuses one whose policy would pass CloudFront's limit on a Content-Security-Policy header value (`POLICY_LIMIT` in that script); `pnpm --filter @blockwarden/dashboard run csp` runs those checks alone, as CI does.
+`site.auto.tfvars.json` is a build output that Terraform loads by itself, and it is git-ignored. The script refuses an export with an inline `style`, `<style>`, event handler or `javascript:` URL on any page (the not-found pages' styles are exempt, and it says so), and refuses one whose policy would make the function that sets it larger than CloudFront's limit on a function's size (`FUNCTION_SIZE_LIMIT` in that script); `pnpm --filter @blockwarden/dashboard run csp` runs those checks alone, as CI does.
 
-Between the apply and the end of the invalidation, CloudFront can still serve the old HTML, and it is now under the new policy, so it will not hydrate. To close that gap, apply the union of the old and new hashes first, then apply the new set alone once the invalidation is done. The headroom fits that: the policy's other directives leave room for 29 hashes, and a build currently has 10, so a union of two builds needs up to 20.
+Between the apply and the end of the invalidation, CloudFront can still serve the old HTML, and it is now under the new policy, so it will not hydrate. To close that gap, apply the union of the old and new hashes first, then apply the new set alone once the invalidation is done. The headroom fits that: the function's other content leaves room for 154 hashes, and a build currently has 10, so a union of two builds needs up to 20.
 
 The upload and the apply are coupled. Every rebuild changes the hashes, so files uploaded without the matching `terraform apply` leave a site that renders but does not hydrate, and every button is dead. Rolling back to an older bucket version needs that build's hashes applied too. Get them by running `node scripts/csp-hashes.mjs --dir <export>` on the restored build, or on the objects synced back down from the bucket version.
 
@@ -362,7 +363,7 @@ The demo stack is scale-to-zero except for CloudWatch and one KMS key, so almost
 | KMS, 1 signer key | $1.00 | $1.00 |
 | DynamoDB on-demand | cents | under $1.00 |
 | API Gateway, the API's functions and its access log | cents | cents |
-| CloudFront, its rewrite function, the dashboard's bucket and the log bucket | cents | cents |
+| CloudFront, its two functions, the dashboard's bucket and the log bucket | cents | cents |
 | CloudWatch alarms (16 billed) | $1.60 | $1.60 |
 | CloudWatch custom metrics (0 to 17 billed) | $0.00 | $5.10 |
 | **Total** | **about $2.70** | **about $8.70** |

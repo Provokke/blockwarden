@@ -337,23 +337,20 @@ locals {
         }
       },
       {
-        # Origin access controls and response headers policies take no tags and their ids are chosen by CloudFront,
-        # so neither the name nor a tag can hold these to the stack. A stack can change the other's.
-        Sid    = "EdgePolicies"
-        Effect = "Allow"
-        Action = [
-          "cloudfront:DeleteOriginAccessControl", "cloudfront:DeleteResponseHeadersPolicy",
-          "cloudfront:UpdateOriginAccessControl", "cloudfront:UpdateResponseHeadersPolicy",
-        ]
-        Resource = [
-          "arn:${local.partition}:cloudfront::${local.account_id}:origin-access-control/*",
-          "arn:${local.partition}:cloudfront::${local.account_id}:response-headers-policy/*",
-        ]
+        # An origin access control takes no tags and its id is chosen by CloudFront, so neither the name nor a tag
+        # can hold this to the stack, and a stack can change or delete the other's. That reaches availability only:
+        # an origin access control signs CloudFront's requests to the bucket and carries no content, so changing it
+        # can stop the other stack's site loading but cannot read or alter what it serves. The security headers,
+        # which a response headers policy would carry with the same reach, are a named function instead.
+        Sid      = "EdgePolicies"
+        Effect   = "Allow"
+        Action   = ["cloudfront:DeleteOriginAccessControl", "cloudfront:UpdateOriginAccessControl"]
+        Resource = ["arn:${local.partition}:cloudfront::${local.account_id}:origin-access-control/*"]
       },
       {
         Sid      = "CreateEdgePolicies"
         Effect   = "Allow"
-        Action   = ["cloudfront:CreateOriginAccessControl", "cloudfront:CreateResponseHeadersPolicy"]
+        Action   = ["cloudfront:CreateOriginAccessControl"]
         Resource = ["*"]
       },
       {

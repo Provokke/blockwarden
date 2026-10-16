@@ -16,8 +16,8 @@ locals {
   # this file. 'unsafe-inline' would admit any script an injected tag carried.
   script_src = join(" ", concat(["'self'"], [for h in var.site_script_hashes : "'${h}'"]))
 
-  # The script measures the length of this string against CloudFront's limit on it, so its list of directives
-  # has to match this one; a test compares them.
+  # The script renders the security-headers function with this policy and measures it against CloudFront's limit
+  # on a function's size, so its list of directives has to match this one; a test compares them.
   content_security_policy = join("; ", [
     "default-src 'self'",
     "script-src ${local.script_src}",
@@ -61,6 +61,12 @@ data "aws_cloudfront_cache_policy" "caching_optimized" {
 
 data "aws_cloudfront_cache_policy" "caching_disabled" {
   name = "Managed-CachingDisabled"
+}
+
+# AWS's own, so no role in the account can change it. It keeps a baseline of security headers on every response,
+# errors included, where the security-headers function does not run; the function sets the full set on the rest.
+data "aws_cloudfront_response_headers_policy" "security_headers" {
+  name = "Managed-SecurityHeadersPolicy"
 }
 
 # CloudFront strips Cookie and Authorization before the origin unless a policy forwards them, and every
@@ -303,38 +309,14 @@ resource "aws_cloudfront_function" "site_rewrite" {
   code    = file("${path.module}/site-rewrite.js")
 }
 
-resource "aws_cloudfront_response_headers_policy" "site" {
-  name = "${var.name}-site"
-
-  security_headers_config {
-    content_security_policy {
-      content_security_policy = local.content_security_policy
-      override                = true
-    }
-
-    content_type_options {
-      override = true
-    }
-
-    frame_options {
-      frame_option = "DENY"
-      override     = true
-    }
-
-    referrer_policy {
-      referrer_policy = "same-origin"
-      override        = true
-    }
-
-    # includeSubDomains reaches only names under the dashboard's own host, and preload does nothing until the
-    # domain is submitted to the browsers' preload list
-    strict_transport_security {
-      access_control_max_age_sec = 31536000
-      include_subdomains         = true
-      preload                    = true
-      override                   = true
-    }
-  }
+# The CSP and the stricter values of the other headers are set by this function rather than a response headers
+# policy of our own: a policy's id is chosen by CloudFront and it takes no tags, so no IAM condition could stop one
+# stack's apply role rewriting the other's, while a function's ARN carries its name (infra/terraform/bootstrap).
+resource "aws_cloudfront_function" "security_headers" {
+  name    = "${var.name}-security-headers"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+  code    = templatefile("${path.module}/security-headers.js.tftpl", { csp = jsonencode(local.content_security_policy) })
 }
 
 resource "aws_cloudfront_distribution" "site" {
@@ -378,7 +360,7 @@ resource "aws_cloudfront_distribution" "site" {
     allowed_methods            = ["GET", "HEAD"]
     cached_methods             = ["GET", "HEAD"]
     cache_policy_id            = data.aws_cloudfront_cache_policy.caching_optimized.id
-    response_headers_policy_id = aws_cloudfront_response_headers_policy.site.id
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security_headers.id
     compress                   = true
 
     # Here and not on the distribution's custom error responses, which would apply to /v1/* as well and answer an
@@ -386,6 +368,11 @@ resource "aws_cloudfront_distribution" "site" {
     function_association {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.site_rewrite.arn
+    }
+
+    function_association {
+      event_type   = "viewer-response"
+      function_arn = aws_cloudfront_function.security_headers.arn
     }
   }
 
@@ -399,7 +386,13 @@ resource "aws_cloudfront_distribution" "site" {
     cached_methods             = ["GET", "HEAD"]
     cache_policy_id            = data.aws_cloudfront_cache_policy.caching_disabled.id
     origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_viewer_except_host.id
-    response_headers_policy_id = aws_cloudfront_response_headers_policy.site.id
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security_headers.id
+
+    # the API's answers get the same headers as the dashboard's pages, nosniff and DENY among them
+    function_association {
+      event_type   = "viewer-response"
+      function_arn = aws_cloudfront_function.security_headers.arn
+    }
   }
 
   # no cookies: the session cookie is a bearer credential and would otherwise be written to every log line
