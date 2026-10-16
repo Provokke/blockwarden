@@ -14,6 +14,7 @@ const SCRIPT = fileURLToPath(new URL('../src/workflow-gates.mjs', import.meta.ur
 // fails this test until it is listed here.
 const EXPECTED: Record<string, Record<string, string>> = {
   'ci.yml': {},
+  'deploy.yml': { staging: 'BLOCKWARDEN_STAGING_APPLY_ROLE_ARN', demo: 'BLOCKWARDEN_DEMO_APPLY_ROLE_ARN' },
   'plan.yml': { plan: 'BLOCKWARDEN_PLAN_ROLE_ARN' },
 }
 
@@ -139,6 +140,22 @@ describe("this repository's workflows", () => {
         expect(open.output, `${file} ${job.job}`).toBe('enabled=true\n')
       }
     }
+  })
+
+  it("deploy.yml's two jobs differ only in the stack they name", async () => {
+    const { parse } = await import('yaml')
+    const { jobs } = parse(await readFile(join(WORKFLOWS, 'deploy.yml'), 'utf8'))
+    const neutral = (job: unknown, name: string) =>
+      JSON.stringify(job).replaceAll(name.toUpperCase(), 'STACK').replaceAll(name, 'stack')
+    const { if: stagingIf, ...staging } = jobs.staging
+    const { if: demoIf, ...demo } = jobs.demo
+    expect(neutral(staging, 'staging')).toBe(neutral(demo, 'demo'))
+    expect(stagingIf).toBe(
+      "github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.environment == 'staging')",
+    )
+    expect(demoIf).toBe(
+      "github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.environment == 'demo'",
+    )
   })
 
   it('the command passes them and fails a broken one', () => {
