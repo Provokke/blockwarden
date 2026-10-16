@@ -63,10 +63,13 @@ blockwarden/
     modules/api/           HTTP API, authorizer, route and authorizer functions, session secret, alarms, and the dashboard's bucket
                            and the CloudFront distribution in front of both; used by modules/blockwarden
     modules/relayer/       relayer only, for downstream projects
+    bootstrap/             applied once by hand: the state bucket, the GitHub OIDC provider, the deploy roles
     envs/demo/
     envs/staging/
     examples/relayer-only/
     examples/monitor-actions-only/
+  tools/pipeline/      the deploy pipeline's own scripts: the plan comment, the sensitive-variable check and
+                       the workflow gate check
   docs/design/
   docs/webhooks/      the published webhook payload, version 1
 ```
@@ -314,8 +317,10 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
   - API Gateway route throttling, plus per-wallet quotas in DynamoDB: 5 rules and 20 relayed transactions per day.
   - The nonce route is unauthenticated and writes one item to the table per call, so a caller can drive DynamoDB writes at up to the throttle's rate (a burst of 10 and 5 a second by default, `api_throttle` in `modules/api`). A nonce stops being valid 5 minutes after it is issued, but DynamoDB TTL only sweeps the row later, by up to about 48 hours, so the rows linger until then.
   - Relaying is testnet-only, and the signer's daily spend cap is enforced in policy.
+- **Deploy roles.** GitHub Actions assumes a role through OIDC, with no stored AWS key. Each role's trust policy pins the audience and exact subjects: `pull_request` for the plan role, the `staging` or `demo` GitHub environment for each apply role. An apply role writes only its own state key and its own stack's names, and can create a role only with its stack's permissions boundary attached, which allows no more than the stack's functions use.
 - **Supply chain.**
   - pnpm lockfile committed, Dependabot enabled.
+  - Every action in `.github` is pinned to a full commit SHA, with its version in a comment.
   - gitleaks runs in CI.
   - Slither does not run on the contracts. CI's `contracts` job runs `forge fmt --check`, `forge build --sizes` and `forge test`.
 
@@ -351,9 +356,11 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 - KMS signing: moto 5.2.3 hashes a `DIGEST` message again before signing (0 of 20 signatures recovered against the digest, 20 of 20 against its SHA-256), so integration tests use the in-process secp256k1 signer behind the same interface. One test signs against a real KMS key and runs only when `BLOCKWARDEN_KMS_TEST_KEY_ID` is set.
 
 **Infrastructure**
-- `terraform fmt -check`, `terraform validate`, tflint and checkov on every pull request, over three roots: `envs/demo`, which uses every module, and the two examples, each of which deploys one slice on its own defaults.
+- `terraform fmt -check`, `terraform validate`, tflint and checkov on every pull request, over five roots: the bootstrap, `envs/staging` and `envs/demo`, which use every module, and the two examples, each of which deploys one slice on its own defaults.
+- `terraform test`, against mock providers only, so nothing reaches AWS: the bootstrap's trust policies carry exactly the expected `aud` and `sub` values with no wildcard, the plan role writes only `*.tflock` keys, each apply role touches only its own state and names, and every grant that creates a role requires the boundary; both stacks plan from an empty state; every module role carries the boundary; and the optional domain changes nothing when it is off.
 - The module's variable validations mirror the runtime schemas they stand for — the target ARN allowlist, the SSM parameter names and prefixes, a signer's policy — so a value the code would refuse at cold start fails at plan instead.
-- `terraform plan` output posted as a PR comment.
+- `tools/pipeline` checks that every secret-looking Terraform variable is sensitive, and that every workflow job that assumes an AWS role does nothing until its role variable is set, running the gate's own script both ways. actionlint 1.7.12 lints every workflow.
+- Every pull request gets a `terraform plan` of each stack, posted as a comment of addresses and actions only, once the pipeline is switched on.
 
 **End to end (nightly GitHub Actions)**, not built yet; it belongs to go-live, the last part of milestone 5.
 1. Deploy `envs/staging` through OIDC.
@@ -395,6 +402,18 @@ As of milestone 5a. All three apply once go-live runs the demo, since nothing is
 16. **A forward request is refused as a replay only once the first copy is mined.** The relayer estimates at submit and does not re-estimate a queued transaction. Under different idempotency keys, the same signed request submitted twice before the first is mined is broadcast twice, and the second reverts on chain. An idempotency key derived from the request's signature would collapse the duplicate.
 17. **Anyone can call `topUp`, so a demo rule that relays `topUp(demoAccount)` can be pre-empted.** A third party can top up that account first, or drain the pool through throwaway accounts. The relayed call is then refused at the estimate and dead-lettered, which pages the dead-letter alarm.
 
+As of milestone 5b. None of these has met AWS yet, since nothing is applied:
+
+18. **Plan output in public logs.** The repository's Actions logs are public. The workflows send the plan's text nowhere and comment only addresses and actions, and every secret-looking variable must be sensitive, but Terraform's and the provider's error messages are printed as they are, and one can quote a value.
+19. **Some apply-role actions cannot be scoped by name.** An HTTP API's id, a CloudFront distribution's and origin access control's, a KMS key's, an event source mapping's and an ACM certificate's are all chosen by AWS. Those grants are tied to the stack by its `environment` tag where the service supports it (HTTP APIs, CloudFront distributions, KMS keys, ACM certificates, and an event source mapping's tags), by the function a mapping names (a mapping's own create, change and delete), or name every such resource in the account (origin access controls, and creating a CloudFront function). CloudWatch Logs' delivery actions for an API's access log take no resource at all. Each exception is commented where it is granted.
+20. **The bootstrap's state is local** until the owner moves it into the bucket, and the apply-role policies are derived from the provider's calls, not proven. The first real apply is the proof of both the roles and the boundary.
+21. **One stack's apply role can still reach a few of the other's resources.** Staging and demo are held apart by name where an ARN carries one and by the `environment` tag elsewhere (HTTP APIs with their routes, integrations and stages, CloudFront distributions, KMS keys, ACM certificates, and event source mapping tags), and each role reads only its own stack's secrets. Three kinds of resource carry neither a name nor a tag, so either role can reach the other's: CloudFront origin access controls, CloudFront functions (a role can create one under any name, including the other stack's, though it can update, publish or delete only its own stack's), and the CloudWatch Logs delivery and resource-policy actions an HTTP API's access log needs, which take no resource at all. A deliberate operator of one stack can change the other's origin access control, which reaches availability only (it signs CloudFront's requests to the bucket and carries no content, so the other site could stop loading but nothing it serves can be read or altered), or its access log setup, but not its security headers, API, distribution, secrets, table, functions or roles. The security headers come from AWS's managed `Managed-SecurityHeadersPolicy`, which no role in the account can change, and a CloudFront function named for its stack; neither stack has a response headers policy of its own, which would have neither a name nor a tag to hold it. API Gateway's tags path takes no resource-tag condition, so neither role may write it, and an API's tags are set at creation only.
+22. **A resource that something else in the account created, with no `environment` tag, can be claimed.** To tag a KMS key, a CloudFront distribution or an event source mapping at creation, the apply roles may tag a resource of that kind that carries no `environment` tag yet, when the request sets their own. So either apply role could tag an untagged key, distribution or mapping that something else created, and from then on change it as its own. Run Blockwarden in an AWS account of its own, or at least one where nothing else creates untagged keys, distributions or event source mappings.
+23. **Error responses carry only the managed baseline.** CloudFront functions do not run on an origin response with a status of 400 or above, so an error has `Managed-SecurityHeadersPolicy`'s headers and nothing from the stack's function: HSTS without `includeSubDomains` or `preload`, `X-Frame-Options: SAMEORIGIN` instead of `DENY`, a looser `Referrer-Policy`, and no Content-Security-Policy, which an error body that runs no script does not need. The README's section on the dashboard's distribution has the full list. With a custom domain, the API should send the complete `Strict-Transport-Security` header itself.
+24. **A plan comment names resources as Terraform writes their addresses.** A `for_each` key is part of an address, so a key that held a value would appear in a public comment. No variable holds a secret today, and the sensitive-variable check keeps it so.
+25. **A pull request from a branch in this repository runs its own code in a job that holds the plan role.** The branch's Terraform, its build and its comment script all run there. The plan role can read the SecureString parameters Terraform itself writes (the session secret and the relayer's API keys), because the provider decrypts every SecureString it refreshes, and those values are already in the state the role reads. Only people with push access to the repository can open such a branch; a fork gets no role.
+26. **The deploy job shows no progress from `terraform apply`.** Its standard output goes nowhere, because it lists every output, with ARNs and the account id among them. A run's log shows an error if there is one, and the plan comment and the AWS console show what changed.
+
 ## Cost estimate (demo instance, idle)
 
 These are estimates from published AWS pricing and have to be measured after the first deploy.
@@ -428,6 +447,8 @@ Milestone 4 adds $0.30 a month that is always charged: three alarms, all of them
 
 Milestone 5a, the demo contracts, adds no AWS resource and changes none of these numbers.
 
+Milestone 5b adds the state bucket, cents a month, and puts a second stack, staging, in the same account. Staging is the demo without the signer's balance alarm and its `signerBalanceGwei` metric: 24 alarms and up to 25 custom metrics, 8 of them published in a month where nothing skips, dies or fails to compile. CloudWatch's free tier is per account, so with both stacks there are 50 alarms, 40 billed, $4.00; and 18 to 52 metrics, 8 to 42 billed, $2.40 to $12.60. With two KMS keys at $2.00 and DynamoDB under $2.00, both stacks cost about **$8.50 to $20.60** a month, more than double the demo's $2.70 to $8.70, because the second stack gets no free alarms or metrics. Staging alone in its own account would cost about $2.50 to $7.90. The optional custom domain is off, and an ACM certificate costs nothing.
+
 What would bring it back under $5, if that matters more than the observability: the monitor's five occasional metrics are fifteen of the seventeen billed ones. Without `deadlineSkips`, `busySkips` and `laggingNodeSkips` the worst month publishes 18 metrics, 8 of them billed, and the total is about $6.00. Dropping `deliveriesDead` and `deliveryBatchFailures` as well leaves 16 published, 6 billed, and about $5.40; the dead-letter alarm still pages on a dead delivery, and both functions log every one. Getting under $5 costs one of the two rule metrics as well: keeping `ruleWarnings` alone leaves 13 published, 3 billed, and about $4.50, and gives up the metric for a rule that has left the poll entirely. None of these cuts touches an alarm or any behaviour.
 
 This table is the demo instance only. The two example stacks under `infra/terraform/examples` sit entirely inside the free tier: `monitor-actions-only`, with `outbound_queue = true`, creates 8 alarms; `relayer-only` creates 7 alarms and publishes 1 custom metric (`pendingAgeSeconds` — its one signer has no `balance_alarm_gwei` set, so `signerBalanceGwei` is never emitted there). Both alarm counts, and the one metric, are under the free ten.
@@ -444,9 +465,9 @@ Each milestone gets its own implementation plan.
 
 Milestones 1, 2, 3 and 4 are done. Milestone 4 is built and tested and has never been deployed.
 
-Milestone 5 is split in three. **5a, the contracts, is done**: built and tested on Anvil, deployed nowhere. **5b**, the deploy pipeline, and **5c**, go-live on the public testnets with the nightly end-to-end run, are pending.
+Milestone 5 is split in three. **5a, the contracts, is done**: built and tested on Anvil, deployed nowhere. **5b, the deploy pipeline, is done**: the bootstrap root, the staging stack, the plan and deploy workflows and their checks, built and tested offline, applied nowhere; its AWS jobs do nothing until the role variables are set. **5c**, go-live on the public testnets with the nightly end-to-end run, is pending.
 
-**Deferred from milestone 1:** the GitHub OIDC deploy role, `terraform plan` posted as a PR comment, and per-rule match metrics.
+**Deferred from milestone 1:** per-rule match metrics.
 
 **Deferred from milestone 3:** Base Sepolia in the monitor, which belongs to go-live (5c), not to the contracts; and a contract-state rule type, which is Project C item 7 and is not scheduled.
 
@@ -455,14 +476,14 @@ Milestone 5 is split in three. **5a, the contracts, is done**: built and tested 
 ## Prerequisites
 
 The user provides:
-- an AWS account, with an IAM role for GitHub OIDC created during milestone 1,
+- an AWS account, and administrator credentials to apply `infra/terraform/bootstrap` in it once, which creates the GitHub OIDC provider and the deploy roles,
 - RPC URLs for the five chains (free tiers from Alchemy, Infura or similar),
 - a verified SES sender address. `ses_from_address` creates the identity, but only the owner of the address can confirm it, and the sender's IAM policy allows `ses:SendEmail` only with that address as the from address. A new AWS account's SES is in the sandbox, where every **recipient** has to be verified as well and sending is capped; leaving the sandbox is a support request the operator makes,
 - a Telegram bot token (milestone 3, optional),
 - testnet ETH for the signer on Base Sepolia and Arbitrum Sepolia.
 - the npm organisation `@blockwarden`. Its availability is unconfirmed because npm's site refused the automated check; if it is taken, the packages publish unscoped as `blockwarden-kms-signer` and `blockwarden-relayer-client`.
 
-Local tooling to install: AWS CLI v2, Terraform, Node.js 24, pnpm. Anvil, forge, DynamoDB Local, tflint, checkov and gitleaks run from Docker images; forge 1.8.1 on the `PATH` is used instead when it is installed. Docker is already installed.
+Local tooling to install: AWS CLI v2, Terraform, Node.js 24, pnpm. Anvil, forge, DynamoDB Local, tflint, checkov, actionlint and gitleaks run from Docker images; forge 1.8.1 on the `PATH` is used instead when it is installed. Docker is already installed.
 
 ## Conventions
 

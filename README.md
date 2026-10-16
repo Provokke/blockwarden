@@ -6,14 +6,14 @@ OpenZeppelin shut down Defender on 1 July 2026. Blockwarden covers the same grou
 
 ## Status
 
-Milestones 1, 2, 3 and 4 of 5 are done, and so is the first part of milestone 5, the demo contracts. Milestone 4 and the contracts are built and tested but have never been deployed.
+Milestones 1, 2, 3 and 4 of 5 are done, and so are the first two parts of milestone 5: the demo contracts and the deploy pipeline. Nothing has been deployed. Milestone 4, the contracts and the pipeline are built and tested offline, and the pipeline's AWS jobs do nothing until an AWS account is wired up to it (see Deploying).
 
 - **Monitor.** It polls Ethereum, Base and Arbitrum once a minute and matches events against rules stored in DynamoDB. Durable records come from finalized blocks, and fast provisional alerts come from the chain head.
 - **Relayer.** It signs and sends transactions on Base Sepolia and Arbitrum Sepolia with keys that never leave AWS KMS, behind an API-key HTTP API. Two packages come with it: [`@blockwarden/kms-signer`](packages/kms-signer) and [`@blockwarden/relayer-client`](packages/relayer-client).
 - **Actions.** A match, or a relayed transaction changing status, becomes a delivery: a webhook, an email, a Telegram message, a relayed transaction, or a message into an SQS queue or a Lambda function. Deliveries retry, dead-letter and redrive.
 - **API and dashboard.** A session-authenticated HTTP API for rules, match history, dead deliveries and their redrive, the relayer's records and health, and a static dashboard over it. One CloudFront distribution serves both.
 
-The deploy pipeline and the public demo come next. The design lives in [docs/design](docs/design/2026-09-15-blockwarden-design.md).
+The public demo comes next. The design lives in [docs/design](docs/design/2026-09-15-blockwarden-design.md).
 
 ## How the monitor handles reorgs
 
@@ -125,13 +125,73 @@ pnpm run test               # unit and property tests, and the contracts' forge 
 pnpm run test:integration   # Anvil, DynamoDB Local and moto in Docker; builds the contracts first
 pnpm run typecheck
 node scripts/pack-check.mjs # builds and packs the two published packages and imports them from the tarballs
-node scripts/tf-check.mjs   # terraform fmt, validate, tflint, checkov
+node scripts/tf-check.mjs   # terraform fmt, validate, test (mock providers only), tflint, checkov
+node tools/pipeline/src/sensitive-vars.mjs   # every secret-looking Terraform variable is sensitive
+node tools/pipeline/src/workflow-gates.mjs   # every AWS job in .github/workflows waits for its role variable
+docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12   # lint the workflows
 
 # the real-KMS test, with AWS credentials and an ECC_SECG_P256K1 SIGN_VERIFY key
 BLOCKWARDEN_KMS_TEST_KEY_ID=<key id> AWS_REGION=<region> pnpm --filter @blockwarden/kms-signer run test
 ```
 
 `tf-check.mjs` installs tflint plugins from GitHub. Set `GITHUB_TOKEN` (for example `GITHUB_TOKEN="$(gh auth token)"`) so the download is not rate limited.
+
+## Deploying
+
+Nothing below has been run: no AWS account is wired up yet. Two stacks share one account. `envs/staging` is applied by every merge to `main`; `envs/demo` is applied only by a manual run that the owner approves. Each keeps its state in an S3 bucket the bootstrap creates, under its own key, locked by Terraform's own S3 lock file.
+
+**Every workflow job that touches AWS does nothing until its role variable is set.** Without it the job writes a notice to its summary and succeeds, so `plan` and `deploy` are green on every pull request and merge until then. Setting the variables is what switches the pipeline on.
+
+### 1. Bootstrap, once
+
+`infra/terraform/bootstrap` creates the state bucket, the GitHub OIDC provider, the three roles the workflows assume, and a permissions boundary per stack. Apply it from your own machine, with administrator credentials for the account:
+
+```bash
+cd infra/terraform/bootstrap
+terraform init
+terraform apply                       # -var region=... if not ap-southeast-2; the stacks deploy to the same region
+terraform output -raw github_variables
+```
+
+- **A repository other than this one** sets `github_repository` (`owner/name`) and `github_sub_prefix`. Read the prefix from the `sub_claim_prefix` field of `gh api repos/<owner>/<name>/actions/oidc/customization/sub`; it has the form `repo:<owner>@<owner id>/<name>@<repository id>`. The defaults are this repository's.
+- **An account that already has a GitHub OIDC provider** cannot create a second one. Find its ARN with `aws iam list-open-id-connect-providers`, check its audiences include `sts.amazonaws.com` with `aws iam get-open-id-connect-provider --open-id-connect-provider-arn <arn>`, and pass `-var existing_oidc_provider_arn=<arn>`.
+- **The bootstrap's own state is local**, in `infra/terraform/bootstrap/terraform.tfstate`, which git ignores. It records the roles and the bucket, and nothing secret. Either keep that file somewhere safe, or, once the bucket exists, move it into the bucket: add `backend "s3" { use_lockfile = true }` to the `terraform` block in `bootstrap/main.tf`, then run `terraform init -migrate-state -backend-config="bucket=<state_bucket>" -backend-config="key=bootstrap/terraform.tfstate" -backend-config="region=<region>"`. Neither apply role can write that key; only an administrator can. Nothing automates either choice.
+- The bucket is versioned, encrypted with SSE-S3, closed to the public, reachable over TLS only, and keeps old versions of a state for 90 days. It has `prevent_destroy`, so `terraform destroy` stops at it.
+
+The roles, with this repository's subjects:
+
+| Role                        | Trusted for                                                         | Can                                                                                                                                                                                                                         |
+| --------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `blockwarden-plan`          | `repo:Provokke@70989453/blockwarden@1371434855:pull_request`        | read both stacks (in the tables, only the rule, signer and API key partitions; the relayer's nonce, pause and spend rows sit in signer partitions and stay readable) and both states; write and delete only `*.tflock` keys |
+| `blockwarden-staging-apply` | `repo:Provokke@70989453/blockwarden@1371434855:environment:staging` | read and write `staging/terraform.tfstate`; create, change and delete `blockwarden-staging-*` resources                                                                                                                     |
+| `blockwarden-demo-apply`    | `repo:Provokke@70989453/blockwarden@1371434855:environment:demo`    | the same for `demo/terraform.tfstate` and `blockwarden-demo-*`                                                                                                                                                              |
+
+Every trust policy pins the audience and an exact subject, in the immutable form this repository issues, which a renamed or re-created repository cannot claim. The plan role is trusted for pull requests only; the one assumption is that no `pull_request_target` or `workflow_run` workflow ever requests `id-token: write`. GitHub gives a pull request from a fork no OIDC token, so no fork can reach the plan role, and the plan workflow skips fork pull requests. An apply role can create an IAM role only with its stack's boundary attached, `blockwarden-<env>-boundary`, which allows no more than the stack's own functions use, so it cannot make a role more powerful than the stack. An apply role cannot read or overwrite the RPC URL and webhook secret parameters you create, but it controls its stack, and the functions it deploys can read them; what the boundary stops is reaching anything beyond the stack. The few places where one stack's role can still reach the other's are listed under Known limitations in the [design](docs/design/2026-09-15-blockwarden-design.md).
+
+### 2. Set the variables and the environments
+
+Run the commands `terraform output -raw github_variables` printed. They set `BLOCKWARDEN_AWS_REGION`, `BLOCKWARDEN_STATE_BUCKET`, `BLOCKWARDEN_PLAN_ROLE_ARN`, `BLOCKWARDEN_STAGING_APPLY_ROLE_ARN` and `BLOCKWARDEN_DEMO_APPLY_ROLE_ARN`. Set the stacks' own inputs as well, before the role variables, or the first job fails with an error naming the one that is missing:
+
+```bash
+gh variable set BLOCKWARDEN_ALLOWED_WALLETS --repo Provokke/blockwarden --body '["0x..."]'   # who may sign in
+gh variable set BLOCKWARDEN_ALARM_EMAIL --repo Provokke/blockwarden --body you@example.com     # optional
+```
+
+They are variables rather than committed files so that neither the owner's wallet nor address is in the repository. Neither is secret, and both appear in a run's environment.
+
+In the repository's Settings, Environments, create `staging` and `demo`. Give `demo` a required reviewer, the owner; that setting lives in GitHub, not in Terraform, and it is what makes a demo deploy wait for approval. Limit both to deployments from `main`; the workflow refuses any other branch as well. Protect `main` with the `ci` and `plan` checks required, since a merge deploys staging whether or not CI on `main` has finished.
+
+Before the first apply, create each stack's SecureString parameters, the RPC URLs and the webhook secret, under `/blockwarden-staging/` and `/blockwarden-demo/`, as Deploying the monitor and Deploying the actions pipeline describe.
+
+### 3. How a change reaches each stack
+
+- **A pull request** from a branch in this repository runs `plan` for both stacks. Each posts one comment, and edits it on every push: the counts to add, change and destroy, each resource address and its action, and a link to the run. The plan's text is never posted or logged, because the repository, its comments and its logs are public; Terraform's error messages still reach the log. The same workflow fails if a variable whose name looks secret (`*secret*`, `*key*`, `*token*`, `*password*`, `rpc_url*`) is not marked `sensitive = true`.
+- **A merge to `main`** deploys staging: build, CSP hashes, `terraform plan -out`, `terraform apply` of that saved plan, `aws s3 sync` of the dashboard export, and a CloudFront invalidation, in that order. The apply's own output goes nowhere (it lists every output, with ARNs and the account id among them), so a run's log shows an error if there is one but not the apply's progress; the plan comment and the AWS console show what changed.
+- **The demo** deploys only from Actions, `deploy`, Run workflow, with `demo` chosen, on `main`. The job waits for the owner's approval, then runs the same steps against `envs/demo`. Choosing `staging` there redeploys staging the same way.
+
+Two applies to one stack never overlap: each stack has its own concurrency group, and a queued run waits rather than cancelling the one in progress.
+
+To run a stack by hand instead, initialise its backend with the same three settings: `terraform init -backend-config="bucket=<state_bucket>" -backend-config="key=staging/terraform.tfstate" -backend-config="region=<region>"`. The steps below say `envs/demo`; `envs/staging` is the same with `blockwarden-staging` names.
 
 ## Deploying the monitor
 
@@ -157,7 +217,7 @@ allowed_wallets = ["0x..."]
    Leave out `--key-id`. The monitor can only decrypt parameters encrypted with the default `aws/ssm` key.
 
 2. Build the Lambda bundle: `pnpm --filter @blockwarden/monitor run build`
-3. Initialise Terraform: `cd infra/terraform/envs/demo && terraform init`
+3. Initialise Terraform: `cd infra/terraform/envs/demo && terraform init -backend-config="bucket=<state_bucket>" -backend-config="key=demo/terraform.tfstate" -backend-config="region=<region>"`, with the bucket and region the bootstrap printed
 4. Decide whether to backfill. Skip this step to start at the current finalized block.
 
    Rules are not retroactive. The durable scan gives a rule final records only for blocks after the chain's durable cursor at the time the rule is added. The fast scan also gives a `fast` rule provisional records for blocks after the fast cursor, less its 20-block overlap. The first run creates the cursors at `start_block` when one is set, or at the current finalized block and the head otherwise. If no rule exists yet, that run moves the durable cursor straight to the finalized block.
@@ -316,9 +376,18 @@ The API reads the same `chains` map — and the same RPC URL parameters — as t
 - The dashboard is a static export built with `trailingSlash: true`, so the page for `/rules` is the object `rules/index.html`. A CloudFront function on the dashboard's paths makes that rewrite, and a route with no exported page is an error from S3, not a fallback to the home page.
 - The distribution's standard log and the bucket's access log go to a separate log bucket, where they expire after 30 days. Cookies are left out of the log.
 
-A custom domain is `site_origin` for the API, and the API reads nothing else. The distribution still needs that name as an alias, with an ACM certificate in us-east-1, which milestone 5 adds with the public demo. Until then, leave `site_origin` unset: a custom name set today reaches no distribution, and the API refuses a sign-in from the cloudfront.net one.
+A custom domain is the `domain` field of `modules/blockwarden`'s `api` input, `{ host_name = "demo.example.com" }`. It is off by default, and neither root passes it, so turning it on means adding the field to the `api` block in that root's `main.tf`. When it is set, `modules/api` requests a certificate for the host in us-east-1, where CloudFront reads certificates, through the `aws.us_east_1` provider every root that uses `modules/blockwarden` passes; adds the host as the distribution's alias with that certificate, SNI and TLS 1.2 at least; and makes `site_origin` and the sign-in domain the host. `create_certificate = false` with `certificate_arn` uses an issued us-east-1 certificate instead. The `domain_records` output lists the records to create where the domain's DNS is hosted. Both have to be DNS-only, not proxied, at Cloudflare. The certificate waits for its validation record, which cannot exist before the certificate does, so the first apply with a domain is two. Run both by hand: the deploy workflow applies once, and would wait on a record nobody has created.
 
-Nothing uploads the dashboard yet. The distribution's Content-Security-Policy is `script-src 'self'` plus the sha256 of each inline script in the export, because Next writes its bootstrap and flight data into every page and the flight data changes with every build. So a deploy is these steps in this order, and **none of these commands has been run**, because nothing in this milestone is deployed:
+```bash
+terraform apply -target='module.blockwarden.module.api[0].aws_acm_certificate.site'
+terraform output -json domain_records   # create the validation record at the domain's DNS host
+terraform apply
+terraform output -json domain_records   # create the CNAME
+```
+
+Leave `site_origin` unset or equal to `https://<host_name>`: anything else is refused at plan, because the API would accept sign-ins for a name the distribution does not answer to.
+
+The deploy workflow uploads the dashboard (see Deploying). The distribution's Content-Security-Policy is `script-src 'self'` plus the sha256 of each inline script in the export, because Next writes its bootstrap and flight data into every page and the flight data changes with every build. So a deploy is these steps in this order, which are the deploy workflow's, and **none of these commands has been run**, because nothing is deployed:
 
 ```bash
 pnpm --filter @blockwarden/dashboard run build
@@ -373,6 +442,19 @@ Milestone 3 added $0.40 of that as a fixed cost — four alarms, all of them pas
 Milestone 4 adds $0.30 as a fixed cost — the API's three alarms, all of them past the free ten — and no custom metric: API Gateway and Lambda publish what those alarms watch for free. The worst month is now $3.70 above the design's $5 goal, and it needs every occasional metric to appear in the same month.
 
 Milestone 5a, the demo contracts, adds no AWS resource and changes none of these numbers.
+
+Milestone 5b adds the state bucket, whose storage and requests cost cents, and a second stack, staging, in the same account. Staging is the demo less the signer's balance alarm: **24 alarms** and **up to 25 custom metrics**, 8 of them in a quiet month. It adds no alarm or metric of its own. CloudWatch's free ten alarms and ten metrics are per account, not per stack, so the second stack pays for all of its own and the total more than doubles:
+
+| Both stacks in one account                                    | Quiet month     | Worst month      |
+| ------------------------------------------------------------- | --------------- | ---------------- |
+| KMS, 2 signer keys                                            | $2.00           | $2.00            |
+| DynamoDB on-demand, 2 tables                                  | cents           | under $2.00      |
+| API Gateway, CloudFront, S3 (the state bucket too) and Lambda | cents           | cents            |
+| CloudWatch alarms (50, 40 billed)                             | $4.00           | $4.00            |
+| CloudWatch custom metrics (18 to 52, 8 to 42 billed)         | $2.40           | $12.60           |
+| **Total**                                                     | **about $8.50** | **about $20.60** |
+
+Staging alone, in an account of its own, would be about $2.50 and $7.90: 14 billed alarms, and 0 to 15 billed metrics. The optional custom domain is off; a certificate from ACM is free.
 
 What would bring the worst month back under $5, if the operator wants that: the monitor's five occasional metrics are fifteen of the seventeen billed ones, one of each per chain. Dropping the three skip metrics — `deadlineSkips`, `busySkips` and `laggingNodeSkips` — leaves 18 published, 8 of them billed, and a total of about **$6.00**. Dropping the two actions metrics as well leaves 16 published, 6 billed, and about **$5.40**: the dead-letter alarm already pages on a dead delivery, and both functions log every one. Under $5 costs one of the two rule metrics too. Keeping `ruleWarnings` alone leaves 13 published, 3 billed, and about **$4.50**, at the price of no metric for a rule that has left the poll entirely — which is the louder of the two failures, since such a rule matches nothing at all. These are cuts to observability, not to behaviour, and none of them touches an alarm.
 
