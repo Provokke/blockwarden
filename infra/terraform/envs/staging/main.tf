@@ -1,0 +1,233 @@
+terraform {
+  required_version = ">= 1.16.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.64"
+    }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.8"
+    }
+  }
+
+  # A partial configuration, so no account id is committed. init supplies the rest:
+  #   terraform init -backend-config="bucket=<state_bucket output of infra/terraform/bootstrap>" \
+  #     -backend-config="key=staging/terraform.tfstate" -backend-config="region=<region output of the bootstrap>"
+  # The key is the only one the staging apply role can write.
+  backend "s3" {
+    use_lockfile = true
+  }
+}
+
+variable "region" {
+  description = "AWS region for the staging stack."
+  type        = string
+  default     = "ap-southeast-2"
+}
+
+variable "alarm_email" {
+  description = "Email address subscribed to alarms."
+  type        = string
+  default     = null
+}
+
+# no default: no one wallet is right for every deployment
+variable "allowed_wallets" {
+  description = "Wallets that may sign in to the dashboard."
+  type        = list(string)
+}
+
+variable "site_origin" {
+  description = "The origin the dashboard is served from, such as https://blockwarden.example.com. Leave null for the distribution's own cloudfront.net name."
+  type        = string
+  default     = null
+}
+
+# Written by `node scripts/csp-hashes.mjs --out` in apps/dashboard to site.auto.tfvars.json beside this file, which
+# Terraform loads by itself. Empty until then, and a dashboard uploaded against an empty list never hydrates.
+variable "site_script_hashes" {
+  description = "sha256 hashes of the dashboard export's inline scripts."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for h in var.site_script_hashes : can(regex("^sha256-[A-Za-z0-9+/]{43}=$", h))])
+    error_message = "every site_script_hashes entry must be sha256- then 43 base64 characters and a =."
+  }
+}
+
+provider "aws" {
+  region = var.region
+
+  default_tags {
+    tags = {
+      project     = "blockwarden"
+      environment = "staging"
+    }
+  }
+}
+
+# modules/api takes the optional custom domain's certificate from here, since CloudFront reads us-east-1 only.
+# Every root that uses modules/blockwarden passes it, domain or not.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      project     = "blockwarden"
+      environment = "staging"
+    }
+  }
+}
+
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}
+
+locals {
+  # created by infra/terraform/bootstrap; the apply role can create a role only with this attached
+  permissions_boundary_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/blockwarden-staging-boundary"
+}
+
+module "blockwarden" {
+  source = "../../modules/blockwarden"
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+  name                     = "blockwarden-staging"
+  permissions_boundary_arn = local.permissions_boundary_arn
+  monitor_source_dir       = "${path.root}/../../../../services/monitor/dist/monitor"
+  alarm_email              = var.alarm_email
+  log_retention_days       = 7
+
+  chains = {
+    ethereum = {
+      chain_id           = 1
+      rpc_urls_parameter = "/blockwarden-staging/rpc/ethereum"
+      lag_alarm_blocks   = 50
+    }
+    base = {
+      chain_id           = 8453
+      rpc_urls_parameter = "/blockwarden-staging/rpc/base"
+      lag_alarm_blocks   = 300
+    }
+    arbitrum = {
+      chain_id           = 42161
+      rpc_urls_parameter = "/blockwarden-staging/rpc/arbitrum"
+      lag_alarm_blocks   = 300
+    }
+  }
+
+  # webhooks only, as in the demo: both senders still deploy and fail closed on the channels that are not
+  # configured
+  actions = {
+    source_dir               = "${path.root}/../../../../services/actions/dist"
+    webhook_secret_parameter = "/blockwarden-staging/webhook-secret"
+  }
+
+  api = {
+    source_dir      = "${path.root}/../../../../services/api/dist"
+    allowed_wallets = var.allowed_wallets
+    site_origin     = var.site_origin
+
+    site_script_hashes = var.site_script_hashes
+  }
+}
+
+# The demo's relayer with a lower daily spend cap, a lower API rate and no balance alarm: every merge lands here
+# first, and a staging signer running low is not worth a page or the custom metric the alarm needs.
+module "relayer" {
+  source                   = "../../modules/relayer"
+  name                     = "blockwarden-staging"
+  permissions_boundary_arn = local.permissions_boundary_arn
+  relayer_source_dir       = "${path.root}/../../../../services/relayer/dist"
+  table                    = { name = module.blockwarden.table_name, arn = module.blockwarden.table_arn }
+  alarm_topic_arn          = module.blockwarden.alarm_topic_arn
+  log_retention_days       = 7
+
+  api_throttle = {
+    burst_limit = 5
+    rate_limit  = 2
+  }
+
+  chains = {
+    base-sepolia = {
+      chain_id           = 84532
+      rpc_urls_parameter = "/blockwarden-staging/rpc/base-sepolia"
+    }
+    arbitrum-sepolia = {
+      chain_id           = 421614
+      rpc_urls_parameter = "/blockwarden-staging/rpc/arbitrum-sepolia"
+    }
+  }
+
+  signers = {
+    staging = {
+      chain_ids                    = [84532, 421614]
+      allowed_to                   = [{ address = "0x000000000000000000000000000000000000dEaD", selectors = ["0x"] }]
+      max_gas_limit                = 500000
+      max_fee_per_gas_wei          = "5000000000"
+      max_priority_fee_per_gas_wei = "2000000000"
+      daily_spend_cap_wei          = "10000000000000000"
+    }
+  }
+}
+
+output "table_name" {
+  value = module.blockwarden.table_name
+}
+
+output "monitor_function_names" {
+  value = module.blockwarden.monitor_function_names
+}
+
+output "alarm_topic_arn" {
+  value = module.blockwarden.alarm_topic_arn
+}
+
+output "delivery_queue_url" {
+  value = module.blockwarden.delivery_queue_url
+}
+
+output "delivery_dead_letter_queue_url" {
+  value = module.blockwarden.delivery_dead_letter_queue_url
+}
+
+output "stream_failure_queue_url" {
+  value = module.blockwarden.stream_failure_queue_url
+}
+
+output "relayer_api_url" {
+  value = module.relayer.api_url
+}
+
+output "relayer_signer_key_arns" {
+  value = module.relayer.signer_key_arns
+}
+
+output "api_endpoint" {
+  value = module.blockwarden.api_endpoint
+}
+
+output "session_secret_parameter" {
+  value = module.blockwarden.session_secret_parameter
+}
+
+output "site_bucket" {
+  value = module.blockwarden.site_bucket
+}
+
+output "distribution_id" {
+  value = module.blockwarden.distribution_id
+}
+
+output "domain_records" {
+  value = module.blockwarden.domain_records
+}
+
+output "site_url" {
+  value = module.blockwarden.site_url
+}

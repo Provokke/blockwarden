@@ -1,0 +1,23 @@
+// A CloudFront viewer-response function (cloudfront-js-2.0) on every cache behaviour: the dashboard's and /v1/*.
+// Terraform renders this file with templatefile(), and apps/dashboard/scripts/csp-hashes.mjs renders it the same
+// way to measure it, so the policy below is the one for the export being uploaded.
+//
+// The managed response headers policy on the same behaviours has already added its baseline when this runs, and
+// it alone covers an error status from the origin, where CloudFront runs no viewer-response function. Here every
+// header is set outright, replacing the baseline's value and any the origin sent, so each is sent once.
+var CONTENT_SECURITY_POLICY = ${csp}
+
+function handler(event) {
+  var headers = event.response.headers
+  headers['content-security-policy'] = { value: CONTENT_SECURITY_POLICY }
+  // includeSubDomains reaches only names under the dashboard's own host, and preload does nothing until the
+  // domain is submitted to the browsers' preload list
+  headers['strict-transport-security'] = { value: 'max-age=31536000; includeSubDomains; preload' }
+  headers['x-content-type-options'] = { value: 'nosniff' }
+  headers['x-frame-options'] = { value: 'DENY' }
+  headers['referrer-policy'] = { value: 'same-origin' }
+  // the baseline's X-XSS-Protection asks old browsers for a filter that can itself leak a page's contents; the CSP
+  // is the protection here
+  delete headers['x-xss-protection']
+  return event.response
+}

@@ -123,13 +123,15 @@ data "aws_iam_policy_document" "lambda_assume" {
 }
 
 resource "aws_iam_role" "api" {
-  name               = "${var.name}-api"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  name                 = "${var.name}-api"
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 resource "aws_iam_role" "authorizer" {
-  name               = "${var.name}-authorizer"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  name                 = "${var.name}-authorizer"
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 # No Scan: every route is a GetItem or a Query, which is why the listings refuse a status no index serves. A route

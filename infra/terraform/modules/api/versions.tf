@@ -4,6 +4,8 @@ terraform {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 6.64"
+      # CloudFront takes a certificate from us-east-1 only, whatever region the stack is in
+      configuration_aliases = [aws.us_east_1]
     }
     archive = {
       source  = "hashicorp/archive"

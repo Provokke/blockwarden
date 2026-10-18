@@ -5,7 +5,15 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { BASE_DIRECTIVES, POLICY_LIMIT, assertFits, buildPolicy, collect } from '../scripts/csp-hashes.mjs'
+import {
+  BASE_DIRECTIVES,
+  FUNCTION_SIZE_LIMIT,
+  HEADERS_TEMPLATE,
+  assertFits,
+  buildPolicy,
+  collect,
+  renderHeadersFunction,
+} from '../scripts/csp-hashes.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../scripts/csp-hashes.mjs', import.meta.url))
 const TERRAFORM = fileURLToPath(new URL('../../../infra/terraform/', import.meta.url))
@@ -135,16 +143,21 @@ describe('the command', () => {
     expect(JSON.parse(await readFile(out, 'utf8'))).toEqual({ site_script_hashes: [HASH_OF_SIMPLE] })
   })
 
-  it('refuses a policy over the limit, and names its length and the limit', async () => {
-    const scripts = Array.from({ length: Math.ceil(POLICY_LIMIT / 40) }, (_, i) => `<script>var n${i}=${i}</script>`)
+  // each hash adds at least 50 bytes to the function, so this many always passes the limit
+  it('refuses an export whose security-headers function would pass the limit, naming its size and the limit', async () => {
+    const scripts = Array.from(
+      { length: Math.ceil(FUNCTION_SIZE_LIMIT / 50) },
+      (_, i) => `<script>var n${i}=${i}</script>`,
+    )
     await page('index.html', doc(scripts.join('')))
     const out = join(dir, 'never.json')
     const cli = run('--out', out)
     expect(cli.status).toBe(1)
-    const length = buildPolicy((await collect(dir)).hashes).length
-    expect(length).toBeGreaterThan(POLICY_LIMIT)
-    expect(cli.stderr).toContain(String(length))
-    expect(cli.stderr).toContain(String(POLICY_LIMIT))
+    const template = await readFile(HEADERS_TEMPLATE, 'utf8')
+    const bytes = Buffer.byteLength(renderHeadersFunction(template, buildPolicy((await collect(dir)).hashes)))
+    expect(bytes).toBeGreaterThan(FUNCTION_SIZE_LIMIT)
+    expect(cli.stderr).toContain(String(bytes))
+    expect(cli.stderr).toContain(String(FUNCTION_SIZE_LIMIT))
     await expect(readFile(out, 'utf8')).rejects.toThrow()
   })
 
@@ -183,21 +196,25 @@ describe('--check', () => {
     expect(cli.stdout).toBe('')
   })
 
-  it('exits 0 on a clean export, printing no hashes and reporting the policy length', async () => {
+  it("exits 0 on a clean export, printing no hashes and reporting the function's size", async () => {
     await page('index.html', doc('<script>window.__x = 1;</script>'))
     const cli = run('--check')
     expect(cli.status).toBe(0)
     expect(cli.stdout).toBe('')
-    expect(cli.stderr).toContain(`1 script hashes, policy ${buildPolicy([HASH_OF_SIMPLE]).length} of ${POLICY_LIMIT}`)
+    const template = await readFile(HEADERS_TEMPLATE, 'utf8')
+    const bytes = Buffer.byteLength(renderHeadersFunction(template, buildPolicy([HASH_OF_SIMPLE])))
+    expect(cli.stderr).toContain(`1 script hashes, security-headers function ${bytes} of ${FUNCTION_SIZE_LIMIT} bytes`)
   })
 
   // hashes are fixed width, so no export lands exactly on the limit; the boundary is checked on the function the
   // command uses
-  it('passes a policy of exactly the limit and fails one character more', () => {
-    expect(() => assertFits('x'.repeat(POLICY_LIMIT), 3)).not.toThrow()
-    expect(() => assertFits('x'.repeat(POLICY_LIMIT + 1), 3)).toThrow(
-      new RegExp(`${POLICY_LIMIT + 1}.*${POLICY_LIMIT}`),
+  it('passes code of exactly the limit and fails one byte more, counting bytes rather than characters', () => {
+    expect(assertFits('x'.repeat(FUNCTION_SIZE_LIMIT), 3)).toBe(FUNCTION_SIZE_LIMIT)
+    expect(() => assertFits('x'.repeat(FUNCTION_SIZE_LIMIT + 1), 3)).toThrow(
+      new RegExp(`${FUNCTION_SIZE_LIMIT + 1}.*${FUNCTION_SIZE_LIMIT}`),
     )
+    // two bytes each in UTF-8
+    expect(() => assertFits('é'.repeat(FUNCTION_SIZE_LIMIT / 2 + 1), 3)).toThrow(/over CloudFront's limit/)
   })
 
   it('refuses an export with no inline scripts', async () => {
@@ -233,6 +250,18 @@ describe('the Terraform policy', () => {
     expect(BASE_DIRECTIVES.filter((d: string) => d.startsWith('script-src '))).toEqual([`script-src 'self'`])
   })
 
+  it('renders the security-headers function from this policy, as Terraform does, and has no headers policy of its own', async () => {
+    const site = await read('modules/api/site.tf')
+    expect(site).toContain(
+      'code    = templatefile("${path.module}/security-headers.js.tftpl", { csp = jsonencode(local.content_security_policy) })',
+    )
+    expect(site).not.toContain('resource "aws_cloudfront_response_headers_policy"')
+    const template = await readFile(HEADERS_TEMPLATE, 'utf8')
+    expect(template.split('${csp}')).toHaveLength(2)
+    expect(renderHeadersFunction(template, "a'b<c")).toContain('var CONTENT_SECURITY_POLICY = "a\'b\\u003cc"')
+    expect(() => renderHeadersFunction('no placeholder', 'x')).toThrow('exactly once')
+  })
+
   it("builds script-src as 'self' then each hash in single quotes, in the order given", async () => {
     const site = await read('modules/api/site.tf')
     expect(site).toMatch(
@@ -259,10 +288,12 @@ describe('the Terraform policy', () => {
     const check = /validation \{\s*condition\s*=[^\n]*can\(regex\("\^sha256-\[A-Za-z0-9\+\/\]\{43\}=\$", h\)\)/
     const api = block(await read('modules/api/variables.tf'), /variable "site_script_hashes" \{/)
     const demo = block(await read('envs/demo/main.tf'), /variable "site_script_hashes" \{/)
+    const staging = block(await read('envs/staging/main.tf'), /variable "site_script_hashes" \{/)
     const blockwardenVariables = await read('modules/blockwarden/variables.tf')
     const apiObject = block(blockwardenVariables, /variable "api" \{/)
     expect(api).toMatch(check)
     expect(demo).toMatch(check)
+    expect(staging).toMatch(check)
     // the object's own validation sits in the api variable's block, and names the field it checks
     expect(apiObject).toMatch(check)
     expect(apiObject).toContain('var.api.site_script_hashes')
@@ -270,7 +301,25 @@ describe('the Terraform policy', () => {
 
     const passed = block(await read('modules/blockwarden/api.tf'), /module "api" \{/)
     expect(passed).toMatch(/site_script_hashes\s*=\s*var\.api\.site_script_hashes/)
-    const demoApi = block(await read('envs/demo/main.tf'), /\n\s*api = \{/)
-    expect(demoApi).toMatch(/site_script_hashes\s*=\s*var\.site_script_hashes/)
+    for (const env of ['envs/demo/main.tf', 'envs/staging/main.tf']) {
+      const envApi = block(await read(env), /\n\s*api = \{/)
+      expect(envApi, env).toMatch(/site_script_hashes\s*=\s*var\.site_script_hashes/)
+    }
+  })
+
+  // the apply roles hold CloudFront, API Gateway, KMS, ACM and event source mappings to their stack by the
+  // environment tag. A mock provider applies no default_tags, so no plan test can see it; the tag has to be a line
+  // of its own in the one aws provider that has no alias, since an aliased provider's tags reach only its resources.
+  it.each([
+    ['envs/demo/main.tf', 'demo'],
+    ['envs/staging/main.tf', 'staging'],
+  ])('%s tags every resource environment = "%s" through the default aws provider', async (file, env) => {
+    const text = await read(file)
+    const providers = [...text.matchAll(/^provider "aws" \{/gm)].map((m) =>
+      block(text.slice(m.index), /^provider "aws" \{/),
+    )
+    const defaults = providers.filter((p) => !/^\s*alias\s*=/m.test(p))
+    expect(defaults, file).toHaveLength(1)
+    expect(defaults[0], file).toMatch(new RegExp(`^\\s*environment\\s*=\\s*"${env}"\\s*$`, 'm'))
   })
 })

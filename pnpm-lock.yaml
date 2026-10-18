@@ -484,6 +484,12 @@ importers:
         specifier: 4.23.13
         version: 4.23.13
 
+  tools/pipeline:
+    dependencies:
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
+
 packages:
 
   '@adraffy/ens-normalize@1.11.1':

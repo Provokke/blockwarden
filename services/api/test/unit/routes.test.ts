@@ -397,20 +397,48 @@ describe('modules/api', () => {
 
   it('rewrites page paths on the site only, and never answers an API error with a page', async () => {
     const tf = await siteTf()
-    const functions = [...tf.matchAll(/resource "aws_cloudfront_function" "([^"]+)"/g)]
-    expect(functions).toHaveLength(1)
-    const [fn] = blocks(tf, /resource "aws_cloudfront_function"/)
+    const functions = [...tf.matchAll(/resource "aws_cloudfront_function" "([^"]+)"/g)].map((m) => m[1])
+    expect(functions).toEqual(['site_rewrite', 'security_headers'])
+    const [fn] = blocks(tf, /resource "aws_cloudfront_function" "site_rewrite"/)
     expect(fn).toMatch(/code\s*=\s*file\("\$\{path\.module\}\/site-rewrite\.js"\)\n/)
 
     const [site] = blocks(tf, /\n\s*default_cache_behavior\s*\{/)
     expect(site).toMatch(/target_origin_id\s*=\s*"site"\n/)
-    const [association] = blocks(site ?? '', /function_association\s*\{/)
-    expect(association).toMatch(/event_type\s*=\s*"viewer-request"\n/)
-    expect(association).toMatch(
-      new RegExp(`function_arn\\s*=\\s*aws_cloudfront_function\\.${functions[0]?.[1]}\\.arn\\n`),
+    const viewerRequest = blocks(site ?? '', /function_association\s*\{/).filter((a) =>
+      /event_type\s*=\s*"viewer-request"\n/.test(a),
     )
-    // the default behaviour's is the only association, and error responses are distribution-wide
-    expect([...tf.matchAll(/function_association\s*\{/g)]).toHaveLength(1)
+    expect(viewerRequest).toHaveLength(1)
+    expect(viewerRequest[0]).toMatch(/function_arn\s*=\s*aws_cloudfront_function\.site_rewrite\.arn\n/)
+    // the default behaviour's is the only viewer-request association, so /v1/* is never rewritten, and error
+    // responses are distribution-wide
+    expect([...tf.matchAll(/event_type\s*=\s*"viewer-request"/g)]).toHaveLength(1)
+    expect([...tf.matchAll(/aws_cloudfront_function\.site_rewrite\.arn/g)]).toHaveLength(1)
     expect(tf).not.toMatch(/custom_error_response/)
+  })
+
+  it('sets the security headers on the site and on /v1/*: the managed baseline, then the function named for the stack', async () => {
+    const tf = await siteTf()
+    const [fn] = blocks(tf, /resource "aws_cloudfront_function" "security_headers"/)
+    expect(fn).toMatch(/name\s*=\s*"\$\{var\.name\}-security-headers"\n/)
+    // AWS's own policy, which no role in the account can change; no policy of this stack's own exists
+    const managed = lookupNamed(tf, 'aws_cloudfront_response_headers_policy', 'Managed-SecurityHeadersPolicy')
+    expect(tf).not.toMatch(/resource "aws_cloudfront_response_headers_policy"/)
+    const behaviours = [
+      ...blocks(tf, /\n\s*default_cache_behavior\s*\{/),
+      ...blocks(tf, /\n\s*ordered_cache_behavior\s*\{/),
+    ]
+    expect(behaviours).toHaveLength(2)
+    for (const behaviour of behaviours) {
+      const viewerResponse = blocks(behaviour, /function_association\s*\{/).filter((a) =>
+        /event_type\s*=\s*"viewer-response"\n/.test(a),
+      )
+      expect(viewerResponse).toHaveLength(1)
+      expect(viewerResponse[0]).toMatch(/function_arn\s*=\s*aws_cloudfront_function\.security_headers\.arn\n/)
+      expect(behaviour).toMatch(
+        new RegExp(
+          `response_headers_policy_id\\s*=\\s*data\\.aws_cloudfront_response_headers_policy\\.${managed}\\.id\\n`,
+        ),
+      )
+    }
   })
 })

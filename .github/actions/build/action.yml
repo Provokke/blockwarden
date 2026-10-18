@@ -1,0 +1,32 @@
+name: Build for Terraform
+description: >-
+  Installs, builds every Lambda bundle and the dashboard export, and writes the export's CSP hashes beside one
+  environment's root, so a plan sees exactly what a deploy uploads.
+inputs:
+  environment:
+    description: The root under infra/terraform/envs to write site.auto.tfvars.json into.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 24
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+      shell: bash
+    - name: Build the Lambda bundles and the dashboard
+      shell: bash
+      run: |
+        pnpm --filter @blockwarden/monitor run build
+        pnpm --filter @blockwarden/relayer run build
+        pnpm --filter @blockwarden/actions run build
+        pnpm --filter @blockwarden/api run build
+        pnpm --filter @blockwarden/dashboard run build
+    - name: Write the CSP hashes of this export
+      shell: bash
+      working-directory: apps/dashboard
+      env:
+        TARGET: ${{ inputs.environment }}
+      run: node scripts/csp-hashes.mjs --out "../../infra/terraform/envs/$TARGET/site.auto.tfvars.json"

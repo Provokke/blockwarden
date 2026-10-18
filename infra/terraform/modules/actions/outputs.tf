@@ -42,3 +42,8 @@ output "function_names" {
   description = "The two Lambda function names."
   value       = { for key, f in aws_lambda_function.actions : key => f.function_name }
 }
+
+output "permissions_boundary_arn" {
+  description = "The permissions boundary on the scheduler role, so a caller can check the value reached the role and not only this module."
+  value       = aws_iam_role.scheduler.permissions_boundary
+}

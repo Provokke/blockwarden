@@ -39,3 +39,8 @@ output "alarm_topic_arn" {
   description = "SNS topic that receives the relayer's alarms."
   value       = local.alarm_topic_arn
 }
+
+output "permissions_boundary_arn" {
+  description = "The permissions boundary on the scheduler role, so a caller can check the value reached the role and not only this module."
+  value       = aws_iam_role.scheduler.permissions_boundary
+}

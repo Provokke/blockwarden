@@ -24,9 +24,10 @@ data "aws_iam_policy_document" "lambda_assume" {
 }
 
 resource "aws_iam_role" "actions" {
-  for_each           = local.functions
-  name               = "${var.name}-actions-${each.key}"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  for_each             = local.functions
+  name                 = "${var.name}-actions-${each.key}"
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 data "aws_iam_policy_document" "dispatcher" {
@@ -293,8 +294,9 @@ data "aws_iam_policy_document" "scheduler_assume" {
 }
 
 resource "aws_iam_role" "scheduler" {
-  name               = "${var.name}-actions-scheduler"
-  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+  name                 = "${var.name}-actions-scheduler"
+  assume_role_policy   = data.aws_iam_policy_document.scheduler_assume.json
+  permissions_boundary = var.permissions_boundary_arn
 }
 
 data "aws_iam_policy_document" "scheduler" {

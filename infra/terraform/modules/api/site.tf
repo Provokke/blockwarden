@@ -4,7 +4,11 @@
 # sign-in a 401.
 
 locals {
-  site_origin = var.site_origin != null ? var.site_origin : "https://${aws_cloudfront_distribution.site.domain_name}"
+  site_origin = (
+    var.site_origin != null ? var.site_origin :
+    var.domain != null ? "https://${var.domain.host_name}" :
+    "https://${aws_cloudfront_distribution.site.domain_name}"
+  )
   siwe_domain = var.siwe_domain != null ? var.siwe_domain : trimprefix(local.site_origin, "https://")
 
   # Next's app router inlines its bootstrap and flight data into every page, and the flight data changes with each
@@ -12,8 +16,8 @@ locals {
   # this file. 'unsafe-inline' would admit any script an injected tag carried.
   script_src = join(" ", concat(["'self'"], [for h in var.site_script_hashes : "'${h}'"]))
 
-  # The script measures the length of this string against CloudFront's limit on it, so its list of directives
-  # has to match this one; a test compares them.
+  # The script renders the security-headers function with this policy and measures it against CloudFront's limit
+  # on a function's size, so its list of directives has to match this one; a test compares them.
   content_security_policy = join("; ", [
     "default-src 'self'",
     "script-src ${local.script_src}",
@@ -27,12 +31,42 @@ locals {
   ])
 }
 
+# Only with var.domain. The validation resource waits until the validation records exist at the domain's DNS host,
+# so the first apply with a domain requests the certificate on its own (README, The dashboard's distribution).
+resource "aws_acm_certificate" "site" {
+  count             = try(var.domain.create_certificate, false) ? 1 : 0
+  provider          = aws.us_east_1
+  domain_name       = var.domain.host_name
+  validation_method = "DNS"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_acm_certificate_validation" "site" {
+  count                   = length(aws_acm_certificate.site)
+  provider                = aws.us_east_1
+  certificate_arn         = aws_acm_certificate.site[0].arn
+  validation_record_fqdns = [for o in aws_acm_certificate.site[0].domain_validation_options : o.resource_record_name]
+}
+
+locals {
+  certificate_arn = try(var.domain.create_certificate, false) ? one(aws_acm_certificate_validation.site[*].certificate_arn) : try(var.domain.certificate_arn, null)
+}
+
 data "aws_cloudfront_cache_policy" "caching_optimized" {
   name = "Managed-CachingOptimized"
 }
 
 data "aws_cloudfront_cache_policy" "caching_disabled" {
   name = "Managed-CachingDisabled"
+}
+
+# AWS's own, so no role in the account can change it. It keeps a baseline of security headers on every response,
+# errors included, where the security-headers function does not run; the function sets the full set on the rest.
+data "aws_cloudfront_response_headers_policy" "security_headers" {
+  name = "Managed-SecurityHeadersPolicy"
 }
 
 # CloudFront strips Cookie and Authorization before the origin unless a policy forwards them, and every
@@ -275,49 +309,28 @@ resource "aws_cloudfront_function" "site_rewrite" {
   code    = file("${path.module}/site-rewrite.js")
 }
 
-resource "aws_cloudfront_response_headers_policy" "site" {
-  name = "${var.name}-site"
-
-  security_headers_config {
-    content_security_policy {
-      content_security_policy = local.content_security_policy
-      override                = true
-    }
-
-    content_type_options {
-      override = true
-    }
-
-    frame_options {
-      frame_option = "DENY"
-      override     = true
-    }
-
-    referrer_policy {
-      referrer_policy = "same-origin"
-      override        = true
-    }
-
-    # includeSubDomains reaches only names under the dashboard's own host, and preload does nothing until the
-    # domain is submitted to the browsers' preload list
-    strict_transport_security {
-      access_control_max_age_sec = 31536000
-      include_subdomains         = true
-      preload                    = true
-      override                   = true
-    }
-  }
+# The CSP and the stricter values of the other headers are set by this function rather than a response headers
+# policy of our own: a policy's id is chosen by CloudFront and it takes no tags, so no IAM condition could stop one
+# stack's apply role rewriting the other's, while a function's ARN carries its name (infra/terraform/bootstrap).
+resource "aws_cloudfront_function" "security_headers" {
+  name    = "${var.name}-security-headers"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+  code    = templatefile("${path.module}/security-headers.js.tftpl", { csp = jsonencode(local.content_security_policy) })
 }
 
 resource "aws_cloudfront_distribution" "site" {
   #checkov:skip=CKV_AWS_68:no WAF, on cost grounds: see Non-goals in the design's Scope section
   #checkov:skip=CKV2_AWS_47:no WAF, on cost grounds: see Non-goals in the design's Scope section
-  #checkov:skip=CKV_AWS_174:the default *.cloudfront.net certificate fixes the minimum protocol; a custom domain and its certificate come with the public demo
-  #checkov:skip=CKV2_AWS_42:the default *.cloudfront.net certificate until the public demo's custom domain
+  #checkov:skip=CKV_AWS_174:without var.domain the default *.cloudfront.net certificate fixes the minimum protocol; with it the minimum is TLSv1.2_2021
+  #checkov:skip=CKV2_AWS_42:a stack without var.domain is served with the default *.cloudfront.net certificate
   #checkov:skip=CKV_AWS_310:each path has one origin, and a second copy of either would be a second deployment
   #checkov:skip=CKV_AWS_374:the dashboard is not restricted by country
-  enabled             = true
-  comment             = "${var.name} dashboard and API"
+  enabled = true
+  comment = "${var.name} dashboard and API"
+  # null without a domain, as is every certificate setting below except the default certificate, so the
+  # distribution of a stack without one is unchanged
+  aliases             = var.domain == null ? null : [var.domain.host_name]
   default_root_object = "index.html"
   http_version        = "http2and3"
   is_ipv6_enabled     = true
@@ -347,7 +360,7 @@ resource "aws_cloudfront_distribution" "site" {
     allowed_methods            = ["GET", "HEAD"]
     cached_methods             = ["GET", "HEAD"]
     cache_policy_id            = data.aws_cloudfront_cache_policy.caching_optimized.id
-    response_headers_policy_id = aws_cloudfront_response_headers_policy.site.id
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security_headers.id
     compress                   = true
 
     # Here and not on the distribution's custom error responses, which would apply to /v1/* as well and answer an
@@ -355,6 +368,11 @@ resource "aws_cloudfront_distribution" "site" {
     function_association {
       event_type   = "viewer-request"
       function_arn = aws_cloudfront_function.site_rewrite.arn
+    }
+
+    function_association {
+      event_type   = "viewer-response"
+      function_arn = aws_cloudfront_function.security_headers.arn
     }
   }
 
@@ -368,7 +386,13 @@ resource "aws_cloudfront_distribution" "site" {
     cached_methods             = ["GET", "HEAD"]
     cache_policy_id            = data.aws_cloudfront_cache_policy.caching_disabled.id
     origin_request_policy_id   = data.aws_cloudfront_origin_request_policy.all_viewer_except_host.id
-    response_headers_policy_id = aws_cloudfront_response_headers_policy.site.id
+    response_headers_policy_id = data.aws_cloudfront_response_headers_policy.security_headers.id
+
+    # the API's answers get the same headers as the dashboard's pages, nosniff and DENY among them
+    function_association {
+      event_type   = "viewer-response"
+      function_arn = aws_cloudfront_function.security_headers.arn
+    }
   }
 
   # no cookies: the session cookie is a bearer credential and would otherwise be written to every log line
@@ -385,7 +409,10 @@ resource "aws_cloudfront_distribution" "site" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = var.domain == null
+    acm_certificate_arn            = local.certificate_arn
+    ssl_support_method             = var.domain == null ? null : "sni-only"
+    minimum_protocol_version       = var.domain == null ? null : "TLSv1.2_2021"
   }
 
   depends_on = [aws_s3_bucket_ownership_controls.logs, aws_s3_bucket_policy.logs]

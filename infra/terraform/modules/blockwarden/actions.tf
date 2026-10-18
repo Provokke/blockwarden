@@ -25,4 +25,6 @@ module "actions" {
   schedule_expression = var.schedule_expression
   log_level           = var.actions.log_level
   log_retention_days  = var.log_retention_days
+
+  permissions_boundary_arn = var.permissions_boundary_arn
 }

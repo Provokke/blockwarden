@@ -1,5 +1,5 @@
-// Hashes the export's inline scripts for the CloudFront Content-Security-Policy, and refuses a page the policy
-// cannot admit. Usage: node scripts/csp-hashes.mjs [--dir out] [--out file | --check]
+// Hashes the export's inline scripts for the Content-Security-Policy the CloudFront security-headers function sets,
+// and refuses a page the policy cannot admit. Usage: node scripts/csp-hashes.mjs [--dir out] [--out file | --check]
 //
 // Next writes its bootstrap and flight data inline, and the flight data changes with every build, so the hashes
 // come from the build being uploaded and travel to Terraform as site.auto.tfvars.json.
@@ -8,9 +8,15 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// CloudFront's documented quota on a Content-Security-Policy header value (Quotas, "Maximum length of the
-// Content-Security-Policy header value"). It can be raised through Service Quotas.
-export const POLICY_LIMIT = 1783
+// CloudFront's quota on a function's size (Quotas, "Maximum function size", 10 KB, not adjustable). The policy is
+// written into the function's code, so the code's size is what bounds the hashes. AWS does not define its KB, so
+// this takes the smaller reading.
+export const FUNCTION_SIZE_LIMIT = 10000
+
+// modules/api/site.tf renders the same file with templatefile(), passing the policy through jsonencode()
+export const HEADERS_TEMPLATE = fileURLToPath(
+  new URL('../../../infra/terraform/modules/api/security-headers.js.tftpl', import.meta.url),
+)
 
 // modules/api/site.tf builds the same list, and a test fails when the two differ. script-src is where the
 // hashes go.
@@ -36,12 +42,27 @@ export function buildPolicy(hashes) {
   ).join('; ')
 }
 
-export function assertFits(policy, hashCount) {
-  if (policy.length > POLICY_LIMIT) {
+// templatefile() with jsonencode(): a JSON string, and the five characters that Terraform's jsonencode escapes and
+// JSON.stringify does not are escaped the same way
+export function renderHeadersFunction(template, policy) {
+  const parts = template.split('${csp}')
+  if (parts.length !== 2) throw new Error('the security-headers template must hold ${csp} exactly once')
+  const literal = JSON.stringify(policy).replace(
+    /[<>&\u2028\u2029]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  )
+  return parts.join(literal)
+}
+
+// returns the code's size in bytes, which is what CloudFront counts
+export function assertFits(code, hashCount) {
+  const bytes = Buffer.byteLength(code, 'utf8')
+  if (bytes > FUNCTION_SIZE_LIMIT) {
     throw new Error(
-      `the policy would be ${policy.length} characters, over CloudFront's limit of ${POLICY_LIMIT}, with ${hashCount} script hashes`,
+      `the security-headers function would be ${bytes} bytes, over CloudFront's limit of ${FUNCTION_SIZE_LIMIT}, with ${hashCount} script hashes`,
     )
   }
+  return bytes
 }
 
 async function htmlFiles(root) {
@@ -134,8 +155,8 @@ async function main() {
   if (result.problems.length > 0) throw new Error(result.problems.join('\n'))
   if (result.hashes.length === 0) throw new Error(`${dir} has no inline scripts; is it the dashboard's export?`)
 
-  const length = buildPolicy(result.hashes).length
-  assertFits(buildPolicy(result.hashes), result.hashes.length)
+  const code = renderHeadersFunction(await readFile(HEADERS_TEMPLATE, 'utf8'), buildPolicy(result.hashes))
+  const bytes = assertFits(code, result.hashes.length)
 
   const json = `${JSON.stringify({ site_script_hashes: result.hashes }, null, 2)}\n`
   if (check) {
@@ -146,7 +167,9 @@ async function main() {
     await mkdir(dirname(out), { recursive: true })
     await writeFile(out, json)
   }
-  console.error(`${result.hashes.length} script hashes, policy ${length} of ${POLICY_LIMIT} characters`)
+  console.error(
+    `${result.hashes.length} script hashes, security-headers function ${bytes} of ${FUNCTION_SIZE_LIMIT} bytes`,
+  )
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

@@ -10,6 +10,14 @@ terraform {
       version = "~> 2.8"
     }
   }
+
+  # A partial configuration, so no account id is committed. init supplies the rest:
+  #   terraform init -backend-config="bucket=<state_bucket output of infra/terraform/bootstrap>" \
+  #     -backend-config="key=demo/terraform.tfstate" -backend-config="region=<region output of the bootstrap>"
+  # The key is the only one the demo apply role can write.
+  backend "s3" {
+    use_lockfile = true
+  }
 }
 
 variable "region" {
@@ -60,11 +68,39 @@ provider "aws" {
   }
 }
 
+# modules/api takes the optional custom domain's certificate from here, since CloudFront reads us-east-1 only.
+# Every root that uses modules/blockwarden passes it, domain or not.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      project     = "blockwarden"
+      environment = "demo"
+    }
+  }
+}
+
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}
+
+locals {
+  # created by infra/terraform/bootstrap; the apply role can create a role only with this attached
+  permissions_boundary_arn = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/blockwarden-demo-boundary"
+}
+
 module "blockwarden" {
-  source             = "../../modules/blockwarden"
-  name               = "blockwarden-demo"
-  monitor_source_dir = "${path.root}/../../../../services/monitor/dist/monitor"
-  alarm_email        = var.alarm_email
+  source = "../../modules/blockwarden"
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+  name                     = "blockwarden-demo"
+  permissions_boundary_arn = local.permissions_boundary_arn
+  monitor_source_dir       = "${path.root}/../../../../services/monitor/dist/monitor"
+  alarm_email              = var.alarm_email
 
   chains = {
     ethereum = {
@@ -103,11 +139,12 @@ module "blockwarden" {
 # Testnet relaying only. Until the milestone 5 demo contracts exist, the allowlist holds only the burn address, and
 # "0x" there allows plain transfers with value to it, up to the 0.05 ETH daily spend cap.
 module "relayer" {
-  source             = "../../modules/relayer"
-  name               = "blockwarden-demo"
-  relayer_source_dir = "${path.root}/../../../../services/relayer/dist"
-  table              = { name = module.blockwarden.table_name, arn = module.blockwarden.table_arn }
-  alarm_topic_arn    = module.blockwarden.alarm_topic_arn
+  source                   = "../../modules/relayer"
+  name                     = "blockwarden-demo"
+  permissions_boundary_arn = local.permissions_boundary_arn
+  relayer_source_dir       = "${path.root}/../../../../services/relayer/dist"
+  table                    = { name = module.blockwarden.table_name, arn = module.blockwarden.table_arn }
+  alarm_topic_arn          = module.blockwarden.alarm_topic_arn
 
   chains = {
     base-sepolia = {
@@ -179,6 +216,10 @@ output "site_bucket" {
 
 output "distribution_id" {
   value = module.blockwarden.distribution_id
+}
+
+output "domain_records" {
+  value = module.blockwarden.domain_records
 }
 
 output "site_url" {

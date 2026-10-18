@@ -20,7 +20,10 @@ output "monitor_function_names" {
 
 output "alarm_topic_arn" {
   description = "SNS topic that receives every alarm."
-  value       = aws_sns_topic.alarms.arn
+  # Built from the topic's name, which is known at plan, rather than read from the topic, which is not until it
+  # exists: modules/relayer decides whether to create its own topic by whether this is null, and on a first plan
+  # an unknown ARN makes that count unknown and the plan fails.
+  value = "arn:${local.partition}:sns:${local.region}:${local.account_id}:${aws_sns_topic.alarms.name}"
 }
 
 output "delivery_queue_url" {
@@ -73,7 +76,21 @@ output "distribution_id" {
   value       = var.api == null ? null : module.api[0].distribution_id
 }
 
+output "domain_records" {
+  description = "DNS records for the API's custom domain, or null when none is set or the API is not deployed."
+  value       = var.api == null ? null : module.api[0].domain_records
+}
+
 output "site_url" {
   description = "Where the dashboard is served, or null when the API is not deployed."
   value       = var.api == null ? null : module.api[0].site_url
+}
+
+output "permissions_boundary_arns" {
+  description = "The permissions boundary on one role of each part, so a caller can check the value reached the roles and not only this module. A part that is switched off is null."
+  value = {
+    monitor = aws_iam_role.monitor.permissions_boundary
+    actions = var.actions == null ? null : module.actions[0].permissions_boundary_arn
+    api     = var.api == null ? null : module.api[0].permissions_boundary_arn
+  }
 }

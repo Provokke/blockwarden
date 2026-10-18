@@ -1,6 +1,10 @@
 module "api" {
   count  = var.api == null ? 0 : 1
   source = "../api"
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
 
   name           = var.name
   api_source_dir = var.api.source_dir
@@ -17,9 +21,12 @@ module "api" {
   site_origin        = var.api.site_origin
   siwe_domain        = var.api.siwe_domain
   site_script_hashes = var.api.site_script_hashes
+  domain             = var.api.domain
   # the dispatcher's own list, so a rule the API accepts is one it will build deliveries for
   rule_secret_prefixes = var.actions.rule_secret_prefixes
 
   alarm_topic_arn    = aws_sns_topic.alarms.arn
   log_retention_days = var.log_retention_days
+
+  permissions_boundary_arn = var.permissions_boundary_arn
 }

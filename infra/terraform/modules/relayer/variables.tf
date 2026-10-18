@@ -204,3 +204,14 @@ variable "log_retention_days" {
   type        = number
   default     = 14
 }
+
+variable "permissions_boundary_arn" {
+  description = "IAM policy attached as the permissions boundary of every role this module creates. Leave null for none. The bootstrap's apply roles can create a role only with their own stack's boundary attached."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.permissions_boundary_arn == null ? true : can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+$", var.permissions_boundary_arn))
+    error_message = "permissions_boundary_arn must be an IAM policy ARN."
+  }
+}
