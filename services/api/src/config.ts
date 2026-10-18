@@ -7,6 +7,9 @@ export type ApiConfig = {
   tableName: string
   sessionSecretParameter: string
   deliveryQueueUrl: string
+  // read by health alone: an alarm on either depth is what pages an operator, so health shows both beside delivery's
+  deliveryDlqUrl: string
+  streamFailureQueueUrl: string
   siteOrigin: string
   siweDomain: string
   allowedWallets: Address[]
@@ -38,6 +41,10 @@ const chainSchema = z
   // a misspelt key would otherwise be dropped without a word, leaving the chain with no RPC to verify against
   .strict()
 
+// The same cap the relayer puts on the same parameters. A contract wallet's login waits out one RPC timeout per URL
+// (runtime.ts's RPC_TIMEOUT_MS, no retries), so the route Lambda's timeout can be sized against a known worst case.
+export const MAX_RPC_URLS = 3
+
 // HS256 is keyed by the bytes of the parameter's value; a key shorter than the hash output is weaker than the MAC
 const MIN_SESSION_SECRET_BYTES = 32
 
@@ -56,6 +63,8 @@ export function loadConfig(env: Env): ApiConfig {
     tableName: tableName(env),
     sessionSecretParameter: checked(env, 'SESSION_SECRET_PARAMETER', prefix),
     deliveryQueueUrl: checked(env, 'DELIVERY_QUEUE_URL', httpsUrl),
+    deliveryDlqUrl: checked(env, 'DELIVERY_DLQ_URL', httpsUrl),
+    streamFailureQueueUrl: checked(env, 'STREAM_FAILURE_QUEUE_URL', httpsUrl),
     siteOrigin: new URL(siteOrigin).origin,
     siweDomain,
     allowedWallets: allowedWallets(env),
@@ -79,6 +88,9 @@ export function rpcUrlsFrom(parameter: string, value: string): string[] {
   if (urls.length === 0) throw new Error(`parameter ${parameter} holds no RPC URLs`)
   if (urls.some((url) => !z.url().safeParse(url).success)) {
     throw new Error(`parameter ${parameter} holds an invalid RPC URL`)
+  }
+  if (urls.length > MAX_RPC_URLS) {
+    throw new Error(`parameter ${parameter} holds ${urls.length} RPC URLs; the API takes at most ${MAX_RPC_URLS}`)
   }
   return urls
 }

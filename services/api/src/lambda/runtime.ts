@@ -137,7 +137,11 @@ export function apiDepsFrom(runtime: ApiRuntime): ApiDeps {
       sqs: runtime.sqs,
       table: config.tableName,
       chainIds: config.chainIds,
-      queues: { delivery: config.deliveryQueueUrl },
+      queues: {
+        delivery: config.deliveryQueueUrl,
+        deadLetter: config.deliveryDlqUrl,
+        streamFailure: config.streamFailureQueueUrl,
+      },
       now: nowMs,
       log,
     },
