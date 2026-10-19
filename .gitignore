@@ -7,3 +7,7 @@ coverage/
 *.tfstate
 *.tfstate.*
 .env
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
