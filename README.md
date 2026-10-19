@@ -110,7 +110,7 @@ BLOCKWARDEN_KMS_TEST_KEY_ID=<key id> AWS_REGION=<region> pnpm --filter @blockwar
 
 Requires Terraform, the AWS CLI v2, and AWS credentials for the target account. The rule script uses the same credentials, so set `AWS_REGION` and, if you use one, `AWS_PROFILE` before running it.
 
-`envs/demo` always wires in the API module too (see The API), so every plan or apply below, including the `-target` one in step 4, needs `services/api/dist` built and `allowed_wallets` plus `site_origin` set:
+`envs/demo` always wires in the API module too (see The API), so every plan or apply below, including the `-target` one in step 4, needs `services/api/dist` built and `allowed_wallets` set:
 
 ```bash
 pnpm --filter @blockwarden/api run build
@@ -119,7 +119,6 @@ pnpm --filter @blockwarden/api run build
 ```hcl
 # infra/terraform/envs/demo/terraform.tfvars
 allowed_wallets = ["0x..."]
-site_origin     = "https://dash.example.com"
 ```
 
 1. Put each chain's RPC URLs in SSM. Separate several URLs with commas and they are tried in order. The monitor itself takes any number, but this parameter is shared with the API, which takes at most 3 per chain and refuses to start with more — keep every chain's list at 3 or fewer once the API is deployed too.
@@ -265,16 +264,38 @@ A fee cap too low to replace a stuck transaction, or a signer paused for lack of
 The API reads the same `chains` map — and the same RPC URL parameters — as the monitor (see Deploying the monitor). It takes at most 3 URLs per chain and refuses to start with more, so every route fails at cold start, login included, if a chain's parameter holds more than that.
 
 1. Build the bundles: `pnpm --filter @blockwarden/api run build`
-2. The demo stack now needs two more inputs on every plan and apply, so put them in `infra/terraform/envs/demo/terraform.tfvars`:
+2. The demo stack now needs one more input on every plan and apply, so put it in `infra/terraform/envs/demo/terraform.tfvars`:
 
    ```hcl
-   allowed_wallets = ["0x..."]                  # who may sign in; at least one
-   site_origin     = "https://dash.example.com" # where the dashboard is served; a sign-in for any other host is refused
+   allowed_wallets = ["0x..."] # who may sign in; at least one
    ```
+
+   `site_origin` is where the dashboard is served, and a sign-in for any other host is refused. Leave it out and it is the distribution's own `https://<id>.cloudfront.net` name (see The dashboard's distribution).
 
    A mixed-case wallet must carry a valid EIP-55 checksum. Terraform cannot check one, so a bad checksum fails the API's cold start, and the `-api-errors` alarm fires, rather than failing the plan.
 
 3. Apply. The session signing secret is generated into the SecureString `/blockwarden-demo/api/session-secret`, so its value is in Terraform state, as module-created API keys are. To rotate it, overwrite the parameter with `aws ssm put-parameter --overwrite`; the next apply leaves the new value alone. Both functions read it once, at cold start, so a warm instance keeps the old value until Lambda replaces it, and until then a session can pass on one request and fail on the next. Once every instance has started again, a session signed with the old value is refused and its operator signs in again.
+
+## The dashboard's distribution
+
+`modules/api` also creates the dashboard's S3 bucket and one CloudFront distribution with two origins: `/v1/*` goes to the API, and every other path to the bucket. They share one host because the session cookie is `SameSite=Strict` and has no `Domain`, so a browser sends it only to the host that set it, and only from a page on the same site. Call the API at its own `execute-api` name from the dashboard and every request after sign-in is a 401.
+
+- The bucket is private. Only this distribution reads it, through Origin Access Control, and the bucket policy names the distribution's ARN.
+- `/v1/*` is never cached. It forwards every viewer header except `Host`, which carries the cookie and `Authorization` through to API Gateway.
+- The dashboard is a static export built with `trailingSlash: true`, so the page for `/rules` is the object `rules/index.html`. A CloudFront function on the dashboard's paths makes that rewrite, and a route with no exported page is an error from S3, not a fallback to the home page.
+- The distribution's standard log and the bucket's access log go to a separate log bucket, where they expire after 30 days. Cookies are left out of the log.
+
+A custom domain is `site_origin` for the API, and the API reads nothing else. The distribution still needs that name as an alias, with an ACM certificate in us-east-1, which milestone 5 adds with the public demo. Until then, leave `site_origin` unset: a custom name set today reaches no distribution, and the API refuses a sign-in from the cloudfront.net one.
+
+Nothing uploads the dashboard yet. Once it is built, this is the manual step. **It has never been run**, because nothing in this milestone is deployed:
+
+```bash
+cd infra/terraform/envs/demo
+aws s3 sync ../../../../apps/dashboard/out "s3://$(terraform output -raw site_bucket)" --delete
+aws cloudfront create-invalidation --distribution-id "$(terraform output -raw distribution_id)" --paths '/*'
+```
+
+`terraform output -raw site_url` is where the dashboard is then served. The bucket keeps each replaced file for 30 days as a previous version, which is how to roll back a bad sync.
 
 ## Running cost
 
@@ -285,6 +306,7 @@ The demo stack is scale-to-zero except for CloudWatch and one KMS key, so almost
 | KMS, 1 signer key | $1.00 | $1.00 |
 | DynamoDB on-demand | cents | under $1.00 |
 | API Gateway, the API's functions and its access log | cents | cents |
+| CloudFront, its rewrite function, the dashboard's bucket and the log bucket | cents | cents |
 | CloudWatch alarms (16 billed) | $1.60 | $1.60 |
 | CloudWatch custom metrics (0 to 17 billed) | $0.00 | $5.10 |
 | **Total** | **about $2.70** | **about $8.70** |

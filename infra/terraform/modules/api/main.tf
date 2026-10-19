@@ -58,8 +58,8 @@ locals {
       DELIVERY_QUEUE_URL       = var.queues.delivery.url
       DELIVERY_DLQ_URL         = var.queues.dead_letter.url
       STREAM_FAILURE_QUEUE_URL = var.queues.stream_failure.url
-      SITE_ORIGIN              = var.site_origin
-      SIWE_DOMAIN              = var.siwe_domain
+      SITE_ORIGIN              = local.site_origin
+      SIWE_DOMAIN              = local.siwe_domain
       ALLOWED_WALLETS          = join(",", var.allowed_wallets)
       CHAINS                   = local.chains_env
       RULE_SECRET_PREFIXES     = join(",", var.rule_secret_prefixes)

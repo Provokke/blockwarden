@@ -62,3 +62,18 @@ output "api_role_arn" {
   description = "IAM role of the API's route Lambda, or null when the API is not deployed."
   value       = var.api == null ? null : module.api[0].api_role_arn
 }
+
+output "site_bucket" {
+  description = "S3 bucket the dashboard's static export is synced to, or null when the API is not deployed."
+  value       = var.api == null ? null : module.api[0].site_bucket
+}
+
+output "distribution_id" {
+  description = "CloudFront distribution serving the dashboard and the API, or null when the API is not deployed."
+  value       = var.api == null ? null : module.api[0].distribution_id
+}
+
+output "site_url" {
+  description = "Where the dashboard is served, or null when the API is not deployed."
+  value       = var.api == null ? null : module.api[0].site_url
+}
