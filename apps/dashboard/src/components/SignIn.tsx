@@ -2,8 +2,9 @@
 
 import { useState } from 'react'
 import { createSiweMessage } from 'viem/siwe'
-import { useAccount, useSignMessage } from 'wagmi'
+import { useConnection, useSignMessage } from 'wagmi'
 import { ApiError, apiFetch } from '../lib/api'
+import { chains } from '../lib/chains'
 
 // The API refuses a message with no expiry, or one further out than its nonce lifetime, so this stays well
 // inside that and leaves room for the wallet prompt and for a browser clock that runs ahead.
@@ -20,16 +21,19 @@ function isRejection(err: unknown): boolean {
 function describe(err: unknown): string {
   if (isRejection(err)) return 'The signature request was cancelled in the wallet. Try again when you are ready.'
   if (err instanceof ApiError) return err.message
+  const short = (err as { shortMessage?: unknown } | null)?.shortMessage
+  if (typeof short === 'string' && short) return `Sign-in failed: ${short}`
   return 'Sign-in failed. Check the wallet and try again.'
 }
 
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
-  const { address, chainId, isConnected } = useAccount()
-  const { signMessageAsync } = useSignMessage()
+  const { address, chainId, isConnected } = useConnection()
+  const { mutateAsync: signMessage } = useSignMessage()
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string>()
 
-  if (!isConnected || !address || chainId === undefined) return null
+  // a wallet on another chain would spend a nonce on a message the API is bound to refuse (siwe_chain)
+  if (!isConnected || !address || chainId === undefined || !chains.some((chain) => chain.id === chainId)) return null
 
   async function signIn() {
     if (!address || chainId === undefined) return
@@ -49,10 +53,12 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         nonce,
         expirationTime: new Date(Date.now() + MESSAGE_LIFETIME_MS),
       })
-      const signature = await signMessageAsync({ message })
+      const signature = await signMessage({ message })
       await apiFetch('/v1/auth/siwe/verify', { method: 'POST', body: { message, signature } })
       onSignedIn()
     } catch (err) {
+      // wallet and API errors carry no secrets, and this is the only trace of an unexpected failure
+      console.error('sign-in failed', err)
       setProblem(describe(err))
     } finally {
       setBusy(false)

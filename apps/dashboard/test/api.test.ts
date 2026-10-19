@@ -60,11 +60,19 @@ describe('apiFetch', () => {
     await expect(apiFetch('/v1/rules/r1', { method: 'DELETE' })).resolves.toBeUndefined()
   })
 
+  it('turns a 200 whose body is not JSON into an ApiError', async () => {
+    vi.stubGlobal('fetch', async () => new Response('<html>index</html>', { status: 200 }))
+    await expect(apiFetch('/v1/rules')).rejects.toBeInstanceOf(ApiError)
+    await expect(apiFetch('/v1/rules')).rejects.toMatchObject({ status: 200, code: 'bad_response' })
+  })
+
   it('refuses a path that is not same-origin, so the cookie is never sent elsewhere', async () => {
     const fetchMock = vi.fn(async (_path: string, _init?: RequestInit) => respond(200, {}))
     vi.stubGlobal('fetch', fetchMock)
     await expect(apiFetch('https://evil.example/v1/rules')).rejects.toThrow()
     await expect(apiFetch('//evil.example/v1/rules')).rejects.toThrow()
+    await expect(apiFetch('/\\evil.example')).rejects.toThrow()
+    await expect(apiFetch('/rules')).rejects.toThrow()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })

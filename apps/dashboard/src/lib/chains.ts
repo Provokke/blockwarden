@@ -20,3 +20,8 @@ export function parseChainIds(raw: string | undefined = DEFAULT_CHAIN_IDS): read
   }
   return chains as unknown as readonly [Chain, ...Chain[]]
 }
+
+// The static export has no server, so the chain list is fixed at build time. It must be a subset of the API's
+// CHAINS: the API refuses a SIWE message that names a chain it does not monitor.
+// The literal process.env.NEXT_PUBLIC_* form is what Next inlines into the bundle.
+export const chains = parseChainIds(process.env.NEXT_PUBLIC_CHAIN_IDS)
