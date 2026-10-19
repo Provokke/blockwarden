@@ -25,3 +25,8 @@ export function parseChainIds(raw: string | undefined = DEFAULT_CHAIN_IDS): read
 // CHAINS: the API refuses a SIWE message that names a chain it does not monitor.
 // The literal process.env.NEXT_PUBLIC_* form is what Next inlines into the bundle.
 export const chains = parseChainIds(process.env.NEXT_PUBLIC_CHAIN_IDS)
+
+// a rule or a signer may name a chain this build was not configured with; the id is still the truth
+export function chainName(chainId: number): string {
+  return chains.find((chain) => chain.id === chainId)?.name ?? String(chainId)
+}
