@@ -17,3 +17,18 @@ output "api_role_arn" {
   description = "IAM role of the route Lambda."
   value       = aws_iam_role.api.arn
 }
+
+output "site_bucket" {
+  description = "S3 bucket the dashboard's static export is synced to."
+  value       = aws_s3_bucket.site.bucket
+}
+
+output "distribution_id" {
+  description = "CloudFront distribution serving the dashboard and /v1/*, for invalidating after a sync."
+  value       = aws_cloudfront_distribution.site.id
+}
+
+output "site_url" {
+  description = "Where the dashboard is served: site_origin, or the distribution's own name when that is null. A sign-in is accepted from this origin only."
+  value       = local.site_origin
+}
