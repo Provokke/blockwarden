@@ -31,6 +31,8 @@ jobs:
       - run: pnpm --filter @blockwarden/monitor run build
       - run: pnpm --filter @blockwarden/relayer run build
       - run: pnpm --filter @blockwarden/actions run build
+      - name: Build the dashboard
+        run: pnpm --filter @blockwarden/dashboard run build
       - run: node scripts/pack-check.mjs
 
   terraform:

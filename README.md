@@ -6,13 +6,14 @@ OpenZeppelin shut down Defender on 1 July 2026. Blockwarden covers the same grou
 
 ## Status
 
-Milestones 1, 2 and 3 of 5 are done.
+Milestones 1, 2, 3 and 4 of 5 are done. Milestone 4 is built and tested but has never been deployed.
 
 - **Monitor.** It polls Ethereum, Base and Arbitrum once a minute and matches events against rules stored in DynamoDB. Durable records come from finalized blocks, and fast provisional alerts come from the chain head.
 - **Relayer.** It signs and sends transactions on Base Sepolia and Arbitrum Sepolia with keys that never leave AWS KMS, behind an API-key HTTP API. Two packages come with it: [`@blockwarden/kms-signer`](packages/kms-signer) and [`@blockwarden/relayer-client`](packages/relayer-client).
 - **Actions.** A match, or a relayed transaction changing status, becomes a delivery: a webhook, an email, a Telegram message, a relayed transaction, or a message into an SQS queue or a Lambda function. Deliveries retry, dead-letter and redrive.
+- **API and dashboard.** A session-authenticated HTTP API for rules, match history, dead deliveries and their redrive, the relayer's records and health, and a static dashboard over it. One CloudFront distribution serves both.
 
-The dashboard and the contracts come next. The design lives in [docs/design](docs/design/2026-09-15-blockwarden-design.md).
+The contracts and the public demo come next. The design lives in [docs/design](docs/design/2026-09-15-blockwarden-design.md).
 
 ## How the monitor handles reorgs
 
@@ -248,18 +249,21 @@ A fee cap too low to replace a stuck transaction, or a signer paused for lack of
 
 `infra/terraform/modules/api` deploys the HTTP API the dashboard uses, through the `api` input of `infra/terraform/modules/blockwarden`. It needs the actions pipeline, since it lists and redrives its deliveries. Every route is under `/v1`, and a Lambda authorizer stands in front of all of them except the three that hand out and clear a session.
 
-| Method | Path | Caller |
-|---|---|---|
-| POST | `/auth/siwe/nonce`, `/auth/siwe/verify`, `/auth/logout` | anyone |
-| GET, POST | `/rules` | session |
-| GET, PATCH, DELETE | `/rules/{ruleId}` | session |
-| GET | `/matches?ruleId=&cursor=` | session |
-| GET | `/deliveries?status=&cursor=` | session |
-| POST | `/deliveries/{deliveryId}/redrive` | session |
-| GET | `/relayer/signers`, `/relayer/txs/{txId}`, `/relayer/txs?status=&cursor=` | session or API key |
-| GET | `/health` | session |
+| Method | Path | Caller | Status |
+|---|---|---|---|
+| POST | `/auth/siwe/nonce`, `/auth/siwe/verify`, `/auth/logout` | anyone | shipped in milestone 4 |
+| GET, POST | `/rules` | session | shipped in milestone 4 |
+| GET, PATCH, DELETE | `/rules/{ruleId}` | session | shipped in milestone 4 |
+| GET | `/matches?ruleId=&cursor=` | session | shipped in milestone 4 |
+| GET | `/deliveries?status=dead&cursor=` | session | shipped in milestone 4 |
+| POST | `/deliveries/{deliveryId}/redrive` | session | shipped in milestone 4 |
+| GET | `/relayer/signers`, `/relayer/txs/{txId}`, `/relayer/txs?status=pending&cursor=` | session or API key | shipped (milestone 2 for keys, 4 for sessions) |
+| POST | `/relayer/txs` | API key, on the relayer's own API | not on this API, by decision |
+| GET | `/health` | session | shipped in milestone 4 |
 
-`POST /v1/relayer/txs` is not on this API. It stays on the relayer's own, with API keys only, so a session reads the relayer's records but cannot submit a transaction. `/health` reports, per chain, how many seconds ago the monitor last wrote its cursor — staleness, not block lag, since block lag would cost an RPC call per request — and the visible and in-flight depth of the delivery, dead-letter and stream-failure queues.
+"Shipped" means the code and its tests exist. Nothing here is deployed.
+
+A session reads the relayer but cannot submit. `POST /v1/relayer/txs` is not on this API. Submitting runs the signer policy, a gas estimate, a spend reservation and an idempotency claim in one DynamoDB transaction, so a second implementation here would be two things that must agree about money; an operator at a dashboard does not need to originate transactions, and not offering the route is one fewer way a stolen session costs funds. The route stays on the relayer's own API, with API keys only. `/health` reports, per chain, how many seconds ago the monitor last wrote its cursor — staleness, not block lag, since block lag would cost an RPC call per request — and the visible and in-flight depth of the delivery, dead-letter and stream-failure queues.
 
 The API reads the same `chains` map — and the same RPC URL parameters — as the monitor (see Deploying the monitor). It takes at most 3 URLs per chain and refuses to start with more, so every route fails at cold start, login included, if a chain's parameter holds more than that.
 
@@ -287,7 +291,7 @@ The API reads the same `chains` map — and the same RPC URL parameters — as t
 
 A custom domain is `site_origin` for the API, and the API reads nothing else. The distribution still needs that name as an alias, with an ACM certificate in us-east-1, which milestone 5 adds with the public demo. Until then, leave `site_origin` unset: a custom name set today reaches no distribution, and the API refuses a sign-in from the cloudfront.net one.
 
-Nothing uploads the dashboard yet. Once it is built, this is the manual step. **It has never been run**, because nothing in this milestone is deployed:
+Nothing uploads the dashboard yet. Once it is built (`pnpm --filter @blockwarden/dashboard run build`, which CI also runs), these are the two manual commands. **Neither has been run**, because nothing in this milestone is deployed:
 
 ```bash
 cd infra/terraform/envs/demo
@@ -296,6 +300,23 @@ aws cloudfront create-invalidation --distribution-id "$(terraform output -raw di
 ```
 
 `terraform output -raw site_url` is where the dashboard is then served. The bucket keeps each replaced file for 30 days as a previous version, which is how to roll back a bad sync.
+
+## Running the dashboard locally
+
+The dashboard is a Next.js static export in `apps/dashboard`: rules, matches, dead deliveries with a redrive button, the relayer's signers and pending transactions, and health. It reads only `/v1/...` on its own origin and never talks to a chain itself; the wallet does. `NEXT_PUBLIC_CHAIN_IDS` (default `1,8453,42161`) is fixed at build time and must be a subset of the API's chains.
+
+```bash
+pnpm --filter @blockwarden/dashboard run dev          # next dev on :3000
+pnpm --filter @blockwarden/dashboard run dev:proxy    # the proxy, on :3100
+```
+
+Open `http://localhost:3100`, not `:3000`. `apps/dashboard/scripts/dev-proxy.mjs` stands in for CloudFront: it forwards `/v1/*` to an API on `:3200` and everything else to `next dev`. It exists for two reasons. The session cookie is `SameSite=Strict` with no `Domain`, so a page on `:3000` calling an API on `:3200` looks like it works until sign-in, and then every request is a 401. And the cookie is `Secure`, which browsers accept over `http://localhost` but not over a LAN address, so the proxy listens on localhost only. `PROXY_PORT`, `API_PORT` and `NEXT_PORT` override the three ports.
+
+This repository has no local API server: the API is a Lambda function. The proxy needs something answering `/v1` on `:3200`, which is not provided here.
+
+**The real-wallet browser check has NOT been done. It is the owner's to run.** It means signing in through the proxy with a real browser wallet and seeing the session cookie set on `localhost:3100` and sent on the next request. What is tested is the proxy's routing and cookie forwarding against stub servers, the sign-in flow against a stubbed wallet, and every page against stubbed API responses, all in jsdom. Nothing has driven a real browser, a real wallet or a real API.
+
+The static export's pages are `/`, `/rules/`, `/rules/new/`, `/rules/edit/?ruleId=`, `/matches/?ruleId=`, `/deliveries/`, `/relayer/` and `/health/`. A rule's id is a query string because a static export cannot pre-render pages for ids it has not seen.
 
 ## Running cost
 
