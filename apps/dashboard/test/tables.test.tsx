@@ -260,7 +260,7 @@ const DEAD = [1, 2, 3].map((n) => ({
   ref: `ref-${n}`,
   subject: `MATCH#${n}`,
   channel: 'webhook',
-  target: `https://hooks.example.com/${'*'.repeat(3)}`,
+  target: `https://hooks.example.com/hook-${n}`,
   status: 'dead',
   attempts: 8,
   createdAt: '2026-09-04T00:00:00.000Z',
@@ -270,27 +270,36 @@ const DEAD = [1, 2, 3].map((n) => ({
 }))
 
 describe('Deliveries', () => {
-  let dead: typeof DEAD
+  let store: typeof DEAD
   beforeEach(() => {
-    dead = [...DEAD]
+    store = DEAD.map((d) => ({ ...d }))
+    // the API's own rules: only dead rows are listed, the ref has to be the row's, and a row that is not dead is a 409
     handler = (call) => {
       if (call.method === 'GET' && call.path === '/v1/deliveries') {
         if (call.query.get('status') !== 'dead')
           return apiError(400, 'filter_required', 'status=dead or a subject is required')
-        return paged(dead, call.query, 'deliveries')
+        return paged(
+          store.filter((d) => d.status === 'dead'),
+          call.query,
+          'deliveries',
+        )
       }
       const redrive = /^\/v1\/deliveries\/([^/]+)\/redrive$/.exec(call.path)
       if (redrive && call.method === 'POST') {
-        const index = dead.findIndex((d) => d.deliveryId === redrive[1])
-        const ref = (call.body as { ref?: string }).ref
-        if (index < 0) return apiError(409, 'not_dead', 'that delivery is pending, so there is nothing to redrive')
-        if (dead[index]!.ref !== ref) return apiError(400, 'ref_mismatch', 'that ref is for another delivery')
-        dead.splice(index, 1)
-        return json(200, { deliveryId: redrive[1], status: 'pending' })
+        const row = store.find((d) => d.deliveryId === redrive[1])
+        if (!row) return apiError(404, 'delivery_not_found', 'no delivery is there')
+        if (row.ref !== (call.body as { ref?: string }).ref)
+          return apiError(400, 'ref_mismatch', 'that ref is for another delivery')
+        if (row.status !== 'dead')
+          return apiError(409, 'not_dead', `that delivery is ${row.status}, so there is nothing to redrive`)
+        row.status = 'pending'
+        return json(200, { deliveryId: row.deliveryId, status: 'pending' })
       }
       return undefined
     }
   })
+
+  const targets = () => rowsOf(screen.getByRole('table')).map((r) => r[1]!.textContent)
 
   it('lists only dead deliveries, says so, and shows what an operator needs to judge one', async () => {
     renderWithClient(<DeliveriesPage />)
@@ -299,24 +308,62 @@ describe('Deliveries', () => {
     expect(screen.getByText(/only dead deliveries are listed/i)).toBeTruthy()
     const first = rowsOf(table)[0]!.map((c) => c.textContent)
     expect(first).toEqual(
-      expect.arrayContaining(['webhook', 'https://hooks.example.com/***', '8', 'receiver answered 500', '500']),
+      expect.arrayContaining(['webhook', 'https://hooks.example.com/hook-1', '8', 'receiver answered 500', '500']),
     )
     expect(within(table).getAllByRole('button', { name: 'Redrive' })).toHaveLength(2)
   })
 
-  it("redrives the row it is on with that row's ref, then reloads the list", async () => {
+  it('redrives the row it is on with that row ref, reloads, and keeps the success notice after the row is gone', async () => {
+    renderWithClient(<DeliveriesPage />)
+    const table = await screen.findByRole('table')
+    expect(targets()).toEqual(['https://hooks.example.com/hook-1', 'https://hooks.example.com/hook-2'])
+    calls.length = 0
+    await userEvent.click(within(rowsOf(table)[1]!.at(-1)!).getByRole('button', { name: 'Redrive' }))
+
+    // the reload finished: the redriven row is gone and the next dead row took its place
+    await waitFor(() =>
+      expect(targets()).toEqual(['https://hooks.example.com/hook-1', 'https://hooks.example.com/hook-3']),
+    )
+    const post = calls.find((c) => c.method === 'POST')!
+    expect(post.path).toBe('/v1/deliveries/d-2/redrive')
+    expect(post.body).toEqual({ ref: 'ref-2' })
+    expect(calls.filter((c) => c.method === 'GET').length).toBeGreaterThan(0)
+    expect(store.map((d) => d.status)).toEqual(['dead', 'pending', 'dead'])
+    // and the button that carried the outcome is gone with it, so the page still says what happened
+    const notices = within(screen.getByRole('region', { name: 'Redrive results' }))
+    expect(notices.getByRole('status').textContent).toBe('Delivery d-2 was queued again.')
+  })
+
+  it('keeps the 409 message after the reload drops a delivery that was no longer dead', async () => {
+    renderWithClient(<DeliveriesPage />)
+    const table = await screen.findByRole('table')
+    // it was sent by someone else after this page loaded
+    store[1]!.status = 'sent'
+    await userEvent.click(within(rowsOf(table)[1]!.at(-1)!).getByRole('button', { name: 'Redrive' }))
+
+    await waitFor(() =>
+      expect(targets()).toEqual(['https://hooks.example.com/hook-1', 'https://hooks.example.com/hook-3']),
+    )
+    const notices = within(screen.getByRole('region', { name: 'Redrive results' }))
+    expect(notices.getByRole('alert').textContent).toBe(
+      'Delivery d-2: that delivery is sent, so there is nothing to redrive',
+    )
+    expect(notices.queryByRole('status')).toBeNull()
+  })
+
+  it('leaves the row in place and says so when the redrive fails', async () => {
+    const inner = handler
+    handler = (call) =>
+      call.method === 'POST' ? apiError(500, 'internal', 'the API failed to handle the request') : inner(call)
     renderWithClient(<DeliveriesPage />)
     const table = await screen.findByRole('table')
     calls.length = 0
     await userEvent.click(within(rowsOf(table)[1]!.at(-1)!).getByRole('button', { name: 'Redrive' }))
-    await waitFor(() => expect(calls.some((c) => c.method === 'GET')).toBe(true))
-    const post = calls.find((c) => c.method === 'POST')!
-    expect(post.path).toBe('/v1/deliveries/d-2/redrive')
-    expect(post.body).toEqual({ ref: 'ref-2' })
-    // d-2 left the dead list, so the reloaded first page now starts d-1, d-3
-    await waitFor(() => expect(rowsOf(screen.getByRole('table')).map((r) => r[0]!.textContent).length).toBe(2))
-    await waitFor(() => expect(screen.queryByText('d-2')).toBeNull())
-    expect(dead.map((d) => d.deliveryId)).toEqual(['d-1', 'd-3'])
+    const notices = within(screen.getByRole('region', { name: 'Redrive results' }))
+    expect((await notices.findByRole('alert')).textContent).toMatch(/failed to handle/)
+    expect(targets()).toEqual(['https://hooks.example.com/hook-1', 'https://hooks.example.com/hook-2'])
+    // a failed request changes nothing, so nothing is reloaded
+    expect(calls.filter((c) => c.method === 'GET')).toHaveLength(0)
   })
 
   it('pages with the cursor from the first page', async () => {
@@ -417,5 +464,23 @@ describe('Health', () => {
     const queueRows = rowsOf(queues!).map((r) => r.map((c) => c.textContent))
     expect(queueRows[0]).toEqual(['delivery', '3', '1'])
     expect(queueRows[1]![1]).toMatch(/unavailable/)
+  })
+
+  it('says unknown, not not started, for a cursor that exists but has no readable write time', async () => {
+    handler = (call) =>
+      call.path === '/v1/health'
+        ? json(200, {
+            chains: { '1': { durableBlock: '500', fastBlock: null, cursorAgeSeconds: null } },
+            queues: {},
+          })
+        : undefined
+    renderWithClient(<HealthPage />)
+    const [chains] = await screen.findAllByRole('table')
+    expect(rowsOf(chains!).map((r) => r.map((c) => c.textContent))[0]).toEqual([
+      'Ethereum',
+      '500',
+      'not started',
+      'unknown',
+    ])
   })
 })

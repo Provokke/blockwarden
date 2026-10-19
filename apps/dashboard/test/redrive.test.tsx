@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RedriveButton } from '../src/components/RedriveButton.js'
@@ -67,6 +67,20 @@ describe('RedriveButton', () => {
     await waitFor(() => expect(button).toHaveProperty('disabled', true))
     await userEvent.click(button)
     expect(calls).toHaveLength(1)
+    release()
+    await waitFor(() => expect(screen.getByRole('status')).toBeTruthy())
+    expect(calls).toHaveLength(1)
+  })
+
+  it('sends one request for two clicks in the same tick, before the disabled button has rendered', async () => {
+    let release: () => void = () => {}
+    hold = new Promise<void>((resolve) => (release = resolve))
+    render(<RedriveButton deliveryId="d-1" deliveryRef={REFS['d-1']!} onChanged={() => {}} />)
+    const button = screen.getByRole('button', { name: 'Redrive' })
+    act(() => {
+      fireEvent.click(button)
+      fireEvent.click(button)
+    })
     release()
     await waitFor(() => expect(screen.getByRole('status')).toBeTruthy())
     expect(calls).toHaveLength(1)
