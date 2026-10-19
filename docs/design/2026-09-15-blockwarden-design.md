@@ -57,8 +57,9 @@ blockwarden/
     dashboard/        Next.js static export
   contracts/          Foundry project
   infra/terraform/
-    modules/blockwarden/   full stack: table, monitor, alarms, and the actions module
+    modules/blockwarden/   full stack: table, monitor, alarms, and the actions and api modules
     modules/actions/       dispatcher, sender, queues and alarms; used by modules/blockwarden
+    modules/api/           HTTP API, authorizer, route and authorizer functions, session secret and alarms; used by modules/blockwarden
     modules/relayer/       relayer only, for downstream projects
     envs/demo/
     envs/staging/
@@ -214,7 +215,7 @@ Status values: `queued`, `submitted`, `mined`, `confirmed`, `failed`, `cancelled
 
 ## HTTP API
 
-All routes are under `/v1`. Dashboard routes need a SIWE session. Relayer routes accept a session or an API key in `Authorization: Bearer <key>`. Milestone 2 ships the three relayer routes below that say so, with API keys only, on their own API Gateway HTTP API in `modules/relayer`; milestone 4 adds sessions and the rest. The two delivery routes are milestone 4 as well: milestone 3 ships the `delivery:list` and `delivery:redrive` scripts in `services/actions` instead, which an operator runs against the table with AWS credentials.
+All routes are under `/v1`. Dashboard routes, health among them, need a SIWE session. The relayer's three read routes accept a session or an API key in `Authorization: Bearer <key>`. Milestone 2 ships the three relayer routes below that say so, with API keys only, on their own API Gateway HTTP API in `modules/relayer`. Milestone 4 adds `modules/api`, a second HTTP API that carries every other route below, the relayer's read routes included, behind one Lambda authorizer; only the three auth routes are public. `POST /relayer/txs` does not move: it stays on `modules/relayer`'s API with API keys only, so a session reads the relayer's records but cannot submit a transaction. The two delivery routes are milestone 4 as well, alongside the `delivery:list` and `delivery:redrive` scripts milestone 3 ships in `services/actions`, which an operator runs against the table with AWS credentials.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -224,13 +225,13 @@ All routes are under `/v1`. Dashboard routes need a SIWE session. Relayer routes
 | GET, POST | `/rules` | list, create |
 | GET, PATCH, DELETE | `/rules/{ruleId}` | read, update, delete |
 | GET | `/matches?ruleId=&cursor=` | match history |
-| GET | `/deliveries?status=&cursor=` | delivery history (milestone 4) |
-| POST | `/deliveries/{deliveryId}/redrive` | resend from the dead-letter queue (milestone 4) |
-| GET | `/relayer/signers` | signers the key may use, with their addresses (milestone 2) |
-| POST | `/relayer/txs` | submit (milestone 2) |
-| GET | `/relayer/txs/{txId}` | status (milestone 2) |
+| GET | `/deliveries?status=&cursor=` | delivery history |
+| POST | `/deliveries/{deliveryId}/redrive` | resend from the dead-letter queue |
+| GET | `/relayer/signers` | signers the key may use, with their addresses (milestone 2; a session from milestone 4) |
+| POST | `/relayer/txs` | submit, with an API key only, on `modules/relayer`'s own API (milestone 2) |
+| GET | `/relayer/txs/{txId}` | status (milestone 2; a session from milestone 4) |
 | GET | `/relayer/txs?status=&cursor=` | list |
-| GET | `/health` | per-chain cursor lag, queue depth |
+| GET | `/health` | per chain, the cursor's staleness: seconds since the monitor last wrote it, which is not block lag and needs no RPC call; and the visible and in-flight depth of the delivery, dead-letter and stream-failure queues |
 
 Sessions are HS256 JWTs in an `HttpOnly; Secure; SameSite=Strict` cookie, 12-hour lifetime, signed with a secret from SSM Parameter Store. The dashboard's allowed wallets are an allowlist in Terraform variables.
 
@@ -346,7 +347,7 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 
 - **Logs.** Structured JSON logs through Powertools for AWS Lambda (TypeScript), with a correlation id carried from match to delivery and from API request to transaction. `POWERTOOLS_LOG_LEVEL` sets the level on both actions functions, from the module's `log_level` input.
 - **Metrics** (CloudWatch embedded metric format): durable lag and finalized block age per chain, matches per rule (still deferred from milestone 1, and not emitted yet), `pendingAgeSeconds` (the oldest unsettled relayed transaction) per chain, and `signerBalanceGwei` per signer and chain for signers with a balance alarm. Actions adds `deliveriesDead`, published by the sender when a delivery dies and by the reaper when a sweep kills one, and `deliveryBatchFailures`, published when the sender hands part of an SQS batch back. Both are billed custom metrics, so each is published only when it happens, and neither carries a channel dimension: six channels would be six billed metrics instead of one. The monitor adds `ruleSkips`, for a rule that no longer compiles and has left the poll, and `ruleWarnings`, for a rule still polled with an action dropped. Both carry the monitor's `chainId` dimension, so each costs one billed metric per chain. Dead-letter depth is not a custom metric — SQS publishes it.
-- **Alarms** go to SNS email: durable lag, finalized block older than 60 minutes, relayer pending age (which covers a paused signer, a fee cap below the replacement minimum and a stuck nonce), signer balance below threshold, relayer function errors, the relayer sweeper not invoked for 10 minutes, API 5xx responses, and the relayer's dead-letter depth. Actions adds four: `ApproximateNumberOfMessagesVisible` above zero on the delivery dead-letter queue, the same on the stream-failure queue that holds batches Lambda gave up on, and an `Errors` alarm on each of the dispatcher and the sender. A fifth watches the outbound dead-letter queue when `outbound_queue` is set. No alarm watches `deliveriesDead` or `deliveryBatchFailures` directly; the dead-letter alarm above is what pages when a delivery dies, whether or not that same event also incremented the metric. No alarm watches `ruleSkips` or `ruleWarnings` either, and nothing else pages for them: a rule whose every action was dropped keeps matching and delivers nothing, with a warn line each time it is loaded and no page. An alarm on either metric would cost nothing further, since both are already billed when they are published; it is not shipped, and an operator who writes rules outside the module should add one.
+- **Alarms** go to SNS email: durable lag, finalized block older than 60 minutes, relayer pending age (which covers a paused signer, a fee cap below the replacement minimum and a stuck nonce), signer balance below threshold, relayer function errors, the relayer sweeper not invoked for 10 minutes, API 5xx responses, and the relayer's dead-letter depth. Actions adds four: `ApproximateNumberOfMessagesVisible` above zero on the delivery dead-letter queue, the same on the stream-failure queue that holds batches Lambda gave up on, and an `Errors` alarm on each of the dispatcher and the sender. A fifth watches the outbound dead-letter queue when `outbound_queue` is set. The API in `modules/api` adds three: 5xx responses from its own HTTP API, and an `Errors` alarm on each of the route function and the authorizer. No alarm watches `deliveriesDead` or `deliveryBatchFailures` directly; the dead-letter alarm above is what pages when a delivery dies, whether or not that same event also incremented the metric. No alarm watches `ruleSkips` or `ruleWarnings` either, and nothing else pages for them: a rule whose every action was dropped keeps matching and delivers nothing, with a warn line each time it is loaded and no page. An alarm on either metric would cost nothing further, since both are already billed when they are published; it is not shipped, and an operator who writes rules outside the module should add one.
 
 ## Known limitations
 
@@ -372,22 +373,26 @@ These are estimates from published AWS pricing and have to be measured after the
 | DynamoDB on-demand, small table | under $1 |
 | SQS | within the 1M free requests |
 | KMS: $1 per signer key per month; the demo has 1 signer, from milestone 2 | about $1 |
-| API Gateway HTTP API | cents at demo traffic |
+| API Gateway HTTP API: the relayer's, and from milestone 4 the API's | cents at demo traffic |
+| Lambda: the API's route function and authorizer, two invocations per authenticated request, since the authorizer caches nothing | within the always-free 1M requests and 400k GB-seconds at demo traffic |
+| CloudWatch Logs: the API's access log, kept 14 days like every log group here | cents |
 | CloudFront, S3 | within free tier at demo traffic |
 | SSM standard parameters | free |
 | DynamoDB Streams | free: AWS does not charge for `GetRecords` calls made by a Lambda trigger |
 | SQS: the delivery queue, its dead-letter queue, the stream-failure queue, and the optional outbound pair | within the 1M free requests at demo traffic |
 | Lambda: the dispatcher at 1/min plus a few stream batches, and the sender per delivery | within the always-free 1M requests and 400k GB-seconds |
 | SES | a new account defaults to the Essentials plan at $0.16 per 1,000 emails, since AWS closed the SES-specific free tier to new customers on 21 July 2026; à la carte pricing, $0.10 per 1,000, has to be chosen explicitly (cancel the plan in the SES console). This estimate uses à la carte. Either way, nothing while idle |
-| CloudWatch alarms: 9 for the monitor, 10 for the relayer on 2 chains with 1 signer, and, from milestone 3, 4 for actions (delivery dead letters, stream failures, and an `Errors` alarm on each of the two functions) — 5 with the outbound queue. 23 in all | the first 10 alarm metrics are free (one metric per alarm here, so 10 alarms), then $0.10/alarm/month, so $1.30 |
+| CloudWatch alarms: 9 for the monitor, 10 for the relayer on 2 chains with 1 signer, from milestone 3, 4 for actions (delivery dead letters, stream failures, and an `Errors` alarm on each of the two functions) — 5 with the outbound queue — and, from milestone 4, 3 for the API (5xx responses, and an `Errors` alarm on each of the route function and the authorizer). 26 in all | the first 10 alarm metrics are free (one metric per alarm here, so 10 alarms), then $0.10/alarm/month, so $1.60 |
 | CloudWatch custom metrics: up to 5 per monitored chain. `durableLag` and `finalizedAgeSeconds` are emitted on most runs. `deadlineSkips` is emitted whenever a run stops for time, which includes normal catch-up after a start block or an outage. `busySkips` and `laggingNodeSkips` are emitted only when they occur. Across 3 chains that is up to 15 metrics. The relayer adds `pendingAgeSeconds` per chain and `signerBalanceGwei` per signer per chain: 4 more. Milestone 3 adds `deliveriesDead` and `deliveryBatchFailures`, published only when they happen, and `ruleSkips` and `ruleWarnings`, published by the monitor and so carrying its `chainId` dimension: 8 more, because the two rule metrics count once per chain. That is 10 in a month where nothing skips, nothing dies and every rule compiles, and up to 27 | the first 10 are free, then $0.30/metric/month, so nothing to $5.10 |
-| **Total** | **about $2.40 to $8.40 per month:** KMS about $1, DynamoDB under $1, alarms $1.30, custom metrics nothing to $5.10. The upper end is above the $5 goal and needs every occasional monitor metric, a failed delivery, and a rule that no longer compiles, in the same month |
+| **Total** | **about $2.70 to $8.70 per month:** KMS about $1, DynamoDB under $1, alarms $1.60, custom metrics nothing to $5.10. The upper end is above the $5 goal and needs every occasional monitor metric, a failed delivery, and a rule that no longer compiles, in the same month |
 
 The fast scan adds one `eth_getLogs` call per run on each chain that has `fast` rules.
 
-Milestone 3 raised the ceiling: it adds $0.40 a month that is always charged (four alarms, all of them past CloudWatch's free ten) and up to $2.40 more in a month where a delivery dies, a stream batch fails, or a rule stops compiling, so up to $2.80 in all, and $0.10 more again with `outbound_queue`. The plan for milestone 3 estimated $0.30 to $0.40 of alarms because it counted three; the stream-failure alarm is the fourth. It also counted the rule metrics as two, which is what they cost on a single-chain deployment: the monitor tags every metric it publishes with `chainId`, and CloudWatch bills a custom metric per name and dimension combination, so on the demo's three chains they are six. The worst month is now $3.40 above the $5 goal in the Scope section.
+Milestone 3 raised the ceiling: it adds $0.40 a month that is always charged (four alarms, all of them past CloudWatch's free ten) and up to $2.40 more in a month where a delivery dies, a stream batch fails, or a rule stops compiling, so up to $2.80 in all, and $0.10 more again with `outbound_queue`. The plan for milestone 3 estimated $0.30 to $0.40 of alarms because it counted three; the stream-failure alarm is the fourth. It also counted the rule metrics as two, which is what they cost on a single-chain deployment: the monitor tags every metric it publishes with `chainId`, and CloudWatch bills a custom metric per name and dimension combination, so on the demo's three chains they are six. After milestone 3 the worst month was $3.40 above the $5 goal in the Scope section.
 
-What would bring it back under $5, if that matters more than the observability: the monitor's five occasional metrics are fifteen of the seventeen billed ones. Without `deadlineSkips`, `busySkips` and `laggingNodeSkips` the worst month publishes 18 metrics, 8 of them billed, and the total is about $5.70. Dropping `deliveriesDead` and `deliveryBatchFailures` as well leaves 16 published, 6 billed, and about $5.10; the dead-letter alarm still pages on a dead delivery, and both functions log every one. Getting under $5 costs one of the two rule metrics as well: keeping `ruleWarnings` alone leaves 13 published, 3 billed, and about $4.20, and gives up the metric for a rule that has left the poll entirely. None of these cuts touches an alarm or any behaviour.
+Milestone 4 adds $0.30 a month that is always charged: three alarms, all of them past the free ten. It adds no custom metric, because API Gateway and Lambda publish the metrics its alarms watch for free. Its access log group and the extra invocations the uncached authorizer costs are cents at demo traffic. The worst month is now $3.70 above the $5 goal.
+
+What would bring it back under $5, if that matters more than the observability: the monitor's five occasional metrics are fifteen of the seventeen billed ones. Without `deadlineSkips`, `busySkips` and `laggingNodeSkips` the worst month publishes 18 metrics, 8 of them billed, and the total is about $6.00. Dropping `deliveriesDead` and `deliveryBatchFailures` as well leaves 16 published, 6 billed, and about $5.40; the dead-letter alarm still pages on a dead delivery, and both functions log every one. Getting under $5 costs one of the two rule metrics as well: keeping `ruleWarnings` alone leaves 13 published, 3 billed, and about $4.50, and gives up the metric for a rule that has left the poll entirely. None of these cuts touches an alarm or any behaviour.
 
 This table is the demo instance only. The two example stacks under `infra/terraform/examples` sit entirely inside the free tier: `monitor-actions-only`, with `outbound_queue = true`, creates 8 alarms; `relayer-only` creates 7 alarms and publishes 1 custom metric (`pendingAgeSeconds` — its one signer has no `balance_alarm_gwei` set, so `signerBalanceGwei` is never emitted there). Both alarm counts, and the one metric, are under the free ten.
 

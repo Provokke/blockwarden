@@ -233,21 +233,53 @@ The demo stack in `infra/terraform/envs/demo` deploys the relayer next to the mo
 
 A fee cap too low to replace a stuck transaction, or a signer paused for lack of funds, keeps a transaction pending; the `pending-age` alarm fires after 30 minutes. If the sweeper is not invoked for 10 minutes, the `sweeper-not-running` alarm fires.
 
+## The API
+
+`infra/terraform/modules/api` deploys the HTTP API the dashboard uses, through the `api` input of `infra/terraform/modules/blockwarden`. It needs the actions pipeline, since it lists and redrives its deliveries. Every route is under `/v1`, and a Lambda authorizer stands in front of all of them except the three that hand out and clear a session.
+
+| Method | Path | Caller |
+|---|---|---|
+| POST | `/auth/siwe/nonce`, `/auth/siwe/verify`, `/auth/logout` | anyone |
+| GET, POST | `/rules` | session |
+| GET, PATCH, DELETE | `/rules/{ruleId}` | session |
+| GET | `/matches?ruleId=&cursor=` | session |
+| GET | `/deliveries?status=&cursor=` | session |
+| POST | `/deliveries/{deliveryId}/redrive` | session |
+| GET | `/relayer/signers`, `/relayer/txs/{txId}`, `/relayer/txs?status=&cursor=` | session or API key |
+| GET | `/health` | session |
+
+`POST /v1/relayer/txs` is not on this API. It stays on the relayer's own, with API keys only, so a session reads the relayer's records but cannot submit a transaction. `/health` reports, per chain, how many seconds ago the monitor last wrote its cursor — staleness, not block lag, since block lag would cost an RPC call per request — and the visible and in-flight depth of the delivery, dead-letter and stream-failure queues.
+
+1. Build the bundles: `pnpm --filter @blockwarden/api run build`
+2. The demo stack now needs two more inputs on every plan and apply, so put them in `infra/terraform/envs/demo/terraform.tfvars`:
+
+   ```hcl
+   allowed_wallets = ["0x..."]                  # who may sign in; at least one
+   site_origin     = "https://dash.example.com" # where the dashboard is served; a sign-in for any other host is refused
+   ```
+
+   A mixed-case wallet must carry a valid EIP-55 checksum. Terraform cannot check one, so a bad checksum fails the API's cold start, and the `-api-errors` alarm fires, rather than failing the plan.
+
+3. Apply. The session signing secret is generated into the SecureString `/blockwarden-demo/api/session-secret`, so its value is in Terraform state, as module-created API keys are. To rotate it, overwrite the parameter with `aws ssm put-parameter --overwrite`; the next apply leaves the new value alone. Both functions read it once, at cold start, so a warm instance keeps the old value until Lambda replaces it, and until then a session can pass on one request and fail on the next. Once every instance has started again, a session signed with the old value is refused and its operator signs in again.
+
 ## Running cost
 
-The demo stack is scale-to-zero except for CloudWatch and one KMS key, so almost all of the bill is alarms and custom metrics. After milestone 3 the stack creates **23 alarms** — 9 for the monitor on 3 chains, 10 for the relayer on 2 chains with 1 signer, and 4 for actions (dead letters, stream failures, and an `Errors` alarm for each of the dispatcher and the sender) — and publishes **up to 27 custom metrics**. Both services tag their metrics with the chain they ran on, and CloudWatch bills a custom metric per name and dimension combination, so a metric the monitor publishes counts once per chain. CloudWatch's free tier is 10 alarm metrics and 10 custom metrics a month; every alarm in this stack watches exactly one standard-resolution metric, so that is 10 alarms free in practice here, and $0.10 and $0.30 a month for the rest.
+The demo stack is scale-to-zero except for CloudWatch and one KMS key, so almost all of the bill is alarms and custom metrics. After milestone 4 the stack creates **26 alarms** — 9 for the monitor on 3 chains, 10 for the relayer on 2 chains with 1 signer, 4 for actions (dead letters, stream failures, and an `Errors` alarm for each of the dispatcher and the sender), and 3 for the API (5xx responses, and an `Errors` alarm for each of the route function and the authorizer) — and publishes **up to 27 custom metrics**. Both services tag their metrics with the chain they ran on, and CloudWatch bills a custom metric per name and dimension combination, so a metric the monitor publishes counts once per chain. CloudWatch's free tier is 10 alarm metrics and 10 custom metrics a month; every alarm in this stack watches exactly one standard-resolution metric, so that is 10 alarms free in practice here, and $0.10 and $0.30 a month for the rest.
 
 | | Quiet month | Worst month |
 |---|---|---|
 | KMS, 1 signer key | $1.00 | $1.00 |
 | DynamoDB on-demand | cents | under $1.00 |
-| CloudWatch alarms (13 billed) | $1.30 | $1.30 |
+| API Gateway, the API's functions and its access log | cents | cents |
+| CloudWatch alarms (16 billed) | $1.60 | $1.60 |
 | CloudWatch custom metrics (0 to 17 billed) | $0.00 | $5.10 |
-| **Total** | **about $2.40** | **about $8.40** |
+| **Total** | **about $2.70** | **about $8.70** |
 
-Milestone 3 added $0.40 of that as a fixed cost — four alarms, all of them past the free ten — and up to $2.40 more in a month where a delivery dies, a stream batch fails, or a rule stops compiling: `deliveriesDead` and `deliveryBatchFailures` once each, and `ruleSkips` and `ruleWarnings` once per chain, so six metrics on the demo's three chains rather than two. That is up to $2.80 in all, and `outbound_queue = true` adds a fifth alarm and $0.10. The worst month is $3.40 above the design's $5 goal, and it needs every occasional metric to appear in the same month.
+Milestone 3 added $0.40 of that as a fixed cost — four alarms, all of them past the free ten — and up to $2.40 more in a month where a delivery dies, a stream batch fails, or a rule stops compiling: `deliveriesDead` and `deliveryBatchFailures` once each, and `ruleSkips` and `ruleWarnings` once per chain, so six metrics on the demo's three chains rather than two. That is up to $2.80 in all, and `outbound_queue = true` adds a fifth alarm and $0.10.
 
-What would bring the worst month back under $5, if the operator wants that: the monitor's five occasional metrics are fifteen of the seventeen billed ones, one of each per chain. Dropping the three skip metrics — `deadlineSkips`, `busySkips` and `laggingNodeSkips` — leaves 18 published, 8 of them billed, and a total of about **$5.70**. Dropping the two actions metrics as well leaves 16 published, 6 billed, and about **$5.10**: the dead-letter alarm already pages on a dead delivery, and both functions log every one. Under $5 costs one of the two rule metrics too. Keeping `ruleWarnings` alone leaves 13 published, 3 billed, and about **$4.20**, at the price of no metric for a rule that has left the poll entirely — which is the louder of the two failures, since such a rule matches nothing at all. These are cuts to observability, not to behaviour, and none of them touches an alarm.
+Milestone 4 adds $0.30 as a fixed cost — the API's three alarms, all of them past the free ten — and no custom metric: API Gateway and Lambda publish what those alarms watch for free. The worst month is now $3.70 above the design's $5 goal, and it needs every occasional metric to appear in the same month.
+
+What would bring the worst month back under $5, if the operator wants that: the monitor's five occasional metrics are fifteen of the seventeen billed ones, one of each per chain. Dropping the three skip metrics — `deadlineSkips`, `busySkips` and `laggingNodeSkips` — leaves 18 published, 8 of them billed, and a total of about **$6.00**. Dropping the two actions metrics as well leaves 16 published, 6 billed, and about **$5.40**: the dead-letter alarm already pages on a dead delivery, and both functions log every one. Under $5 costs one of the two rule metrics too. Keeping `ruleWarnings` alone leaves 13 published, 3 billed, and about **$4.50**, at the price of no metric for a rule that has left the poll entirely — which is the louder of the two failures, since such a rule matches nothing at all. These are cuts to observability, not to behaviour, and none of them touches an alarm.
 
 This table is the demo instance only. The two example stacks under `infra/terraform/examples` are smaller and sit entirely inside the free tier: `monitor-actions-only`, with the outbound queue on, creates 8 alarms and no billed alarm or metric; `relayer-only` creates 7 alarms and publishes 1 custom metric, also unbilled.
 
