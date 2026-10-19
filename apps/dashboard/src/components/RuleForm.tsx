@@ -2,6 +2,7 @@
 
 import { useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { ApiError, apiFetch, type ApiIssue } from '../lib/api'
+import { Problem } from './Problem'
 import { chains, chainName } from '../lib/chains'
 
 export type RuleBody = {
@@ -181,7 +182,7 @@ function Field({
 export function RuleForm({ initial, onSaved }: { initial?: RuleBody; onSaved: (saved: RuleBody) => void }) {
   const [draft, setDraft] = useState(() => draftFromRule(initial))
   const [issues, setIssues] = useState<ApiIssue[]>([])
-  const [problem, setProblem] = useState<string>()
+  const [problem, setProblem] = useState<unknown>()
   const [busy, setBusy] = useState(false)
   // state alone lets two clicks in the same tick both through, before the disabled button has rendered
   const inFlight = useRef(false)
@@ -225,12 +226,10 @@ export function RuleForm({ initial, onSaved }: { initial?: RuleBody; onSaved: (s
         setIssues(err.issues)
       } else if (err instanceof ApiError && err.code === 'unknown_chain') {
         setIssues([{ path: 'chainId', message: err.message }])
-      } else if (err instanceof ApiError) {
-        setProblem(err.message)
       } else {
         // never the draft: a rule can name a secret parameter
-        console.error('saving a rule failed', err)
-        setProblem('Could not reach the API.')
+        if (!(err instanceof ApiError)) console.error('saving a rule failed', err)
+        setProblem(err)
       }
     } finally {
       inFlight.current = false
@@ -244,18 +243,16 @@ export function RuleForm({ initial, onSaved }: { initial?: RuleBody; onSaved: (s
 
   return (
     <form onSubmit={submit} noValidate>
-      {problem || unattached.length > 0 ? (
+      {problem !== undefined ? <Problem error={problem} /> : null}
+      {unattached.length > 0 ? (
         <div role="alert">
-          {problem ? <p>{problem}</p> : null}
-          {unattached.length > 0 ? (
-            <ul>
-              {unattached.map((issue, index) => (
-                <li key={index}>
-                  {issue.path}: {issue.message}
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          <ul>
+            {unattached.map((issue, index) => (
+              <li key={index}>
+                {issue.path}: {issue.message}
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
 
@@ -325,7 +322,11 @@ export function RuleForm({ initial, onSaved }: { initial?: RuleBody; onSaved: (s
                 <select
                   {...anchor}
                   value={action.type}
-                  onChange={(e) => setAction(index, () => emptyAction(e.target.value as ActionType))}
+                  onChange={(e) => {
+                    // issues are addressed by position and name a field of the old type
+                    setIssues([])
+                    setAction(index, () => emptyAction(e.target.value as ActionType))
+                  }}
                 >
                   {ACTION_TYPES.map((type) => (
                     <option key={type} value={type}>
@@ -356,12 +357,14 @@ export function RuleForm({ initial, onSaved }: { initial?: RuleBody; onSaved: (s
             ))}
             <button
               type="button"
-              onClick={() =>
+              onClick={() => {
+                // issues are addressed by position, so the action that shifts up would inherit this one's
+                setIssues([])
                 set(
                   'actions',
                   draft.actions.filter((_, i) => i !== index),
                 )
-              }
+              }}
             >
               {`Remove action ${index + 1}`}
             </button>
