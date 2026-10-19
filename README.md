@@ -110,7 +110,19 @@ BLOCKWARDEN_KMS_TEST_KEY_ID=<key id> AWS_REGION=<region> pnpm --filter @blockwar
 
 Requires Terraform, the AWS CLI v2, and AWS credentials for the target account. The rule script uses the same credentials, so set `AWS_REGION` and, if you use one, `AWS_PROFILE` before running it.
 
-1. Put each chain's RPC URLs in SSM. Separate several URLs with commas and they are tried in order.
+`envs/demo` always wires in the API module too (see The API), so every plan or apply below, including the `-target` one in step 4, needs `services/api/dist` built and `allowed_wallets` plus `site_origin` set:
+
+```bash
+pnpm --filter @blockwarden/api run build
+```
+
+```hcl
+# infra/terraform/envs/demo/terraform.tfvars
+allowed_wallets = ["0x..."]
+site_origin     = "https://dash.example.com"
+```
+
+1. Put each chain's RPC URLs in SSM. Separate several URLs with commas and they are tried in order. The monitor itself takes any number, but this parameter is shared with the API, which takes at most 3 per chain and refuses to start with more — keep every chain's list at 3 or fewer once the API is deployed too.
 
    ```bash
    aws ssm put-parameter --name /blockwarden-demo/rpc/base --type SecureString --value "https://first,https://second"
@@ -249,6 +261,8 @@ A fee cap too low to replace a stuck transaction, or a signer paused for lack of
 | GET | `/health` | session |
 
 `POST /v1/relayer/txs` is not on this API. It stays on the relayer's own, with API keys only, so a session reads the relayer's records but cannot submit a transaction. `/health` reports, per chain, how many seconds ago the monitor last wrote its cursor — staleness, not block lag, since block lag would cost an RPC call per request — and the visible and in-flight depth of the delivery, dead-letter and stream-failure queues.
+
+The API reads the same `chains` map — and the same RPC URL parameters — as the monitor (see Deploying the monitor). It takes at most 3 URLs per chain and refuses to start with more, so every route fails at cold start, login included, if a chain's parameter holds more than that.
 
 1. Build the bundles: `pnpm --filter @blockwarden/api run build`
 2. The demo stack now needs two more inputs on every plan and apply, so put them in `infra/terraform/envs/demo/terraform.tfvars`:

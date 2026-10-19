@@ -2,7 +2,7 @@ import type { ApiErrorBody } from '@blockwarden/relayer-client'
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 
 // API Gateway's own payload limit is 10 MB; a rule or a SIWE message is kilobytes, and parsing megabytes of
-// attacker-chosen JSON on a 512 MB function is work done before anything is authenticated
+// attacker-chosen JSON on a 256 MB function is work done before anything is authenticated
 const MAX_BODY_BYTES = 128 * 1024
 
 export type ApiResult = { status: number; body: unknown; cookies?: string[] }
