@@ -30,9 +30,18 @@ variable "chains" {
     error_message = "finality_depth must be at least 1."
   }
 
+  # the API's rule for the same parameters, which is tighter than the monitor's: the API reads them to verify a
+  # contract wallet's login, and refuses a name outside it at cold start
   validation {
-    condition     = alltrue([for c in var.chains : startswith(c.rpc_urls_parameter, "/")])
-    error_message = "rpc_urls_parameter must be an SSM parameter name starting with /."
+    condition = alltrue([for c in var.chains :
+      can(regex("^/[A-Za-z0-9_./-]+$", c.rpc_urls_parameter)) && !strcontains(c.rpc_urls_parameter, "..")
+    ])
+    error_message = "rpc_urls_parameter must be an SSM parameter name: / then letters, digits, _ . / or -, with no .. anywhere in it."
+  }
+
+  validation {
+    condition     = alltrue([for c in var.chains : c.chain_id >= 1 && c.chain_id == floor(c.chain_id)])
+    error_message = "chain_id must be a positive whole number."
   }
 
   validation {
@@ -105,11 +114,66 @@ variable "actions" {
     error_message = "every actions.outbound_secret_prefixes entry must be an SSM parameter name with an optional trailing slash; \"/\" alone would grant every parameter in the account."
   }
 
+  # the API reads the same list, and refuses a prefix with .. anywhere in it where the dispatcher refuses only a
+  # .. level, so this is the stricter of the two
+  validation {
+    condition = var.actions == null ? true : alltrue([for prefix in var.actions.rule_secret_prefixes :
+      startswith(prefix, "/") && length(trimsuffix(prefix, "/")) <= 1011 &&
+      can(regex("^(/[A-Za-z0-9_.-]+){1,15}$", trimsuffix(prefix, "/"))) &&
+      !strcontains(prefix, "..")
+    ])
+    error_message = "every actions.rule_secret_prefixes entry must be an SSM parameter name with an optional trailing slash and no ..; \"/\" alone would let a rule name every parameter in the account."
+  }
+
   validation {
     condition = var.actions == null ? true : alltrue([for arn in var.actions.allowed_target_arns : can(regex(
       "^arn:aws[a-z-]*:(sqs:[a-z0-9-]+:[0-9]{12}:([A-Za-z0-9_-]{1,80}|[A-Za-z0-9_-]{1,75}[.]fifo)|lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9_-]{1,140}(:[A-Za-z0-9_$-]+)?)$",
     arn))])
     error_message = "actions.allowed_target_arns takes whole SQS queue and Lambda function ARNs only."
+  }
+}
+
+variable "api" {
+  description = "Deploy the HTTP API and its authorizer alongside the monitor. It lists and redrives the actions pipeline's deliveries, so it needs the actions input too. Leave null to deploy without it."
+  type = object({
+    source_dir      = string
+    allowed_wallets = list(string)
+    site_origin     = string
+    # the host of site_origin when left out, which is the only value the API accepts
+    siwe_domain = optional(string)
+  })
+  default = null
+
+  # These repeat modules/api's own validations, for the reason given on actions above: through this module the
+  # child's copy waits for a plan, and here they fail at validate.
+  validation {
+    condition     = var.api == null ? true : length(var.api.allowed_wallets) > 0
+    error_message = "api.allowed_wallets must name at least one wallet; an empty list is a deployment nobody can sign in to."
+  }
+
+  validation {
+    condition     = var.api == null ? true : alltrue([for w in var.api.allowed_wallets : can(regex("^0x[0-9a-fA-F]{40}$", w))])
+    error_message = "every api.allowed_wallets entry must be a 20-byte hex address."
+  }
+
+  validation {
+    condition = var.api == null ? true : (
+      can(regex("^https://[a-z0-9.-]+$", var.api.site_origin)) &&
+      can(regex("^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])*[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.api.site_origin)) &&
+      !can(regex("(^https://|[.])([0-9]+|0x[0-9a-f]*)$", var.api.site_origin))
+    )
+    error_message = "api.site_origin must be https:// then a lowercase host name, with no port, path or trailing slash."
+  }
+
+  validation {
+    condition     = var.api == null ? true : var.api.siwe_domain == null || var.api.siwe_domain == trimprefix(var.api.site_origin, "https://")
+    error_message = "api.siwe_domain must be the host of api.site_origin; leave it out to use that host."
+  }
+
+  # names another variable, so this one waits for a plan
+  validation {
+    condition     = var.api == null || var.actions != null
+    error_message = "the API needs the actions pipeline; set the actions input as well."
   }
 }
 

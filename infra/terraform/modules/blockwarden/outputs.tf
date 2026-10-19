@@ -42,3 +42,23 @@ output "outbound_queue_url" {
   description = "Queue for signed deliveries that did not come from a match."
   value       = var.actions == null ? null : module.actions[0].outbound_queue_url
 }
+
+output "api_endpoint" {
+  description = "Base URL of the HTTP API, without /v1, or null when the API is not deployed."
+  value       = var.api == null ? null : module.api[0].api_endpoint
+}
+
+output "api_id" {
+  description = "HTTP API id, or null when the API is not deployed."
+  value       = var.api == null ? null : module.api[0].api_id
+}
+
+output "session_secret_parameter" {
+  description = "SSM parameter name holding the session signing secret, or null when the API is not deployed."
+  value       = var.api == null ? null : module.api[0].session_secret_parameter
+}
+
+output "api_role_arn" {
+  description = "IAM role of the API's route Lambda, or null when the API is not deployed."
+  value       = var.api == null ? null : module.api[0].api_role_arn
+}
