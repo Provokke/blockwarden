@@ -5,7 +5,7 @@ import type { RelayerStore, StoredTx } from './store.js'
 
 const MAX_PAGE = 100
 
-export type RelayerDeps = { store: RelayerStore; chainIds: number[] }
+export type RelayerDeps = { store: RelayerStore }
 
 export async function handleListSigners(
   deps: RelayerDeps,
@@ -30,7 +30,7 @@ export async function handleGetTx(
 
 // GSI2's own LastEvaluatedKey for a pending-transactions-by-chain query is always exactly these four
 // attributes - PK, SK and GSI2PK as strings, GSI2SK as a number (packages/dynamo/src/table.ts's GSI2SK is
-// type N) - proven by reading one back from DynamoDB Local in the integration test, not assumed. The cursor
+// type N), as the integration test reads back from DynamoDB Local. The cursor
 // is unsigned base64, so any caller can hand back a crafted key; anything of another shape must never reach
 // ExclusiveStartKey, where DynamoDB answers a bad key with a ValidationException that has no route-level
 // catch (same convention as matches.ts's isMatchListKey and rules.ts's isRuleListKey)
@@ -63,12 +63,19 @@ export async function handleListTxs(
   if (query.status !== undefined && query.status !== 'pending') {
     return error(400, 'unsupported_status', 'only status=pending is indexed; read a transaction by its id')
   }
+  // the relayer's chains are the ones its signer rows list, which Terraform writes from the relayer's own
+  // chain map; the API's CHAINS setting is the monitor's and names different chains. Sorted so the walk
+  // order, and with it a cursor, means the same thing on every request
+  const signers = await deps.store.listSigners()
+  const relayed = [
+    ...new Set(signers.filter((signer) => mayUseSigner(caller, signer.signerId)).flatMap((signer) => signer.chainIds)),
+  ].sort((a, b) => a - b)
   const chainId = query.chainId === undefined ? undefined : Number(query.chainId)
-  if (chainId !== undefined && !deps.chainIds.includes(chainId)) {
+  if (chainId !== undefined && !relayed.includes(chainId)) {
     return error(400, 'unknown_chain', 'this deployment does not relay on that chain')
   }
   const limit = pageSize(query.limit)
-  const chains = chainId === undefined ? deps.chainIds : [chainId]
+  const chains = chainId === undefined ? relayed : [chainId]
 
   const start = query.cursor ? decodeCursor(query.cursor) : undefined
   if (query.cursor && !start) return error(400, 'invalid_cursor', 'that cursor cannot be read')

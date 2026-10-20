@@ -48,13 +48,14 @@ const PENDING: Record<number, StoredTx[]> = {
   42161: [pendingTx(42161, 1, 'treasury')],
 }
 
+// the shape Terraform writes: a signer id and its chains, with no address (Terraform has no keccak256)
 function deps(pending: Record<number, StoredTx[]> = PENDING): RelayerDeps {
   return {
     store: {
       async listSigners() {
         return [
-          { signerId: 'demo', chainIds: [8453], address: '0x' + 'a'.repeat(40) },
-          { signerId: 'treasury', chainIds: [42161], address: '0x' + 'b'.repeat(40) },
+          { signerId: 'treasury', chainIds: [42161] },
+          { signerId: 'demo', chainIds: [8453] },
         ]
       },
       async getTx(txId) {
@@ -72,7 +73,6 @@ function deps(pending: Record<number, StoredTx[]> = PENDING): RelayerDeps {
       },
       listPendingTxs: fakePendingStore(pending),
     },
-    chainIds: [8453, 42161],
   }
 }
 
@@ -194,6 +194,29 @@ describe('handleListTxs', () => {
     const body = result.body as { txs: StoredTx[]; cursor?: string }
     expect(body.txs.map((tx) => tx.txId)).toEqual(['tx-8453-1', 'tx-42161-1', 'tx-42161-2'])
     expect(body.cursor).toBeDefined()
+  })
+
+  it('walks the chains its signers list in ascending order, whatever order the signers come back in', async () => {
+    const first = await handleListTxs(
+      deps(),
+      session,
+      event({ queryStringParameters: { status: 'pending', limit: '2' } }),
+    )
+    const body = first.body as { txs: StoredTx[]; cursor?: string }
+    expect(body.txs.map((tx) => tx.txId)).toEqual(['tx-8453-1', 'tx-8453-2'])
+  })
+
+  it('lists only the chains of the signers an API key may use, and refuses the others', async () => {
+    const listed = await handleListTxs(deps(), key, event({ queryStringParameters: { status: 'pending' } }))
+    expect((listed.body as { txs: StoredTx[] }).txs.map((tx) => tx.txId)).toEqual(['tx-8453-1'])
+
+    const refused = await handleListTxs(
+      deps(),
+      key,
+      event({ queryStringParameters: { status: 'pending', chainId: '42161' } }),
+    )
+    expect(refused.status).toBe(400)
+    expect((refused.body as { error: { code: string } }).error.code).toBe('unknown_chain')
   })
 
   it('refuses a cursor whose key names a different chains partition than the one it claims to resume', async () => {

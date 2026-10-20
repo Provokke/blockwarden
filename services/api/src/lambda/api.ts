@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from 'aws-lambda'
 import { createApiHandler, type ApiHandler } from '../routes.js'
-import { apiDepsFrom, createApiRuntime, createLogger, once } from './runtime.js'
+import { apiDepsFrom, createApiRuntime } from './api-runtime.js'
+import { createLogger, once } from './runtime.js'
 
 const logger = createLogger('blockwarden-api')
 

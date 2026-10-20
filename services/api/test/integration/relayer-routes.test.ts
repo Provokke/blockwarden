@@ -20,7 +20,7 @@ const OTHER_CHAIN = 421614
 const session: Caller = { kind: 'session', address: '0x1111111111111111111111111111111111111111' }
 const demoKey: Caller = { kind: 'apiKey', hash: 'a'.repeat(64), signerIds: ['demo'], label: 'ci' }
 
-const deps = (): RelayerDeps => ({ store: apiStore, chainIds: [CHAIN, OTHER_CHAIN] })
+const deps = (): RelayerDeps => ({ store: apiStore })
 
 // narrowed to the real event type rather than to `never`, same helper as rules-store.test.ts's apiEvent
 function apiEvent(over: Partial<APIGatewayProxyEventV2>): APIGatewayProxyEventV2 {
@@ -240,7 +240,7 @@ describe('listing pending transactions through the API', () => {
     expect(body1.txs.map((t) => t.txId)).toEqual([first.txId, second.txId])
     expect(body1.cursor).toBeDefined()
 
-    // what a real LastEvaluatedKey for this GSI2 query actually contains - proven here, not assumed, and
+    // what a real LastEvaluatedKey for this GSI2 query actually contains, and
     // exactly what relayer-routes.ts's isTxListKey checks a caller-supplied cursor against
     const decoded = decodeCursor(body1.cursor!) as { chainId: number; key: Record<string, unknown> }
     expect(decoded.chainId).toBe(chain)

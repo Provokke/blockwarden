@@ -154,8 +154,9 @@ describe('pageSize', () => {
 })
 
 // a fake in full control of each chain's page, to force the one case real DynamoDB pagination rarely lines up
-// on by itself: a chain whose remaining rows exactly fill the page, with no cursor of its own. Both chainId
-// and limit are read and used to slice each chain's fixture, not ignored.
+// on by itself: a chain whose remaining rows exactly fill the page, with no cursor of its own. It honours
+// chainId, limit and the start key: a page that stops short of a chain's end hands back the key of its last
+// row, and a start key resumes after the row it names.
 function fakeRuleStore(pages: Record<number, StoredRule[]>): RuleStore {
   return {
     async putRule() {
@@ -167,8 +168,25 @@ function fakeRuleStore(pages: Record<number, StoredRule[]>): RuleStore {
     async deleteRule() {
       return false
     },
-    async listRules(chainId, limit) {
-      return { rules: (pages[chainId] ?? []).slice(0, limit) }
+    async listRules(chainId, limit, startKey) {
+      const rows = pages[chainId] ?? []
+      const from = startKey === undefined ? 0 : rows.findIndex((r) => `RULE#${r.ruleId}` === startKey.PK) + 1
+      const rules = rows.slice(from, from + limit)
+      const last = rules[rules.length - 1]
+      const more = from + rules.length < rows.length
+      return {
+        rules,
+        ...(more && last
+          ? {
+              cursor: {
+                PK: `RULE#${last.ruleId}`,
+                SK: 'META',
+                GSI1PK: `CHAIN#${chainId}#RULES`,
+                GSI1SK: `RULE#${last.ruleId}`,
+              },
+            }
+          : {}),
+      }
     },
   }
 }
@@ -207,6 +225,30 @@ describe('handleListRules across a chain boundary', () => {
     const second = await list({ limit: '2', cursor: firstBody.cursor! })
     const secondBody = second.body as { rules: { ruleId: string }[]; cursor?: string }
     expect(secondBody.rules.map((r) => r.ruleId)).toEqual(['b1'])
+    expect(secondBody.cursor).toBeUndefined()
+  })
+
+  it('resumes inside a chain from the key the previous page ended on, with no duplicate and no missing row', async () => {
+    const store = fakeRuleStore({
+      8453: [fixtureRule('a1', 8453), fixtureRule('a2', 8453), fixtureRule('a3', 8453)],
+      42161: [fixtureRule('b1', 42161)],
+    })
+    const deps: RuleDeps = {
+      store,
+      settings: { ruleSecretPrefixes: [], chainIds: [8453, 42161] },
+      now: () => '2026-09-21T00:00:00.000Z',
+    }
+    const list = (query: Record<string, string>) =>
+      handleListRules(deps, apiEvent({ routeKey: 'GET /v1/rules', queryStringParameters: query }))
+
+    const first = await list({ limit: '2' })
+    const firstBody = first.body as { rules: { ruleId: string }[]; cursor?: string }
+    expect(firstBody.rules.map((r) => r.ruleId)).toEqual(['a1', 'a2'])
+    expect(decodeCursor(firstBody.cursor!)).toMatchObject({ chainId: 8453, key: { PK: 'RULE#a2' } })
+
+    const second = await list({ limit: '2', cursor: firstBody.cursor! })
+    const secondBody = second.body as { rules: { ruleId: string }[]; cursor?: string }
+    expect(secondBody.rules.map((r) => r.ruleId)).toEqual(['a3', 'b1'])
     expect(secondBody.cursor).toBeUndefined()
   })
 
