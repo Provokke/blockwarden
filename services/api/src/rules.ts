@@ -77,8 +77,8 @@ function underPrefix(name: string, prefixes: string[]): boolean {
 
 const MAX_PAGE = 100
 
-// GSI1's own LastEvaluatedKey for a rules-by-chain query is always exactly these four string attributes -
-// proven by reading one back from DynamoDB Local, not assumed. The cursor is unsigned base64, so any caller
+// GSI1's own LastEvaluatedKey for a rules-by-chain query is always exactly these four string attributes, as
+// the integration test reads back from DynamoDB Local. The cursor is unsigned base64, so any caller
 // can hand back a crafted key; anything of another shape must never reach ExclusiveStartKey, where DynamoDB
 // answers a bad key with a ValidationException that has no route-level catch
 const RULE_LIST_KEY_ATTRS = ['PK', 'SK', 'GSI1PK', 'GSI1SK'] as const

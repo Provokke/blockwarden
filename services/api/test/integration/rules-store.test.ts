@@ -195,8 +195,8 @@ describe('rules through the API and back through the monitor', () => {
   })
 
   it('refuses a cursor naming a chain this deployment does not monitor, instead of walking only the last chain', async () => {
-    // proven shape: {chainId: 8453, chainId: 42161} are the only monitored chains; a cursor naming 999999
-    // used to send chains.indexOf(startChain) to -1 and chains.slice(-1) to the last chain only
+    // only 8453 and 42161 are monitored here; a cursor naming 999999 would send chains.indexOf(startChain) to -1,
+    // and chains.slice(-1) would walk the last chain only
     const cursor = encodeCursor({ chainId: 999999 })
     const result = await handleListRules(
       deps(),

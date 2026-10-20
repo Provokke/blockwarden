@@ -107,7 +107,7 @@ function deps(overrides: { store?: Partial<ApiStore>; health?: Partial<HealthDep
       },
       now: () => 0,
     },
-    relayer: { store, chainIds: [8453] },
+    relayer: { store },
     health: {
       doc: {
         send: async () => {

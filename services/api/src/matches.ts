@@ -5,17 +5,23 @@ import type { MatchRow, MatchStore } from './store.js'
 const MAX_PAGE = 100
 const STATUSES = new Set(['provisional', 'final', 'dropped'])
 
-// GSI1's own LastEvaluatedKey for a matches-by-rule query is always exactly these four string attributes -
-// proven by reading one back from DynamoDB Local, not assumed. The cursor is unsigned base64, so any caller
-// can hand back a crafted key; anything of another shape must never reach ExclusiveStartKey, where DynamoDB
-// answers a bad key with a ValidationException that has no route-level catch
+// GSI1's own LastEvaluatedKey for a matches-by-rule query is always exactly these four string attributes, as
+// the integration test reads back from DynamoDB Local. The cursor is unsigned base64, so any caller can hand
+// back a crafted key; anything of another shape must never reach ExclusiveStartKey, where DynamoDB answers a
+// bad key with a ValidationException that has no route-level catch
 const MATCH_LIST_KEY_ATTRS = ['PK', 'SK', 'GSI1PK', 'GSI1SK'] as const
 
-function isMatchListKey(value: unknown): value is Record<(typeof MATCH_LIST_KEY_ATTRS)[number], string> {
+function isMatchListKey(
+  value: unknown,
+  ruleId: string,
+): value is Record<(typeof MATCH_LIST_KEY_ATTRS)[number], string> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
   if (Object.keys(record).length !== MATCH_LIST_KEY_ATTRS.length) return false
-  return MATCH_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')
+  if (!MATCH_LIST_KEY_ATTRS.every((attr) => typeof record[attr] === 'string')) return false
+  // the envelope's ruleId is only a claim; the key's own partition is what DynamoDB would read, so a key
+  // for another rule's partition must not ride in under this rule's name
+  return record.GSI1PK === `RULE#${ruleId}`
 }
 
 export type MatchDeps = { store: MatchStore }
@@ -36,7 +42,7 @@ export async function handleListMatches(deps: MatchDeps, event: APIGatewayProxyE
     const cursor = decodeCursor(query.cursor)
     // a cursor is an ExclusiveStartKey, which is a row address; one minted for another rule would read that
     // rule's matches, so the cursor carries the rule it was made for and has to agree
-    if (!cursor || cursor.ruleId !== ruleId || !isMatchListKey(cursor.key)) {
+    if (!cursor || cursor.ruleId !== ruleId || !isMatchListKey(cursor.key, ruleId)) {
       return error(400, 'invalid_cursor', 'that cursor does not belong to this query')
     }
     startKey = cursor.key
