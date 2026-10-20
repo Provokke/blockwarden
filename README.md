@@ -291,13 +291,20 @@ The API reads the same `chains` map — and the same RPC URL parameters — as t
 
 A custom domain is `site_origin` for the API, and the API reads nothing else. The distribution still needs that name as an alias, with an ACM certificate in us-east-1, which milestone 5 adds with the public demo. Until then, leave `site_origin` unset: a custom name set today reaches no distribution, and the API refuses a sign-in from the cloudfront.net one.
 
-Nothing uploads the dashboard yet. Once it is built (`pnpm --filter @blockwarden/dashboard run build`, which CI also runs), these are the two manual commands. **Neither has been run**, because nothing in this milestone is deployed:
+Nothing uploads the dashboard yet. The distribution's Content-Security-Policy is `script-src 'self'` plus the sha256 of each inline script in the export, because Next writes its bootstrap and flight data into every page and the flight data changes with every build. So a deploy is four steps in this order, and **none of these commands has been run**, because nothing in this milestone is deployed:
 
 ```bash
+pnpm --filter @blockwarden/dashboard run build
+(cd apps/dashboard && node scripts/csp-hashes.mjs --out ../../infra/terraform/envs/demo/site.auto.tfvars.json)
 cd infra/terraform/envs/demo
+terraform apply
 aws s3 sync ../../../../apps/dashboard/out "s3://$(terraform output -raw site_bucket)" --delete
 aws cloudfront create-invalidation --distribution-id "$(terraform output -raw distribution_id)" --paths '/*'
 ```
+
+`site.auto.tfvars.json` is a build output that Terraform loads by itself, and it is git-ignored. The script refuses an export with an inline `style`, `<style>`, event handler or `javascript:` URL on any page (the not-found pages' styles are exempt, and it says so), and refuses one whose policy would pass CloudFront's 1,783-character limit on the header; `pnpm --filter @blockwarden/dashboard run csp` runs those checks alone, as CI does.
+
+The upload and the apply are coupled. Every rebuild changes the hashes, so files uploaded without the matching `terraform apply` leave a site that renders but does not hydrate, and every button is dead. Rolling back to an older bucket version needs that build's hashes applied too.
 
 `terraform output -raw site_url` is where the dashboard is then served. The bucket keeps each replaced file for 30 days as a previous version, which is how to roll back a bad sync.
 

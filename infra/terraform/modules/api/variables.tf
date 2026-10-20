@@ -111,6 +111,17 @@ variable "siwe_domain" {
   }
 }
 
+variable "site_script_hashes" {
+  description = "sha256 hashes of the dashboard export's inline scripts, from apps/dashboard/scripts/csp-hashes.mjs for the build being uploaded. The CSP admits exactly these; an upload without the matching hashes renders but never hydrates."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for h in var.site_script_hashes : can(regex("^sha256-[A-Za-z0-9+/]{43}=$", h))])
+    error_message = "every site_script_hashes entry must be sha256- then 43 base64 characters and a =."
+  }
+}
+
 variable "rule_secret_prefixes" {
   description = "SSM parameter prefixes a rule's webhook action may name in secretParameter. Pass the actions pipeline's own list, so the API accepts exactly the rules the dispatcher will deliver."
   type        = list(string)
