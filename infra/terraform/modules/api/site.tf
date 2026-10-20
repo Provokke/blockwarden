@@ -7,12 +7,16 @@ locals {
   site_origin = var.site_origin != null ? var.site_origin : "https://${aws_cloudfront_distribution.site.domain_name}"
   siwe_domain = var.siwe_domain != null ? var.siwe_domain : trimprefix(local.site_origin, "https://")
 
-  # Assumes the dashboard needs nothing but its own files. Next's app router inlines its hydration scripts, and a
-  # wallet library may call a chain's RPC from the browser; either one needs this widened, by hash or by host,
-  # once the built export shows which.
+  # Next's app router inlines its bootstrap and flight data into every page, and the flight data changes with each
+  # build, so the hashes come from the export being uploaded (apps/dashboard/scripts/csp-hashes.mjs) and not from
+  # this file. 'unsafe-inline' would admit any script an injected tag carried.
+  script_src = join(" ", concat(["'self'"], [for h in var.site_script_hashes : "'${h}'"]))
+
+  # The script measures the length of this string against CloudFront's limit on it, so its list of directives
+  # has to match this one; a test compares them.
   content_security_policy = join("; ", [
     "default-src 'self'",
-    "script-src 'self'",
+    "script-src ${local.script_src}",
     "style-src 'self'",
     "img-src 'self' data:",
     "connect-src 'self'",
