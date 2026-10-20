@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { BASE_DIRECTIVES, POLICY_LIMIT, buildPolicy, collect } from '../scripts/csp-hashes.mjs'
+import { BASE_DIRECTIVES, POLICY_LIMIT, assertFits, buildPolicy, collect } from '../scripts/csp-hashes.mjs'
 
 const SCRIPT = fileURLToPath(new URL('../scripts/csp-hashes.mjs', import.meta.url))
 const TERRAFORM = fileURLToPath(new URL('../../../infra/terraform/', import.meta.url))
@@ -155,6 +155,68 @@ describe('the command', () => {
   })
 })
 
+describe('markup edge cases', () => {
+  it('refuses an inline script holding a carriage return, naming the file', async () => {
+    await page('index.html', doc('<script>window.__x = 1;</script>'))
+    await page('rules/index.html', doc('<script>a = 1;\r\nb = 2;</script>'))
+    const { problems } = await collect(dir)
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('rules/index.html')
+    expect(problems[0]).toContain('carriage return')
+  })
+
+  it('reads a > inside a quoted attribute of an inline script as part of the tag', async () => {
+    await page('index.html', doc('<script data-x="a>b" data-y=\'c>d\'>window.__x = 1;</script>'))
+    const result = await collect(dir)
+    expect(result.hashes).toEqual([HASH_OF_SIMPLE])
+    expect(result.problems).toEqual([])
+  })
+})
+
+describe('--check', () => {
+  it('exits 1 and names the file on a refused page', async () => {
+    await page('index.html', doc('<script>window.__x = 1;</script>'))
+    await page('matches/index.html', doc('<div style="x">y</div>'))
+    const cli = run('--check')
+    expect(cli.status).toBe(1)
+    expect(cli.stderr).toContain('matches/index.html')
+    expect(cli.stdout).toBe('')
+  })
+
+  it('exits 0 on a clean export, printing no hashes and reporting the policy length', async () => {
+    await page('index.html', doc('<script>window.__x = 1;</script>'))
+    const cli = run('--check')
+    expect(cli.status).toBe(0)
+    expect(cli.stdout).toBe('')
+    expect(cli.stderr).toContain(`1 script hashes, policy ${buildPolicy([HASH_OF_SIMPLE]).length} of ${POLICY_LIMIT}`)
+  })
+
+  // hashes are fixed width, so no export lands exactly on the limit; the boundary is checked on the function the
+  // command uses
+  it('passes a policy of exactly the limit and fails one character more', () => {
+    expect(() => assertFits('x'.repeat(POLICY_LIMIT), 3)).not.toThrow()
+    expect(() => assertFits('x'.repeat(POLICY_LIMIT + 1), 3)).toThrow(
+      new RegExp(`${POLICY_LIMIT + 1}.*${POLICY_LIMIT}`),
+    )
+  })
+
+  it('refuses an export with no inline scripts', async () => {
+    await page('index.html', doc('<p>ok</p>'))
+    const cli = run('--check')
+    expect(cli.status).toBe(1)
+    expect(cli.stderr).toContain('no inline scripts')
+  })
+
+  it('cannot be combined with --out, which it would silently ignore', async () => {
+    await page('index.html', doc('<script>window.__x = 1;</script>'))
+    const out = join(dir, 'ignored.json')
+    const cli = run('--check', '--out', out)
+    expect(cli.status).toBe(1)
+    expect(cli.stderr).toContain('--check')
+    await expect(readFile(out, 'utf8')).rejects.toThrow()
+  })
+})
+
 describe('the Terraform policy', () => {
   const stripComments = (text: string) => text.replace(/^\s*#.*$/gm, '')
   const read = async (path: string) => stripComments(await readFile(join(TERRAFORM, path), 'utf8'))
@@ -181,15 +243,34 @@ describe('the Terraform policy', () => {
     )
   })
 
+  // the text of the first block, braces balanced, that opens with the given line
+  const block = (text: string, opening: RegExp): string => {
+    const start = text.search(opening)
+    expect(start, String(opening)).toBeGreaterThanOrEqual(0)
+    let depth = 0
+    for (let i = text.indexOf('{', start); i < text.length; i++) {
+      if (text[i] === '{') depth++
+      if (text[i] === '}' && --depth === 0) return text.slice(start, i + 1)
+    }
+    return text.slice(start)
+  }
+
   it('validates the hash list the same way in every place it is declared', async () => {
-    const pattern = '"^sha256-[A-Za-z0-9+/]{43}=$"'
-    const api = await read('modules/api/variables.tf')
-    const blockwarden = await read('modules/blockwarden/variables.tf')
-    const demo = await read('envs/demo/main.tf')
-    expect(api).toContain(`can(regex(${pattern}, h))`)
-    expect(blockwarden).toContain(`can(regex(${pattern}, h))`)
-    expect(demo).toContain(`can(regex(${pattern}, h))`)
-    expect(await read('modules/blockwarden/api.tf')).toMatch(/site_script_hashes\s*=\s*var\.api\.site_script_hashes/)
-    expect(demo).toMatch(/site_script_hashes\s*=\s*var\.site_script_hashes/)
+    const check = /validation \{\s*condition\s*=[^\n]*can\(regex\("\^sha256-\[A-Za-z0-9\+\/\]\{43\}=\$", h\)\)/
+    const api = block(await read('modules/api/variables.tf'), /variable "site_script_hashes" \{/)
+    const demo = block(await read('envs/demo/main.tf'), /variable "site_script_hashes" \{/)
+    const blockwardenVariables = await read('modules/blockwarden/variables.tf')
+    const apiObject = block(blockwardenVariables, /variable "api" \{/)
+    expect(api).toMatch(check)
+    expect(demo).toMatch(check)
+    // the object's own validation sits in the api variable's block, and names the field it checks
+    expect(apiObject).toMatch(check)
+    expect(apiObject).toContain('var.api.site_script_hashes')
+    expect(apiObject).toMatch(/site_script_hashes\s*=\s*optional\(list\(string\), \[\]\)/)
+
+    const passed = block(await read('modules/blockwarden/api.tf'), /module "api" \{/)
+    expect(passed).toMatch(/site_script_hashes\s*=\s*var\.api\.site_script_hashes/)
+    const demoApi = block(await read('envs/demo/main.tf'), /\n\s*api = \{/)
+    expect(demoApi).toMatch(/site_script_hashes\s*=\s*var\.site_script_hashes/)
   })
 })

@@ -291,7 +291,7 @@ The API reads the same `chains` map — and the same RPC URL parameters — as t
 
 A custom domain is `site_origin` for the API, and the API reads nothing else. The distribution still needs that name as an alias, with an ACM certificate in us-east-1, which milestone 5 adds with the public demo. Until then, leave `site_origin` unset: a custom name set today reaches no distribution, and the API refuses a sign-in from the cloudfront.net one.
 
-Nothing uploads the dashboard yet. The distribution's Content-Security-Policy is `script-src 'self'` plus the sha256 of each inline script in the export, because Next writes its bootstrap and flight data into every page and the flight data changes with every build. So a deploy is four steps in this order, and **none of these commands has been run**, because nothing in this milestone is deployed:
+Nothing uploads the dashboard yet. The distribution's Content-Security-Policy is `script-src 'self'` plus the sha256 of each inline script in the export, because Next writes its bootstrap and flight data into every page and the flight data changes with every build. So a deploy is these steps in this order, and **none of these commands has been run**, because nothing in this milestone is deployed:
 
 ```bash
 pnpm --filter @blockwarden/dashboard run build
@@ -302,9 +302,11 @@ aws s3 sync ../../../../apps/dashboard/out "s3://$(terraform output -raw site_bu
 aws cloudfront create-invalidation --distribution-id "$(terraform output -raw distribution_id)" --paths '/*'
 ```
 
-`site.auto.tfvars.json` is a build output that Terraform loads by itself, and it is git-ignored. The script refuses an export with an inline `style`, `<style>`, event handler or `javascript:` URL on any page (the not-found pages' styles are exempt, and it says so), and refuses one whose policy would pass CloudFront's 1,783-character limit on the header; `pnpm --filter @blockwarden/dashboard run csp` runs those checks alone, as CI does.
+`site.auto.tfvars.json` is a build output that Terraform loads by itself, and it is git-ignored. The script refuses an export with an inline `style`, `<style>`, event handler or `javascript:` URL on any page (the not-found pages' styles are exempt, and it says so), and refuses one whose policy would pass CloudFront's limit on a Content-Security-Policy header value (`POLICY_LIMIT` in that script); `pnpm --filter @blockwarden/dashboard run csp` runs those checks alone, as CI does.
 
-The upload and the apply are coupled. Every rebuild changes the hashes, so files uploaded without the matching `terraform apply` leave a site that renders but does not hydrate, and every button is dead. Rolling back to an older bucket version needs that build's hashes applied too.
+Between the apply and the end of the invalidation, CloudFront can still serve the old HTML, and it is now under the new policy, so it will not hydrate. To close that gap, apply the union of the old and new hashes first, then apply the new set alone once the invalidation is done. The headroom fits that: the policy's other directives leave room for 29 hashes, and a build currently has 10, so a union of two builds needs up to 20.
+
+The upload and the apply are coupled. Every rebuild changes the hashes, so files uploaded without the matching `terraform apply` leave a site that renders but does not hydrate, and every button is dead. Rolling back to an older bucket version needs that build's hashes applied too. Get them by running `node scripts/csp-hashes.mjs --dir <export>` on the restored build, or on the objects synced back down from the bucket version.
 
 `terraform output -raw site_url` is where the dashboard is then served. The bucket keeps each replaced file for 30 days as a previous version, which is how to roll back a bad sync.
 
