@@ -422,6 +422,17 @@ describe('Relayer', () => {
     expect(screen.queryByRole('button', { name: /submit|send|relay/i })).toBeNull()
   })
 
+  it('leaves out the Address column when no signer row carries an address, as on a Terraform-written row', async () => {
+    handler = (call) =>
+      call.path === '/v1/relayer/signers'
+        ? json(200, { signers: [{ signerId: 'main', chainIds: [1, 8453] }] })
+        : paged(TXS, call.query, 'txs')
+    renderWithClient(<RelayerPage />)
+    const tables = await screen.findAllByRole('table')
+    expect(rowsOf(tables[0]!).map((r) => r.map((c) => c.textContent))).toEqual([['main', 'Ethereum, Base']])
+    expect(screen.queryByRole('columnheader', { name: 'Address' })).toBeNull()
+  })
+
   it('lists pending transactions and pages with the cursor it was given', async () => {
     renderWithClient(<RelayerPage />)
     await waitFor(() => expect(screen.getAllByRole('table')).toHaveLength(2))

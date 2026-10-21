@@ -2,6 +2,7 @@
 
 import { ConnectButton } from '../components/ConnectButton'
 import { SignIn } from '../components/SignIn'
+import { SignOut } from '../components/SignOut'
 import { useSession } from '../lib/session'
 
 export default function Home() {
@@ -21,7 +22,12 @@ export default function Home() {
           <SignIn onSignedIn={refresh} />
         </>
       ) : null}
-      {state === 'signedIn' ? <p>Signed in.</p> : null}
+      {state === 'signedIn' ? (
+        <>
+          <p>Signed in.</p>
+          <SignOut onSignedOut={refresh} />
+        </>
+      ) : null}
     </main>
   )
 }

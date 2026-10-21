@@ -24,8 +24,12 @@ type Tx = {
 const SIGNER_COLUMNS: Column<Signer>[] = [
   { header: 'Signer', cell: (s) => s.signerId },
   { header: 'Chains', cell: (s) => s.chainIds.map(chainName).join(', ') },
-  { header: 'Address', cell: (s) => (s.address ? <code className="wrap">{s.address}</code> : '') },
 ]
+
+const ADDRESS_COLUMN: Column<Signer> = {
+  header: 'Address',
+  cell: (s) => (s.address ? <code className="wrap">{s.address}</code> : ''),
+}
 
 const TX_COLUMNS: Column<Tx>[] = [
   { header: 'Transaction', cell: (tx) => <code className="wrap">{tx.txId}</code> },
@@ -54,7 +58,7 @@ export default function RelayerPage() {
       {signers.error ? <Problem error={signers.error} onRetry={() => void signers.refetch()} /> : null}
       {signers.data ? (
         <DataTable
-          columns={SIGNER_COLUMNS}
+          columns={signers.data.signers.some((s) => s.address) ? [...SIGNER_COLUMNS, ADDRESS_COLUMN] : SIGNER_COLUMNS}
           rows={signers.data.signers}
           rowKey={(s) => s.signerId}
           empty="No signers."
