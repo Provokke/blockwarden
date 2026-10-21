@@ -20,6 +20,12 @@ variable "chains" {
     finality_depth     = optional(number)
   }))
 
+  # the API's rule for the same map: a deployment with nothing to sign in from, and nothing to monitor, is a mistake
+  validation {
+    condition     = length(var.chains) > 0
+    error_message = "chains must name at least one chain."
+  }
+
   validation {
     condition     = alltrue([for c in var.chains : c.max_range == null ? true : c.max_range >= 1])
     error_message = "max_range must be at least 1."
