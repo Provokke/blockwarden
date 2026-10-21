@@ -85,7 +85,7 @@ export async function collect(root) {
     const name = relative(root, file).split(sep).join('/')
     const { inline, found } = inspect(await readFile(file, 'utf8'))
     // The HTML parser turns CRLF and a lone CR into LF before a script's text exists, so a CR here would hash to
-    // something the browser never computes. The bytes stay as they are; the page is refused instead.
+    // something the browser never computes.
     if (inline.some((content) => content.includes('\r'))) {
       problems.push(`${name} has an inline script containing a carriage return, which a browser hashes as a line feed`)
     }
