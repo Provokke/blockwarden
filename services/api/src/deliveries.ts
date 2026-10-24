@@ -1,7 +1,7 @@
 import { redactedUrl } from '@blockwarden/core'
 import type { APIGatewayProxyEventV2 } from 'aws-lambda'
 import { decodeCursor, encodeCursor, error, ok, readJsonBody, type ApiResult } from './http.js'
-import type { DeliveryItem, DeliveryRef, DeliveryStore } from './store.js'
+import { DEAD_PARTITION, type DeliveryItem, type DeliveryRef, type DeliveryStore } from './store.js'
 
 const MAX_PAGE = 100
 const SUBJECT_KINDS = ['MATCH#', 'TX#', 'OUTBOUND#']
@@ -12,9 +12,6 @@ const SUBJECT_KINDS = ['MATCH#', 'TX#', 'OUTBOUND#']
 // never reach ExclusiveStartKey, where DynamoDB answers a bad key with a ValidationException that has no
 // route-level catch.
 const DEAD_LIST_KEY_ATTRS = ['PK', 'SK', 'GSI1PK', 'GSI1SK'] as const
-
-// the partition listDead queries (store.ts), which is services/actions/src/keys.ts's deliveriesByStatus('dead')
-const DEAD_PARTITION = 'DELIVERY#DEAD'
 
 function isDeadListKey(value: unknown): value is Record<(typeof DEAD_LIST_KEY_ATTRS)[number], string> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false

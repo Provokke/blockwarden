@@ -39,10 +39,11 @@ afterAll(async () => {
 })
 
 // exactly the attributes infra/terraform/modules/relayer/signers.tf's aws_dynamodb_table_item.signer writes,
-// including the sparse GSI1 entry this task adds: PK, SK, GSI1PK, GSI1SK, signerId, keyId, chainIds, webhooks,
-// policy - no address attribute (Terraform has no keccak256 to compute one) and no webhookSecretParameter for
-// a signer that does not configure one. Written by hand, not through RelayerStore.putSigner, because that
-// method does not set GSI1PK/GSI1SK - Terraform's own item is the only writer this route can rely on today.
+// including the sparse GSI1 entry that lists signers: PK, SK, GSI1PK, GSI1SK, signerId, keyId, chainIds,
+// webhooks, policy - no address attribute (Terraform has no keccak256 to compute one) and no
+// webhookSecretParameter for a signer that does not configure one. Written by hand, not through
+// RelayerStore.putSigner, because that method does not set GSI1PK/GSI1SK, so only a row shaped like
+// Terraform's shows whether the route can list what a deployment really holds.
 async function putTerraformSigner(id: string, chainIds: number[]): Promise<void> {
   await dynamo.doc.send(
     new PutCommand({
@@ -122,11 +123,17 @@ async function createConfirmedTx(overrides: Partial<TxRecord> = {}): Promise<TxR
   )
 }
 
-describe('signers through the API, over a row shaped exactly like Terraform writes it', () => {
-  it('a session sees every signer; an API key sees only the ones it may use', async () => {
-    await putTerraformSigner('demo', [CHAIN, OTHER_CHAIN])
-    await putTerraformSigner('treasury', [OTHER_CHAIN])
+// the listing routes work out which chains are relayed from the signer rows, so every describe that lists
+// needs them; a put of the same key just overwrites, so each describe can seed them for itself
+async function seedSigners(): Promise<void> {
+  await putTerraformSigner('demo', [CHAIN, OTHER_CHAIN])
+  await putTerraformSigner('treasury', [OTHER_CHAIN])
+}
 
+describe('signers through the API, over a row shaped exactly like Terraform writes it', () => {
+  beforeAll(seedSigners)
+
+  it('a session sees every signer; an API key sees only the ones it may use', async () => {
     const sessionResult = await handleListSigners(deps(), session, apiEvent({ routeKey: 'GET /v1/relayer/signers' }))
     const sessionBody = sessionResult.body as { signers: { signerId: string; address?: string }[] }
     expect(sessionBody.signers.map((s) => s.signerId).sort()).toEqual(['demo', 'treasury'])
@@ -186,6 +193,8 @@ describe('a transaction through the API, over rows the relayer store wrote', () 
 })
 
 describe('listing pending transactions through the API', () => {
+  beforeAll(seedSigners)
+
   it('a session sees every signer pending on the chain; an API key sees only its own, filtered after paging', async () => {
     const demoPending = await createPendingTx({
       signerId: 'demo',
