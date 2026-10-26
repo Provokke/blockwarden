@@ -21,7 +21,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run format:check
       - run: pnpm run typecheck
-      - run: pnpm run test
+      # the contracts job runs forge's tests with the CI profile's counts; here they would run again at local counts
+      - run: pnpm -r --filter '!@blockwarden/contracts' run test
       # pulled up front so the downloads do not count against the tests' container start timeouts
       - run: |
           docker pull ghcr.io/foundry-rs/foundry:v1.8.1
@@ -37,6 +38,29 @@ jobs:
       - name: Check the dashboard export against the CSP
         run: pnpm --filter @blockwarden/dashboard run csp
       - run: node scripts/pack-check.mjs
+
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      # OpenZeppelin and forge-std come through the lockfile, not forge install
+      - run: pnpm install --frozen-lockfile
+      - uses: foundry-rs/foundry-toolchain@v1.9.1
+        with:
+          version: v1.8.1
+      - run: forge fmt --check
+        working-directory: contracts
+      - run: forge build --sizes
+        working-directory: contracts
+      - run: forge test
+        working-directory: contracts
+        env:
+          FOUNDRY_PROFILE: ci
 
   terraform:
     runs-on: ubuntu-latest
