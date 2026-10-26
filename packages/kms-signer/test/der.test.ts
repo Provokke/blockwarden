@@ -19,6 +19,7 @@ function opensslKey() {
 }
 
 describe('DER signatures from OpenSSL', () => {
+  // 300 OpenSSL signatures and recoveries: about 2.5 s on a fast runner and twice that on a slow one, past vitest's 5 s default
   it('parse, normalise to low s and recover to the key address', async () => {
     const key = opensslKey()
     const seen = { highS: 0, parity1: 0 }
@@ -40,7 +41,7 @@ describe('DER signatures from OpenSSL', () => {
     // guards against a property that only ever saw the easy half of the input space
     expect(seen.highS).toBeGreaterThan(50)
     expect(seen.parity1).toBeGreaterThan(50)
-  })
+  }, 30000)
 
   it('recovers a signature whose r or s is shorter than 32 bytes', async () => {
     const key = opensslKey()
