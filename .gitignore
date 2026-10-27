@@ -14,3 +14,5 @@ next-env.d.ts
 *.tsbuildinfo
 contracts/cache/
 contracts/.forge-home/
+contracts/broadcast/
+contracts/deployments/31337.json

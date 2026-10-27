@@ -4,3 +4,4 @@ pnpm-lock.yaml
 **/.terraform
 **/.build
 **/.pack
+contracts/deployments
