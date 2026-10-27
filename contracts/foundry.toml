@@ -21,8 +21,16 @@ ignored_warnings_from = ["node_modules"]
 [profile.default.fuzz]
 runs = 1000
 
+[profile.default.invariant]
+runs = 512
+depth = 128
+
 [profile.ci.fuzz]
 runs = 256
+
+[profile.ci.invariant]
+runs = 256
+depth = 64
 
 [lint]
 # CI's gate is fmt, build and test; the linter's notes on test and script files would bury the build output
