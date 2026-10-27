@@ -17,6 +17,8 @@ optimizer_runs = 200
 evm_version = "prague"
 # OpenZeppelin 5.6.1 names a variable `error`, which solc 0.8.37 warns will become a keyword; it is not ours to fix
 ignored_warnings_from = ["node_modules"]
+# the deploy script writes deployments/<chainId>.json and the fund script reads it back; nothing else on disk
+fs_permissions = [{ access = "read-write", path = "./deployments" }]
 
 [profile.default.fuzz]
 runs = 1000
