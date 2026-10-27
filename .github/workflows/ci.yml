@@ -28,7 +28,7 @@ jobs:
           docker pull ghcr.io/foundry-rs/foundry:v1.8.1
           docker pull amazon/dynamodb-local:3.3.1
           docker pull motoserver/moto:5.2.3
-      - uses: foundry-rs/foundry-toolchain@v1.9.1
+      - uses: foundry-rs/foundry-toolchain@v1.9.2
         with:
           version: v1.8.1
       # the seam tests deploy from contracts/out, which is built here rather than committed
@@ -55,7 +55,7 @@ jobs:
           cache: pnpm
       # OpenZeppelin and forge-std come through the lockfile, not forge install
       - run: pnpm install --frozen-lockfile
-      - uses: foundry-rs/foundry-toolchain@v1.9.1
+      - uses: foundry-rs/foundry-toolchain@v1.9.2
         with:
           version: v1.8.1
       - run: forge fmt --check
