@@ -27,7 +27,13 @@ export function containerPath(hostPath, platform = process.platform) {
 
 // a container cannot reach the host's loopback, so an Anvil published on localhost is reached through the gateway
 export function containerRpcUrl(rpcUrl) {
-  const url = new URL(rpcUrl)
+  let url
+  try {
+    url = new URL(rpcUrl)
+  } catch {
+    // the URL carries the provider's API key, and Node's own TypeError prints its input
+    throw new Error('RPC_URL is not a valid URL')
+  }
   if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') url.hostname = 'host.docker.internal'
   return url.toString()
 }

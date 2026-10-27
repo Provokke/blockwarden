@@ -3,15 +3,18 @@ pragma solidity 0.8.37;
 
 import {ERC2771Forwarder} from "@openzeppelin/contracts/metatx/ERC2771Forwarder.sol";
 import {Script} from "forge-std/Script.sol";
+import {VmSafe} from "forge-std/Vm.sol";
 import {DemoEmitter} from "../src/DemoEmitter.sol";
 import {TopUpVault} from "../src/TopUpVault.sol";
 import {
+    ANVIL_ACCOUNT_0,
     DEFAULT_COOLDOWN,
     DEFAULT_THRESHOLD,
     DEFAULT_TOP_UP_AMOUNT,
     EMITTER_SALT,
     FORWARDER_NAME,
     FORWARDER_SALT,
+    LOCAL_CHAIN_ID,
     VAULT_SALT
 } from "./DemoConfig.sol";
 
@@ -33,11 +36,21 @@ contract Deploy is Script {
     }
 
     error Create2Failed(bytes32 salt);
+    error OwnerIsAnvilAccount();
 
     function run() external returns (Deployed memory deployed) {
-        // the owner is part of the vault's init code, so a chain given another owner gets another vault address
+        // the owner is part of the vault's init code, so a chain given another owner gets another vault address. Only
+        // Anvil may fall back to the sender: everywhere else the owner must be named, and must not be Anvil's
+        // first account, whose key is public.
+        address owner;
+        if (block.chainid == LOCAL_CHAIN_ID) {
+            owner = vm.envOr("VAULT_OWNER", msg.sender);
+        } else {
+            owner = vm.envAddress("VAULT_OWNER");
+            if (owner == ANVIL_ACCOUNT_0) revert OwnerIsAnvilAccount();
+        }
         Params memory params = Params({
-            owner: vm.envOr("VAULT_OWNER", msg.sender),
+            owner: owner,
             threshold: vm.envOr("VAULT_THRESHOLD", DEFAULT_THRESHOLD),
             topUpAmount: vm.envOr("VAULT_TOP_UP_AMOUNT", DEFAULT_TOP_UP_AMOUNT),
             cooldown: vm.envOr("VAULT_COOLDOWN", DEFAULT_COOLDOWN)
@@ -45,9 +58,12 @@ contract Deploy is Script {
         vm.startBroadcast();
         deployed = deploy(params);
         vm.stopBroadcast();
-        string memory dir = string.concat(vm.projectRoot(), "/deployments");
-        vm.createDir(dir, true);
-        write(params, deployed, string.concat(dir, "/", vm.toString(block.chainid), ".json"));
+        // a dry run must not overwrite a committed file with addresses that were never deployed
+        if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume)) {
+            string memory dir = string.concat(vm.projectRoot(), "/deployments");
+            vm.createDir(dir, true);
+            write(params, deployed, string.concat(dir, "/", vm.toString(block.chainid), ".json"));
+        }
     }
 
     function deploy(Params memory params) public returns (Deployed memory deployed) {
