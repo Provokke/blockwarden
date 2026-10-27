@@ -38,6 +38,12 @@ contract VaultHandler is CommonBase, StdUtils, ForwardRequests {
     uint256 public ghostForwardedExecutions;
     uint256 public ghostReplaysAccepted;
 
+    // refusals the handler justified, so a test can show each refusal path is reachable
+    uint256 public refusedByCooldown;
+    uint256 public refusedByShortPool;
+    uint256 public replaysRefusedInvalidSigner;
+    uint256 public replaysRefusedExpired;
+
     ERC2771Forwarder.ForwardRequestData internal lastExecuted;
     bool internal hasExecuted;
 
@@ -92,9 +98,7 @@ contract VaultHandler is CommonBase, StdUtils, ForwardRequests {
     }
 
     function topUp(uint256 accountSeed, uint256 callerSeed) external useTime {
-        // the meta-transaction signer is only ever credited through the forwarder, so a run's first forward request
-        // is never refused for a cooldown the fuzzer opened by accident
-        address account = actors[accountSeed % (actors.length - 1)];
+        address account = actors[accountSeed % actors.length];
         bool cooling = cooldownIsLive(account);
         uint256 poolBefore = vault.pool();
         vm.prank(actors[callerSeed % actors.length]);
@@ -103,8 +107,14 @@ contract VaultHandler is CommonBase, StdUtils, ForwardRequests {
         } catch (bytes memory reason) {
             // the only refusals the vault may give are the two the ghosts predict; anything else is a bug to surface
             bytes4 selector = bytes4(reason);
-            if (selector == TopUpVault.CooldownActive.selector && cooling) return;
-            if (selector == TopUpVault.PoolTooLow.selector && poolBefore < vault.topUpAmount()) return;
+            if (selector == TopUpVault.CooldownActive.selector && cooling) {
+                ++refusedByCooldown;
+                return;
+            }
+            if (selector == TopUpVault.PoolTooLow.selector && poolBefore < vault.topUpAmount()) {
+                ++refusedByShortPool;
+                return;
+            }
             revert UnexpectedRefusal(reason);
         }
     }
@@ -145,6 +155,8 @@ contract VaultHandler is CommonBase, StdUtils, ForwardRequests {
                 ? ERC2771Forwarder.ERC2771ForwarderExpiredRequest.selector
                 : ERC2771Forwarder.ERC2771ForwarderInvalidSigner.selector;
             if (bytes4(reason) != expected) revert UnexpectedRefusal(reason);
+            if (expired) ++replaysRefusedExpired;
+            else ++replaysRefusedInvalidSigner;
         }
     }
 
