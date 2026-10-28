@@ -3,10 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./testing": "./ts/testing.ts"
+  },
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "build": "node scripts/forge.mjs build",
     "test": "node scripts/forge.mjs test",
     "fmt:check": "node scripts/forge.mjs fmt --check",
+    "test:integration": "node scripts/forge.mjs build && vitest run test-ts --testTimeout=180000 --hookTimeout=180000",
     "deploy:local": "node scripts/local.mjs deploy",
     "fund:local": "node scripts/local.mjs fund"
   },
@@ -14,6 +19,8 @@
     "@openzeppelin/contracts": "5.6.1"
   },
   "devDependencies": {
-    "forge-std": "github:foundry-rs/forge-std#v1.16.2"
+    "forge-std": "github:foundry-rs/forge-std#v1.16.2",
+    "testcontainers": "12.1.0",
+    "viem": "2.56.9"
   }
 }
