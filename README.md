@@ -115,6 +115,25 @@ The deploy script sends each contract through the deterministic CREATE2 factory 
 
 The contracts compile with solc 0.8.37 for the `prague` EVM, pinned in `foundry.toml`; Base and Arbitrum both support it. The EVM version is part of every address, so changing it means redeploying everything.
 
+## Try it locally (no AWS)
+
+`pnpm run demo:local` is a local demo only. Nothing is deployed, no AWS account or credentials are involved, and nothing leaves your machine. It needs Node.js 24, pnpm 12, Docker running, and the images the integration tests already use (Anvil from `ghcr.io/foundry-rs/foundry:v1.8.1`, `amazon/dynamodb-local`, `motoserver/moto`; the first run pulls them).
+
+```bash
+pnpm install
+pnpm run demo:local     # about a minute
+```
+
+It starts Anvil, DynamoDB Local and moto (for SQS) in Docker, plus a webhook catcher on `127.0.0.1`. Then it:
+
+1. deploys the demo contracts with the existing `deploy:local` script;
+2. stores a monitor rule: `Ping` on `DemoEmitter` where `id == 42`, with a webhook action;
+3. calls `ping()` on the emitter with id 7 (ignored) and id 42 (matches);
+4. runs one real monitor cycle against Anvil and prints the match it wrote;
+5. runs the real actions dispatcher and sender over the DynamoDB stream and an SQS queue, and prints the signed webhook the catcher received, verified with `verifyWebhook()`.
+
+What is stand-in: the containers replace AWS, the webhook URL is resolved to the local catcher (the destination guard refuses loopback on purpose), and the webhook secret is a throwaway constant. The monitor and actions code are the ones the Lambdas run, but the Lambda wiring (EventBridge, stream and SQS event source mappings, IAM, KMS) is not exercised. The relayer is not part of the demo. A real captured run is in [docs/demo-output.txt](docs/demo-output.txt). The code is `tools/demo-local/src/demo.ts` and reuses the integration tests' helpers.
+
 ## Local development
 
 Requires Node.js 24, pnpm 12 and Docker.

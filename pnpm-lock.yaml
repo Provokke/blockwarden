@@ -484,6 +484,37 @@ importers:
         specifier: 4.23.13
         version: 4.23.13
 
+  tools/demo-local:
+    dependencies:
+      '@aws-sdk/client-sqs':
+        specifier: 3.1141.0
+        version: 3.1141.0
+      '@aws-sdk/lib-dynamodb':
+        specifier: 3.1141.0
+        version: 3.1141.0(@aws-sdk/client-dynamodb@3.1141.0)
+      '@blockwarden/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@blockwarden/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@blockwarden/dynamo':
+        specifier: workspace:*
+        version: link:../../packages/dynamo
+      '@blockwarden/relayer-client':
+        specifier: workspace:*
+        version: link:../../packages/relayer-client
+      viem:
+        specifier: 2.56.9
+        version: 2.56.9(typescript@7.0.2)(zod@4.6.5)
+    devDependencies:
+      '@types/aws-lambda':
+        specifier: 8.10.163
+        version: 8.10.163
+      tsx:
+        specifier: 4.23.13
+        version: 4.23.13
+
   tools/pipeline:
     dependencies:
       yaml:

@@ -1,0 +1,23 @@
+{
+  "name": "@blockwarden/demo-local",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "start": "tsx src/demo.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "3.1141.0",
+    "@aws-sdk/lib-dynamodb": "3.1141.0",
+    "@blockwarden/contracts": "workspace:*",
+    "@blockwarden/core": "workspace:*",
+    "@blockwarden/dynamo": "workspace:*",
+    "@blockwarden/relayer-client": "workspace:*",
+    "viem": "2.56.9"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "8.10.163",
+    "tsx": "4.23.13"
+  }
+}

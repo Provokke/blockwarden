@@ -10,6 +10,7 @@
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r run test",
     "test:integration": "pnpm -r run test:integration",
+    "demo:local": "pnpm --filter @blockwarden/demo-local run start",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

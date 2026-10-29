@@ -1,0 +1,38 @@
+# Captured from: pnpm run demo:local  (2026-10-29, Windows, Docker Desktop; real output, hashes/ports/timestamps vary per run)
+Blockwarden local demo: everything runs on this machine. Nothing is deployed and no AWS account is used.
+
+[1] Starting Anvil, DynamoDB Local and moto (SQS) in Docker, and a webhook catcher on 127.0.0.1
+    Anvil http://localhost:32774 (chain 31337)
+    DynamoDB Local http://localhost:32773
+    moto http://localhost:32775
+    webhook catcher http://127.0.0.1:58872/hook
+
+[2] Deploying the demo contracts with deploy:local
+    DemoEmitter at 0x8C053CCfD45378756154A27960869BE8011C001D
+
+[3] Creating a monitor rule: event Ping(address indexed sender, uint256 indexed id, bytes32 tag) where args.id == 42, webhook action
+    stored rule demo-ping-42 in table blockwarden-test-1
+
+[4] Calling ping() on DemoEmitter twice: id 7 (should not match) and id 42 (should)
+    ping(7, "demo") in tx 0x94184a379bbdbb1969ce6472817ed633a407dcc700f83295613bfb2a69e2bf05
+    ping(42, "demo") in tx 0xefca6c34ef839e2a0beb1afbc01d72842bce7d17fdb491f02ee4d836facb5c6b
+
+[5] Running one monitor cycle (Anvil reports finalized as head minus 64, so mine 64 blocks first)
+    cycle ok: 1 final match(es), 0 provisional
+    MATCH rule=demo-ping-42 status=final block=3
+          tx=0xefca6c34ef839e2a0beb1afbc01d72842bce7d17fdb491f02ee4d836facb5c6b
+          args={"sender":"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","id":"42","tag":"0x64656d6f00000000000000000000000000000000000000000000000000000000"}
+          (ping(7) in tx 0x94184a379bbdbb1969ce6472817ed633a407dcc700f83295613bfb2a69e2bf05 was correctly ignored)
+
+[6] Running the actions code path: DynamoDB stream -> dispatcher -> SQS -> sender -> webhook
+    dispatcher read 6 stream record(s) and queued the deliveries
+    sender processed 1 queued delivery message(s)
+
+[7] The delivery, as the local webhook catcher received it
+    POST /hook  (1 request(s) received in total)
+    X-Blockwarden-Delivery: dlv_24e9e7960472b4c34a040ac7c513c5c1
+    signature verified with verifyWebhook(): yes
+    event type: match.final
+    event data: {"matchKey":"0x6775a4523642f8f8454f937bfc7cbe9c875d38f4efaf94ae602a300862b87da4","ruleId":"demo-ping-42","status":"final","chainId":31337,"address":"0x8c053ccfd45378756154a27960869be8011c001d","transactionHash":"0xefca6c34ef839e2a0beb1afbc01d72842bce7d17fdb491f02ee4d836facb5c6b","blockNumber":3,"blockHash":"0x76170d8e3c43cfd0696fdfde48ee45cd542a7ba6cd8864913bebd1f473d5d885","logIndex":0,"ordinal":0,"event":"event Ping(address indexed sender, uint256 indexed id, bytes32 tag)","eventName":"Ping","args":{"sender":"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","id":"42","tag":"0x64656d6f00000000000000000000000000000000000000000000000000000000"},"firstSeenAt":"2026-10-29T03:39:37.980Z","finalizedAt":"2026-10-29T03:39:38.043Z"}
+
+Done. This was a local demo against Docker containers; nothing was deployed anywhere.
