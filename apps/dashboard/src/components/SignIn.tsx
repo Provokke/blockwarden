@@ -6,8 +6,8 @@ import { useConnection, useSignMessage } from 'wagmi'
 import { ApiError, apiFetch } from '../lib/api'
 import { chains } from '../lib/chains'
 
-// The API refuses a message with no expiry, or one further out than its nonce lifetime, so this stays well
-// inside that and leaves room for the wallet prompt and for a browser clock that runs ahead.
+// The API refuses a message with no expiry, or one past its nonce lifetime, so stay well inside
+// that, leaving room for the wallet prompt and a browser clock that runs ahead.
 const MESSAGE_LIFETIME_MS = 2 * 60 * 1000
 
 function isRejection(err: unknown): boolean {
@@ -32,7 +32,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string>()
 
-  // a wallet on another chain would spend a nonce on a message the API is bound to refuse (siwe_chain)
+  // a wallet on another chain would spend a nonce on a message the API must refuse (siwe_chain)
   if (!isConnected || !address || chainId === undefined || !chains.some((chain) => chain.id === chainId)) return null
 
   async function signIn() {
@@ -45,7 +45,8 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       const message = createSiweMessage({
         address,
         chainId,
-        // the API compares both to the deployment it is serving, so they come from the page actually in use
+        // the API compares both to the deployment it serves, so they come from the page actually in
+        // use
         domain: window.location.host,
         uri: window.location.origin,
         version: '1',

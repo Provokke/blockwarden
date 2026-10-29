@@ -1,6 +1,6 @@
 // Posts or updates the plan summary comment for one environment.
 // Usage: terraform show -json tfplan | node tools/pipeline/src/plan-comment.mjs --environment staging --plan -
-//        node tools/pipeline/src/plan-comment.mjs --environment staging --failed
+//         node tools/pipeline/src/plan-comment.mjs --environment staging --failed
 // Reads GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_API_URL, PR_NUMBER, RUN_URL and HEAD_SHA from the environment.
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'

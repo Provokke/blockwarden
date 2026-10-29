@@ -35,12 +35,13 @@ beforeAll(async () => {
         return res.end('x'.repeat(5_000_000))
       }
       if (req.url === '/wide') {
-        // 6000 bytes, but only 3000 UTF-16 units: a cap that counts units would keep twice what it should
+        // 6000 bytes but only 3000 UTF-16 units: a cap that counts units would keep twice what it
+        // should
         res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
         return res.end('é'.repeat(3_000))
       }
       if (req.url === '/split') {
-        // the two bytes of one character, in two chunks, and a third character straddling the 2 KB cap
+        // two bytes of one character in two chunks, and a third straddling the 2 KB cap
         res.writeHead(200)
         res.write('ok:')
         res.write(Buffer.from([0xc3]))
@@ -49,7 +50,7 @@ beforeAll(async () => {
         return res.end()
       }
       if (req.url === '/cut') {
-        // promises 100 bytes, sends 7, then closes cleanly: no error reaches the client, only a short body
+        // promises 100 bytes, sends 7, then closes cleanly: no error, just a short body
         res.writeHead(200, { 'content-length': '100' })
         res.write('partial')
         setTimeout(() => res.socket?.end(), 20)
@@ -60,7 +61,7 @@ beforeAll(async () => {
         return res.write('a')
       }
       if (req.url === '/drip') {
-        // a byte at a time, for ever: never idle, so only an absolute deadline ends this
+        // a byte at a time, for ever: never idle, so only the absolute deadline ends it
         res.writeHead(200)
         const tick = setInterval(() => res.write('a'), 50)
         res.on('close', () => clearInterval(tick))
@@ -79,8 +80,8 @@ afterAll(() => {
   server.close()
 })
 
-// A Resolved value points at an address the guard has already judged. Building one by hand is the only way a
-// test can reach a loopback server, and the next test proves the guard itself still refuses that URL.
+// A Resolved value points at an address the guard already judged. Building one by hand is the only
+// way to reach a loopback server; the next test proves the guard still refuses that URL.
 const local = (path: string): Resolved => ({
   url: new URL(`http://127.0.0.1:${port}${path}`),
   host: '127.0.0.1',
@@ -148,14 +149,14 @@ describe('postJson', () => {
     await expect(postJson(local('/cut'), '{}', {})).rejects.toThrow('before the answer was complete')
   })
 
-  // the deadline is far away, so only the idle timeout can end this one
+  // deadline is far away, so only the idle timeout can end this
   it('gives up on a destination that goes silent', async () => {
     await expect(postJson(local('/hang'), '{}', {}, { timeoutMs: 500, deadlineMs: 60_000 })).rejects.toThrow(
       'did not answer in time',
     )
   })
 
-  // a byte every 50 ms keeps the socket busy for ever, so only the deadline ends this one
+  // a byte every 50 ms keeps the socket busy, so only the deadline ends this
   it('gives up at the deadline on a destination that dribbles for ever', async () => {
     const started = Date.now()
     await expect(postJson(local('/drip'), '{}', {}, { timeoutMs: 5_000, deadlineMs: 700 })).rejects.toThrow(
@@ -197,7 +198,7 @@ describe('over TLS', () => {
     secureServer.close()
   })
 
-  // pinned.invalid never resolves, so a request that arrives did so through the pinned lookup, on the https path
+  // pinned.invalid never resolves, so a request that arrives went through the pinned lookup
   const pinned = (): Resolved => ({
     url: new URL(`https://pinned.invalid:${securePort}/hook`),
     host: 'pinned.invalid',
@@ -209,13 +210,13 @@ describe('over TLS', () => {
   it('refuses a certificate it has no reason to trust', async () => {
     const thrown = await postJson(pinned(), '{}', {}).catch((e: NodeJS.ErrnoException) => e)
     expect((thrown as NodeJS.ErrnoException).code).toBe('DEPTH_ZERO_SELF_SIGNED_CERT')
-    // it still got that far over TLS, at the pinned address, with the name in the handshake
+    // still got there over TLS, at the pinned address, with the name in the handshake
     expect(sni.at(-1)).toBe('pinned.invalid')
   })
 
   it('reaches the pinned address over TLS and reads the answer', async () => {
-    // the certificate is checked against the name, so this machine has to trust the test certificate for the
-    // request to complete. Nothing in the guard changes: postJson has no option that would skip the check.
+    // The cert is checked against the name, so this machine has to trust the test cert. Nothing in
+    // the guard changes: postJson has no way to skip the check.
     const createSecureContext = tls.createSecureContext
     tls.createSecureContext = (options = {}) => createSecureContext({ ...options, ca: SELF_SIGNED_CERT })
     try {
@@ -239,7 +240,7 @@ describe('the guard and the socket together', () => {
   })
 
   it('refuses a name that resolves to loopback, through the real resolver', async () => {
-    // localhost resolves to 127.0.0.1 and ::1 on every machine this runs on
+    // localhost resolves to 127.0.0.1 and ::1 everywhere this runs
     await expect(resolveDestination(`https://localhost:${port}/hook`)).rejects.toThrow(/127\.0\.0\.0\/8|::\/64/)
   })
 
@@ -255,7 +256,7 @@ describe('the guard and the socket together', () => {
   })
 
   it('connects to the pinned address even when the host name resolves to nothing', async () => {
-    // .invalid never resolves, so the only way this request can arrive is through the pinned lookup
+    // .invalid never resolves, so the only way in is the pinned lookup
     const target: Resolved = {
       url: new URL(`http://does-not-exist.invalid:${port}/hook`),
       host: 'does-not-exist.invalid',

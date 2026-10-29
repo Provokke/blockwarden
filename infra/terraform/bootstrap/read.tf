@@ -1,12 +1,15 @@
-# What terraform plan reads to refresh the staging and demo stacks: each resource type in the modules, and the
-# calls the AWS provider (6.66) makes to read it back. The plan role gets the policy for both stacks; each apply role
-# gets the one for its own stack only, so neither stack's role can read the other's secrets. Read-only.
+# What terraform plan reads to refresh the staging and demo stacks: each module resource type and
+# the provider (6.66)
+# calls that read it back. The plan role gets the policy for both stacks; each apply role gets only
+# its own stack's,
+# so neither can read the other's secrets. Read-only.
 locals {
   region_arn = "${local.partition}:%s:${var.region}:${local.account_id}"
 
-  # envs are the stacks whose Terraform-written secrets the scope can read. glob, table and param are the name
-  # patterns of the resources that carry a stack's name in their ARN: the table has no suffix, and parameters sit
-  # under a path.
+  # envs are the stacks whose Terraform-written secrets the scope can read. glob, table and param
+  # are name patterns
+  # for resources that carry the stack's name in their ARN (the table has no suffix, parameters sit
+  # under a path).
   read_scopes = {
     plan    = { envs = ["staging", "demo"], glob = "*", table = "*", param = "*" }
     staging = { envs = ["staging"], glob = "staging-*", table = "staging", param = "staging/*" }
@@ -32,10 +35,12 @@ locals {
       Resource = ["arn:${format(local.region_arn, "dynamodb")}:table/blockwarden-${c.table}"]
     },
     {
-      # GetItem is for the rule, signer and API key items Terraform writes. The leading-key condition limits it to
-      # the partitions Terraform writes, and IAM cannot condition on a sort key. The relayer also keeps its nonce,
-      # pause and spend rows inside signer partitions, and those stay readable; match, delivery and the other
-      # runtime data is not.
+      # GetItem is for the rule, signer and API key items Terraform writes. The leading-key
+      # condition limits it to the
+      # partitions Terraform writes (IAM can't condition on a sort key). The relayer keeps its
+      # nonce, pause and spend rows
+      # inside signer partitions, so those stay readable; match, delivery and other runtime data
+      # aren't.
       Sid       = "TerraformItems"
       Action    = ["dynamodb:GetItem"]
       Resource  = [for env in c.envs : "arn:${format(local.region_arn, "dynamodb")}:table/blockwarden-${env}"]
@@ -56,7 +61,7 @@ locals {
       Resource = ["arn:${format(local.region_arn, "lambda")}:function:blockwarden-${c.glob}"]
     },
     {
-      # a mapping's ARN ends in a UUID Lambda chooses, so it cannot carry the stack's name
+      # a mapping's ARN ends in a UUID Lambda picks, so it can't carry the stack's name
       Sid      = "EventSourceMappings"
       Action   = ["lambda:GetEventSourceMapping", "lambda:ListTags"]
       Resource = ["arn:${format(local.region_arn, "lambda")}:event-source-mapping:*"]
@@ -91,16 +96,19 @@ locals {
       Resource = ["arn:${format(local.region_arn, "cloudwatch")}:alarm:blockwarden-${c.glob}"]
     },
     {
-      # Key ids are random, and the aws/ssm key the modules look up carries no tag of ours, so these name every
-      # key in the account. None of them reads key material or signs.
+      # Key ids are random and the aws/ssm key the modules look up has none of our tags, so these
+      # name every key in the
+      # account. None of them reads key material or signs.
       Sid      = "Keys"
       Action   = ["kms:DescribeKey", "kms:GetKeyPolicy", "kms:GetKeyRotationStatus", "kms:ListResourceTags"]
       Resource = ["arn:${format(local.region_arn, "kms")}:key/*"]
     },
     {
-      # Only the two kinds of SecureString Terraform itself writes, whose values are already in the state this
-      # role reads. The provider decrypts every SecureString it refreshes. The owner's own parameters, the RPC URLs
-      # and the webhook secret, are never read by Terraform and are not named here.
+      # Only the two kinds of SecureString Terraform writes, whose values are already in the state
+      # this role reads.
+      # The provider decrypts every SecureString it refreshes. The owner's parameters (RPC URLs,
+      # webhook secret) are never
+      # read by Terraform so aren't named here.
       Sid    = "TerraformParameters"
       Action = ["ssm:GetParameter"]
       Resource = flatten([for env in c.envs : [
@@ -114,7 +122,7 @@ locals {
       Resource = ["arn:${format(local.region_arn, "ssm")}:parameter/blockwarden-${c.param}"]
     },
     {
-      # an API's id is chosen by API Gateway, so the paths cannot carry the stack's name
+      # API Gateway picks the API id, so the paths can't carry the stack's name
       Sid    = "HttpApis"
       Action = ["apigateway:GET"]
       Resource = [
@@ -124,7 +132,8 @@ locals {
       ]
     },
     {
-      # distribution, policy and origin access control ids are chosen by CloudFront; only a function has a name
+      # CloudFront picks the ids for distributions, policies and origin access controls; only a
+      # function has a name
       Sid    = "CloudFront"
       Action = ["cloudfront:GetDistribution", "cloudfront:GetDistributionConfig", "cloudfront:GetInvalidation", "cloudfront:GetOriginAccessControl", "cloudfront:GetResponseHeadersPolicy", "cloudfront:GetCachePolicy", "cloudfront:GetOriginRequestPolicy", "cloudfront:ListTagsForResource"]
       Resource = [
@@ -147,9 +156,11 @@ locals {
       Resource = ["arn:${local.partition}:acm:us-east-1:${local.account_id}:certificate/*"]
     },
     {
-      # These list or describe across the account and take no resource ARN: the managed
-      # policies (cache, origin request and response headers) the site looks up by name, the alias lookup for
-      # aws/ssm, the log group and alarm descriptions, and the parameter metadata, which never includes a value.
+      # These list or describe across the account and take no resource ARN: the managed policies
+      # (cache, origin request,
+      # response headers) the site looks up by name, the alias lookup for aws/ssm, log group and
+      # alarm descriptions, and
+      # parameter metadata, which never includes a value.
       Sid = "AccountWideReads"
       Action = [
         "cloudfront:ListCachePolicies", "cloudfront:ListOriginRequestPolicies",

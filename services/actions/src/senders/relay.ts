@@ -2,17 +2,14 @@ import { relay as relayTx, RelayerApiError, type RelayerClientOptions } from '@b
 import { truncate } from '../records.js'
 import type { Sender, SendOutcome } from './types.js'
 
-// A handful of the relayer's own codes mean "ask again shortly" rather than "this request is bad" -
-// services/relayer/src/api.ts (busy), src/submit.ts (rpc_unavailable), and the client's own
-// packages/relayer-client/src/client.ts (network_error: no answer came back; throttled: API Gateway's own
-// 429, before any relayer code exists). Everything else follows the status the relayer actually answered
-// with: a 4xx means the request itself is wrong and resending it verbatim fails the same way again; a 5xx
-// (or a client-side code such as invalid_response, wrapped around whatever status came with it) is the
-// relayer's own fault this attempt, not the request's.
+// A few relayer codes mean "ask again shortly" (busy, rpc_unavailable, and the client's
+// network_error and throttled). Everything else follows the status the relayer answered with: 4xx
+// means the request is wrong and resending fails the same way; 5xx (or a client code like
+// invalid_response) is the relayer's fault this attempt.
 const TRANSIENT_CODES = new Set(['network_error', 'throttled', 'busy', 'rpc_unavailable'])
 
 function classify(err: RelayerApiError): SendOutcome {
-  // err.message can quote the request, and the request carried the API key, so only the code is reported
+  // err.message can quote the request, which carried the API key, so only report the code
   const message = `the relayer answered ${err.status} ${err.code}`
   if (TRANSIENT_CODES.has(err.code)) return { kind: 'retry', error: message }
   if (err.status >= 400 && err.status < 500) return { kind: 'permanent', error: message }
@@ -28,8 +25,8 @@ export const sendRelay: Sender = async (deps, delivery) => {
   let apiKey: string
   try {
     const [first] = await deps.secrets.read(deps.relayerApiKeyParameter)
-    // an empty parameter is a rotation half done more often than a decision; the webhook and telegram
-    // senders treat the same shape of gap as worth another attempt rather than as a dead letter
+    // an empty parameter is more often a half-done rotation than a decision; webhook and telegram
+    // senders treat it as worth another attempt too
     if (!first) {
       return {
         kind: 'retry',
@@ -44,15 +41,11 @@ export const sendRelay: Sender = async (deps, delivery) => {
   const { signerId, chainId, to, data, value, gasLimit } = delivery.target
   const submit = deps.relay ?? relayTx
   const options: RelayerClientOptions = { baseUrl: deps.relayerApiUrl, apiKey }
-  // the client only knows one bound (it aborts the call once it passes); the tighter of the two deps limits
-  // is what actually governs, same as it would if both were enforced independently
+  // the client only knows one bound (it aborts past it); the tighter of the two limits governs
   const bounds = [deps.timeoutMs, deps.deadlineMs].filter((n): n is number => n !== undefined)
   if (bounds.length > 0) options.timeoutMs = Math.min(...bounds)
   try {
-    // the relayer-client package reaches the network through globalThis.fetch, not node:https - it is meant
-    // to run in edge runtimes too and has no runtime dependencies of its own. That is safe here because the
-    // URL is deps.relayerApiUrl, operator configuration a rule cannot influence, not a caller-supplied
-    // destination that needs the SSRF-pinning guard the other senders go through.
+    // relayer-client uses globalThis.fetch, not node:https (it also runs in edge runtimes). That's fine here: the URL is operator config, not a caller-supplied destination needing the SSRF guard.
     await submit(options, {
       signerId,
       chainId,
@@ -60,9 +53,9 @@ export const sendRelay: Sender = async (deps, delivery) => {
       data,
       ...(value === undefined ? {} : { value: BigInt(value) }),
       ...(gasLimit === undefined ? {} : { gasLimit: BigInt(gasLimit) }),
-      // one key per delivery: a retry after a timeout gets the first transaction back rather than a second one
+      // one key per delivery: a retry after a timeout gets the first transaction back, not a second
       idempotencyKey: delivery.deliveryId,
-      // the caller's own string, so a downstream project can join the transaction to what caused it
+      // the caller's own string, so a downstream project can join the tx to what caused it
       reference: delivery.subject.slice(0, 128),
     })
     return { kind: 'delivered' }

@@ -12,7 +12,8 @@ const base = ruleInputSchema.parse({
   confirmation: { mode: 'fast' },
 })
 
-// what the rule still carries: a warning does not stop it compiling, so there is a rule to read it off
+// what the rule still carries: a warning doesn't stop it compiling, so there's a rule to read it
+// off
 function warningsOf(fn: () => { warnings: RuleValidationError['issues'] }): RuleValidationError['issues'] {
   return fn().warnings
 }
@@ -68,8 +69,8 @@ describe('compileRule', () => {
   })
 
   it('accepts context fields and a nested tuple path, and warns about a nested path past a field with no components', () => {
-    // `to` is indexed on this event, so the log carries it and nothing under it; the fourth condition can never
-    // match. That is the leaf's problem, not the rule's, so the rule still compiles
+    // `to` is indexed on this event, so the log carries it and nothing under it; the fourth
+    // condition can never match. That's the leaf's problem, not the rule's, so it still compiles
     const event =
       'event Approved(address indexed from, address indexed to, uint256 value, (address spender, uint256 allowance) grant)'
     const conditions = {
@@ -108,8 +109,9 @@ describe('action validation', () => {
     expect(compileRule('r1', rule).actions).toHaveLength(2)
   })
 
-  // a rule stored by any path other than scripts/put-rule.ts reaches the monitor without ruleInputSchema,
-  // so compileRule is where an action it would have refused is dropped - the rule itself goes on matching
+  // a rule stored any way other than scripts/put-rule.ts reaches the monitor without
+  // ruleInputSchema, so compileRule drops the action it would have refused and the rule goes on
+  // matching
   it('drops an action the channel schema refuses, naming the field', () => {
     const rule = {
       ...ruleInputSchema.parse(base),
@@ -135,8 +137,8 @@ describe('action validation', () => {
     expect(compiled.warnings[0]?.message).toBeTruthy()
   })
 
-  // actionId hashes the action object and a delivery is keyed by it, so the object that survives has to be the
-  // one that was stored, not one zod rebuilt
+  // actionId hashes the action object and deliveries are keyed by it, so the surviving object has
+  // to be the stored one, not one zod rebuilt
   it('keeps the stored action object itself', () => {
     const action = { type: 'webhook', url: 'https://example.com/hook' }
     const rule = { ...ruleInputSchema.parse(base), actions: [action] } as RuleInput
@@ -181,7 +183,7 @@ describe('nested condition fields', () => {
     ])
   })
 
-  // the whole tuple is hashed into the topic, so args.permission.spender is not in the log at all
+  // the whole tuple is hashed into the topic, so args.permission.spender isn't in the log at all
   it('warns about a path into an indexed tuple, which the log carries only as a hash', () => {
     const indexed =
       'event PermissionApproved((address account, address spender, uint160 allowance) indexed permission, bytes32 hash)'

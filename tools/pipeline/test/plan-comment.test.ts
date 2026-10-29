@@ -103,7 +103,7 @@ describe('render', () => {
 
 type Call = { method: string; url: string; headers: Record<string, string>; body?: unknown }
 
-// a GitHub that answers from a list of pages and records every request it was sent
+// a GitHub that answers from a list of pages and records every request
 function fakeGitHub(pages: unknown[][], status = 200) {
   const calls: Call[] = []
   const fetch = async (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => {
@@ -206,7 +206,7 @@ describe('the command', () => {
     await new Promise((done) => server?.close(done) ?? done(undefined))
   })
 
-  // a local stand-in for the GitHub API with no comments yet; it records what it is sent
+  // a local stand-in for the GitHub API with no comments yet; records what it's sent
   async function startGitHub() {
     const received: { method?: string; url?: string; body: string }[] = []
     server = createServer((req: IncomingMessage, res: ServerResponse) => {

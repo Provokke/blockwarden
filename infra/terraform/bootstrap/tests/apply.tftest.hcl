@@ -1,5 +1,5 @@
-# The mock would give every policy the same ARN, which would let a role name the other stack's boundary or read
-# policy unnoticed, so each gets the ARN its stack's own root computes for it.
+# The mock gives every policy the same ARN, which would let a role name the other stack's boundary or read policy
+# unnoticed, so each gets the ARN its own stack's root computes.
 override_resource {
   target = aws_iam_policy.apply_read["staging"]
   values = { arn = "arn:aws:iam::123456789012:policy/blockwarden-staging-read" }
@@ -191,8 +191,8 @@ run "roles_are_created_only_inside_the_boundary" {
   }
 }
 
-# IAM does not count white space against a policy's limit, and jsonencode of the decoded document is the minified
-# form. A role's inline policies share 10,240 characters, a managed policy has 6,144 and a role's trust policy 2,048.
+# IAM doesn't count white space against a policy's limit, and jsonencode of the decoded document is the minified form.
+# Limits: a role's inline policies share 10,240 characters, a managed policy has 6,144, a trust policy 2,048.
 run "policies_fit_their_size_limits" {
   command = apply
 
@@ -354,7 +354,7 @@ run "other_stacks_resources_are_held_by_environment_tag" {
     error_message = "tagging a key, certificate or distribution requires this stack's environment on the request, and on the resource unless it has none yet"
   }
 
-  # the tags path cannot be conditioned on a resource tag, so a grant on it would let one stack retag the other's API
+  # the tags path can't be conditioned on a resource tag, so a grant on it would let one stack retag the other's API
   assert {
     condition = !anytrue(flatten([
       for p in concat(values(aws_iam_role_policy.apply), values(aws_iam_policy.apply_edge)) : [

@@ -1,5 +1,6 @@
-// Every workflow job that assumes an AWS role must do nothing until the repository variable holding that role's
-// ARN is set, and must say so in its summary when it skips. This checks that shape in each workflow file.
+// Every workflow job that assumes an AWS role must do nothing until the repo variable holding that
+// role's ARN is set, and must say so in its summary when it skips. This checks that shape in each
+// workflow file.
 // Usage: node tools/pipeline/src/workflow-gates.mjs [directory]   (default .github/workflows)
 import { readdir, readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -14,7 +15,8 @@ const GATED = /^(\$\{\{\s*)?steps\.gate\.outputs\.enabled == 'true'(\s*&&[^|]*)?
 // GitHub resolves an action's owner and name without regard to case
 const isAwsAction = (step) => typeof step?.uses === 'string' && step.uses.toLowerCase().startsWith(AWS_ACTION)
 
-// Workflows that run on the base repository's token with the base repository's trust, whatever the pull request holds
+// workflows that run on the base repo's token with the base repo's trust, whatever the pull request
+// holds
 const PRIVILEGED_TRIGGERS = ['pull_request_target', 'workflow_run']
 // `on:` is a string, a list or a map of event names
 const triggers = (on) => (typeof on === 'string' ? [on] : Array.isArray(on) ? on : Object.keys(on ?? {}))
@@ -22,8 +24,8 @@ const grantsIdToken = (permissions) =>
   permissions === 'write-all' ||
   (permissions !== null && typeof permissions === 'object' && permissions['id-token'] === 'write')
 
-// The gated jobs in one workflow, as { job, roleVariable, gate }, where gate is the first step's script, and the
-// problems found, each naming its job.
+// The gated jobs in one workflow, as { job, roleVariable, gate } (gate is the first step's script),
+// plus the problems found, each naming its job.
 export function checkWorkflow(text) {
   const workflow = parse(text)
   const jobs = []

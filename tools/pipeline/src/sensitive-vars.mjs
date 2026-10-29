@@ -1,5 +1,5 @@
-// Fails when a Terraform variable whose name says it holds a secret is not marked sensitive, because this
-// repository's Actions logs are public and Terraform prints every value it is not told to hide.
+// Fails when a Terraform variable whose name says it holds a secret isn't marked sensitive, since
+// this repo's Actions logs are public and Terraform prints any value it isn't told to hide.
 // Usage: node tools/pipeline/src/sensitive-vars.mjs [directory]   (default infra/terraform)
 import { readdir, readFile } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
@@ -8,13 +8,14 @@ import { variables } from './hcl.mjs'
 
 export const SECRET_NAME = /secret|key|token|password|rpc_url/i
 
-// These hold the name of an SSM parameter, or a prefix of one, and never its value: the modules check each against
-// the parameter-name pattern, and the functions read the value at run time. Marking them sensitive would hide the
-// IAM policies built from them in every plan, and Terraform refuses a sensitive value in for_each.
+// These hold an SSM parameter name (or a prefix), never its value: the modules check each against
+// the name pattern and the functions read the value at run time. Marking them sensitive would hide
+// the IAM policies built from them in every plan, and Terraform refuses a sensitive value in
+// for_each.
 export const REFERENCE_SUFFIX = /_(parameter|parameters|prefixes)$/
 
-// Reviewed names that match SECRET_NAME and hold no secret, keyed by the variable's path from the scanned
-// directory, then a colon and the variable name.
+// Reviewed names that match SECRET_NAME and hold no secret, keyed by the variable's path from the
+// scanned directory, then a colon and the variable name.
 export const REVIEWED = new Map([
   [
     'modules/relayer/variables.tf:api_keys',
@@ -35,8 +36,8 @@ async function terraformFiles(dir) {
   return found.sort()
 }
 
-// Each variable that needs sensitive = true and lacks it, as { file, line, variable, name }, where name is the
-// variable's own name or the attribute in its type that matched. Values are never read.
+// Each variable that needs sensitive = true and lacks it, as { file, line, variable, name }, where
+// name is the variable's own name or the attribute in its type that matched. Values are never read.
 export async function check(dir, reviewed = REVIEWED) {
   const problems = []
   const used = new Set()

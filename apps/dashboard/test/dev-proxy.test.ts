@@ -14,7 +14,7 @@ let base: string
 const apiSeen: Seen[] = []
 const nextSeen: Seen[] = []
 
-// the probes stay open until every port is handed out, so no two calls can be given the same one
+// the probes stay open until every port is handed out, so no two calls get the same one
 async function freePorts(count: number): Promise<number[]> {
   const probes = await Promise.all(
     Array.from({ length: count }, () => {
@@ -29,7 +29,7 @@ async function freePorts(count: number): Promise<number[]> {
 
 const PROXY_SCRIPT = fileURLToPath(new URL('../scripts/dev-proxy.mjs', import.meta.url))
 
-// resolves once the proxy says it is listening, and rejects if it exits first so a crash is not a timeout
+// resolves once the proxy is listening, and rejects if it exits first so a crash isn't a timeout
 function startProxy(env: Record<string, string>): Promise<ChildProcess> {
   const child = spawn(process.execPath, [PROXY_SCRIPT], {
     env: { ...process.env, ...env },
@@ -62,7 +62,8 @@ function stub(sink: Seen[], label: string, respond: (seen: Seen, res: ServerResp
   })
 }
 
-// name=value pairs from Set-Cookie, sent back on every later request, the way a browser would for one origin
+// name=value pairs from Set-Cookie, sent back on every later request like a browser would for one
+// origin
 function jar() {
   const cookies = new Map<string, string>()
   return {

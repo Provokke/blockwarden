@@ -1,6 +1,5 @@
-# Renders the bootstrap with a mock AWS provider, so nothing here reaches AWS: an apply against mock_provider
-# only computes values. The trust policies are built with jsonencode for this reason; a data source's json would
-# be a mock string here.
+# Renders the bootstrap with a mock AWS provider so nothing reaches AWS (an apply against mock_provider only computes
+# values). The trust policies use jsonencode for this reason, since a data source's json would be a mock string.
 mock_provider "aws" {
   mock_data "aws_caller_identity" {
     defaults = { account_id = "123456789012" }

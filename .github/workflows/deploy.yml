@@ -19,12 +19,11 @@ defaults:
   run:
     shell: bash
 
-# The two jobs are the same steps for two stacks. They are not one job over a matrix because each needs its own
-# role variable, and an expression that picks one of two variables falls through to the other when the first is
-# unset.
+# Two jobs, same steps, one per stack. Not a matrix because each needs its own role variable, and an
+# expression picking one of two variables falls through to the other when the first is unset.
 jobs:
   staging:
-    # a dispatch can name any branch; only main is ever applied
+    # A dispatch can name any branch, but only main is ever applied
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.environment == 'staging')
     runs-on: ubuntu-latest
     environment: staging
@@ -72,7 +71,7 @@ jobs:
             echo "TF_VAR_region=$REGION"
             echo "TF_VAR_allowed_wallets=$ALLOWED_WALLETS"
             echo "STATE_BUCKET=$STATE_BUCKET"
-            # alarm_email is optional, and an empty string would be an address
+            # alarm_email is optional, and an empty string would count as an address
             if [ -n "$ALARM_EMAIL" ]; then echo "TF_VAR_alarm_email=$ALARM_EMAIL"; fi
           } >> "$GITHUB_ENV"
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -95,9 +94,10 @@ jobs:
           -backend-config="bucket=$STATE_BUCKET"
           -backend-config="key=$ENVIRONMENT/terraform.tfstate"
           -backend-config="region=$TF_VAR_region"
-      # The plan's text and the apply's (resource ids, and every output with its queue URLs, API endpoint and ARNs)
-      # hold the stack's values and this repository's logs are public, so both go nowhere; errors are on stderr and
-      # still reach the log. The apply takes the saved plan, so what is applied is exactly what was planned here.
+      # The plan and apply output hold the stack's values (ids, queue URLs, API endpoint, ARNs) and
+      # our logs are
+      # public, so both go nowhere. Errors are on stderr and still reach the log.
+      # The apply uses the saved plan, so it applies exactly what was planned.
       - name: terraform plan
         if: steps.gate.outputs.enabled == 'true'
         working-directory: infra/terraform/envs/staging
@@ -165,7 +165,7 @@ jobs:
             echo "TF_VAR_region=$REGION"
             echo "TF_VAR_allowed_wallets=$ALLOWED_WALLETS"
             echo "STATE_BUCKET=$STATE_BUCKET"
-            # alarm_email is optional, and an empty string would be an address
+            # alarm_email is optional, and an empty string would count as an address
             if [ -n "$ALARM_EMAIL" ]; then echo "TF_VAR_alarm_email=$ALARM_EMAIL"; fi
           } >> "$GITHUB_ENV"
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0

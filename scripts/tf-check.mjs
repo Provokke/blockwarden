@@ -1,13 +1,14 @@
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 
-// only infra/terraform is mounted, not the Lambda bundle the module zips, so plan and apply are not supported here
+// only infra/terraform is mounted, not the Lambda bundle the module zips, so plan and apply aren't
+// supported here
 const tf = resolve('infra/terraform')
 const terraform = 'hashicorp/terraform:1.16.2'
 const tflint = 'ghcr.io/terraform-linters/tflint:v0.64.0'
 const checkov = 'bridgecrew/checkov:3.3.17'
 
-// terraform writes .terraform/ into the mounted tree, which would otherwise be owned by root on Linux
+// terraform writes .terraform/ into the mounted tree, which would be owned by root on Linux
 const asCaller =
   process.platform !== 'win32' && typeof process.getuid === 'function' && typeof process.getgid === 'function'
     ? ['--user', `${process.getuid()}:${process.getgid()}`]
@@ -20,16 +21,16 @@ function run(label, args) {
 }
 
 run('terraform fmt', [...asCaller, '-w', '/tf', terraform, 'fmt', '-check', '-recursive'])
-// the bootstrap is applied once by hand; the two stacks use every module; each example deploys one slice alone,
-// with its defaults
+// the bootstrap is applied once by hand; the two stacks use every module; each example deploys one
+// slice alone, with its defaults
 const roots = ['bootstrap', 'envs/staging', 'envs/demo', 'examples/relayer-only', 'examples/monitor-actions-only']
 for (const root of roots) {
   run(`terraform init ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'init', '-backend=false', '-input=false'])
-  // terraform test below checks the test files: validate reports a run that hands a module the us-east-1 provider
-  // as missing it, though terraform test runs that same file
+  // terraform test below checks the test files: validate calls a run that hands a module the
+  // us-east-1 provider missing it, though terraform test runs the same file
   run(`terraform validate ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'validate', '-no-tests'])
 }
-// every provider in these tests is a mock_provider, so they reach no AWS endpoint
+// every provider in these tests is a mock_provider, so no AWS endpoint is reached
 for (const root of ['bootstrap', 'envs/staging', 'envs/demo']) {
   run(`terraform test ${root}`, [...asCaller, '-w', `/tf/${root}`, terraform, 'test'])
 }

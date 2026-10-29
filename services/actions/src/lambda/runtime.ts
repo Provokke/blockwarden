@@ -58,7 +58,7 @@ export async function createRuntime(logger: Logger): Promise<Runtime> {
       sqs: sendSqs,
       lambda: sendLambda,
     },
-    // built only when a from address exists, so a deployment with no email channel makes no SES client
+    // only built when a from address exists, so no email channel means no SES client
     ...(config.fromAddress ? { ses: new SESv2Client({}) } : {}),
     sqs,
     lambda: new LambdaClient({}),

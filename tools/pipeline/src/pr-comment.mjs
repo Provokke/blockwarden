@@ -1,6 +1,6 @@
-// Creates a pull request comment, or edits the one this workflow posted before, found by a hidden marker at the
-// start of its body. Only comments by the Actions bot are considered, so a person's comment that quotes the
-// marker is never taken for it.
+// Creates a PR comment, or edits the one this workflow posted before, found by a hidden marker at
+// the start of its body. Only comments by the Actions bot count, so a person quoting the marker
+// isn't mistaken for it.
 export const BOT = 'github-actions[bot]'
 
 export async function upsertComment({ api, token, repository, issue, marker, body, fetch = globalThis.fetch }) {
@@ -15,7 +15,7 @@ export async function upsertComment({ api, token, repository, issue, marker, bod
       },
       body: payload === undefined ? undefined : JSON.stringify(payload),
     })
-    // the status and the path only: the token is in the request, never in what is thrown
+    // the status and path only: the token is in the request, never in what's thrown
     if (!response.ok) throw new Error(`GitHub answered ${response.status} to ${method} ${path}`)
     return response.json()
   }

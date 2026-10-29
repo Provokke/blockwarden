@@ -1,5 +1,6 @@
 version: 2
-# Security updates skip the cooldown, and pnpm refuses packages under a day old, so CI can fail on one for up to a day.
+# Security updates skip the cooldown, and pnpm refuses packages under a day old, so CI can fail for
+# up to a day.
 updates:
   - package-ecosystem: npm
     directory: /
@@ -11,7 +12,7 @@ updates:
       aws-sdk:
         patterns: ['@aws-sdk/*']
     ignore:
-      # the Lambda runtime is nodejs24.x, so the types stay on the Node.js 24 line
+      # Lambda runtime is nodejs24.x, so keep the types on Node 24
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions

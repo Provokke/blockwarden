@@ -10,8 +10,8 @@ const fixture = (name: string) => fileURLToPath(new URL(`./fixtures/workflows/${
 const WORKFLOWS = fileURLToPath(new URL('../../../.github/workflows', import.meta.url))
 const SCRIPT = fileURLToPath(new URL('../src/workflow-gates.mjs', import.meta.url))
 
-// Every job in this repository that assumes an AWS role, and the variable that switches it on. A new AWS job
-// fails this test until it is listed here.
+// Every job in this repo that assumes an AWS role, and the variable that switches it on. A new AWS
+// job fails this test until it's listed.
 const EXPECTED: Record<string, Record<string, string>> = {
   'ci.yml': {},
   'deploy.yml': { staging: 'BLOCKWARDEN_STAGING_APPLY_ROLE_ARN', demo: 'BLOCKWARDEN_DEMO_APPLY_ROLE_ARN' },

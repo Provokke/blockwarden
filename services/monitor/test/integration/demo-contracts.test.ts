@@ -15,7 +15,7 @@ import { startAnvil, type Anvil } from '../helpers/anvil.js'
 
 const TAG = stringToHex('seam', { size: 32 })
 
-// written the way an operator writes one: the event with its parameter names, the deployed address, a condition
+// written the way an operator writes one: event with parameter names, deployed address, a condition
 const pingRule = (chainId: number, emitter: Hex) => ({
   chainId,
   addresses: [emitter],
@@ -38,7 +38,7 @@ describe('the monitor against the demo contracts', () => {
   let demo: Demo
   let tableName: string
   let result: CycleResult
-  // generated here, so the address the rules see is not the deployer's and cannot be confused with it
+  // generated here, so the address the rules see isn't the deployer's
   const user = privateKeyToAccount(generatePrivateKey())
   const sent = {} as Record<'pingMatch' | 'pingOther' | 'spendAbove' | 'spendCrossing' | 'spendStillLow', Hex>
 
@@ -96,7 +96,8 @@ describe('the monitor against the demo contracts', () => {
     await mined(
       await asUser.writeContract({ address: vault, abi: vaultAbi, functionName: 'topUp', args: [user.address] }),
     )
-    // 500 credited against a threshold of 100: the spends leave 200, then 50, which crosses, then 30, still low
+    // 500 credited against a threshold of 100: spends leave 200, then 50 (crosses), then 30 (still
+    // low)
     sent.spendAbove = await mined(
       await asUser.writeContract({ address: vault, abi: vaultAbi, functionName: 'spend', args: [300n] }),
     )

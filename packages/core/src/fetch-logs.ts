@@ -5,7 +5,7 @@ export type FetchRange = (from: number, to: number) => Promise<RawLog[]>
 export type FetchLogsOptions = {
   // checked before every fetch, including each sub-range of a halved range
   shouldStop?: () => boolean
-  // called in block order for every range that was read in full, before the next fetch
+  // called in block order for every range read in full, before the next fetch
   onChunk?: (from: number, to: number, logs: RawLog[]) => void | Promise<void>
 }
 

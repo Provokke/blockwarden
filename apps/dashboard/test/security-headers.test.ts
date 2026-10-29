@@ -24,9 +24,9 @@ const POLICY =
   "style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; " +
   "form-action 'self'; object-src 'none'"
 
-// What Managed-SecurityHeadersPolicy adds before the function runs, as AWS documents it ("Use managed response
-// headers policies"). CloudFront inserts a policy's headers before the viewer-response event, so the function
-// receives them in event.response.headers.
+// What Managed-SecurityHeadersPolicy adds before the function runs, per AWS docs ("Use managed
+// response headers policies"). CloudFront inserts those headers before the viewer-response event,
+// so the function gets them in event.response.headers.
 const MANAGED_BASELINE = {
   'referrer-policy': { value: 'strict-origin-when-cross-origin' },
   'strict-transport-security': { value: 'max-age=31536000' },
@@ -35,9 +35,9 @@ const MANAGED_BASELINE = {
   'x-xss-protection': { value: '1; mode=block' },
 }
 
-// The function ships as the rendered template, with no module wrapper and no exports, so it is evaluated here the
-// way CloudFront runs it: as a script that declares handler. It is rendered as the dashboard's size check renders
-// it, which a test in csp-hashes.test.ts ties to site.tf's templatefile() call.
+// The function ships as the rendered template, with no module wrapper or exports, so it's evaluated
+// the way CloudFront runs it: as a script that declares handler. Rendered like the dashboard's size
+// check, which a test in csp-hashes.test.ts ties to site.tf's templatefile() call.
 async function loadHandler(hashes: string[]): Promise<Handler> {
   const code = renderHeadersFunction(await readFile(HEADERS_TEMPLATE, 'utf8'), buildPolicy(hashes))
   return new Function(`${code}\nreturn handler`)() as Handler

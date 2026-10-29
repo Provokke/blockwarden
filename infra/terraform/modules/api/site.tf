@@ -32,7 +32,7 @@ locals {
 }
 
 # Only with var.domain. The validation resource waits until the validation records exist at the domain's DNS host,
-# so the first apply with a domain requests the certificate on its own (README, The dashboard's distribution).
+# so the first apply with a domain requests the certificate on its own.
 resource "aws_acm_certificate" "site" {
   count             = try(var.domain.create_certificate, false) ? 1 : 0
   provider          = aws.us_east_1

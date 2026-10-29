@@ -17,7 +17,7 @@ export const realPorts: Ports = { dispatchRecords, sweepDue, acceptOutbound, pro
 
 type AnyEvent = { Records?: { eventSource?: string }[] }
 
-// the one field of the Lambda context the sender's deadline margin needs, as the relayer's own entries take it
+// the one field of the Lambda context the sender's deadline margin needs
 type Context = { getRemainingTimeInMillis(): number }
 
 export function createDispatcherHandler(runtime: () => Promise<Runtime>, ports: Ports, metrics: Metrics) {
@@ -66,7 +66,7 @@ export function createDispatcherHandler(runtime: () => Promise<Runtime>, ports: 
       r.config.reaperLimit,
     )
     r.log('sweep finished', summary)
-    // a billed custom metric, so it is published only when something actually died
+    // billed custom metric, so only publish when something actually died
     if (summary.dead > 0) metrics.singleMetric().addMetric('deliveriesDead', MetricUnit.Count, summary.dead)
   }
 }
@@ -74,11 +74,11 @@ export function createDispatcherHandler(runtime: () => Promise<Runtime>, ports: 
 export function createSenderHandler(runtime: () => Promise<Runtime>, ports: Ports, metrics: Metrics) {
   return async (event: { Records: SQSRecord[] }, context: Context): Promise<SQSBatchResponse> => {
     const r = await runtime()
-    // required so a caller that forgets it fails to compile; a batch cannot time out after its sends already
-    // happened, which is exactly what an omitted margin would let happen
+    // required so forgetting it fails to compile; a batch can't time out after its sends already
+    // happened
     const remainingMs = () => context.getRemainingTimeInMillis()
-    // built as the narrower production type: `resolve` and `post` are test-only injection points, and naming
-    // either one here would be an excess-property error rather than a silent bypass of the destination guard
+    // built as the narrower production type: `resolve` and `post` are test-only, naming either here
+    // is an excess-property error
     const deps: ProductionSenderPipelineDeps = {
       store: r.store,
       queue: r.queue,

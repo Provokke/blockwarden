@@ -17,7 +17,8 @@ defaults:
     shell: bash
 
 jobs:
-  # runs whether or not the pipeline is switched on, since a variable is declared long before anything is applied
+  # Runs even when the pipeline's switched off, since a variable gets declared long before anything
+  # is applied
   sensitive-variables:
     runs-on: ubuntu-latest
     permissions:
@@ -31,9 +32,11 @@ jobs:
 
   plan:
     needs: sensitive-variables
-    # GitHub gives a pull request from a fork no OIDC token, so there is nothing for it to plan with. Dependabot's
-    # branches live in this repository but carry bumped third-party code that the build would run while the plan
-    # role is held, so its pull requests skip the plan (a skipped check counts as passing).
+    # Forks get no OIDC token from GitHub, so there's nothing to plan with. Dependabot branches
+    # carry bumped
+    # third-party code that the build would run while the plan role is held, so they skip the plan
+    # too
+    # (a skipped check counts as passing).
     if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     strategy:
@@ -81,7 +84,7 @@ jobs:
             echo "TF_VAR_region=$REGION"
             echo "TF_VAR_allowed_wallets=$ALLOWED_WALLETS"
             echo "STATE_BUCKET=$STATE_BUCKET"
-            # alarm_email is optional, and an empty string would be an address
+            # alarm_email is optional, and an empty string would count as an address
             if [ -n "$ALARM_EMAIL" ]; then echo "TF_VAR_alarm_email=$ALARM_EMAIL"; fi
           } >> "$GITHUB_ENV"
       - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -104,7 +107,7 @@ jobs:
           -backend-config="bucket=$STATE_BUCKET"
           -backend-config="key=$ENVIRONMENT/terraform.tfstate"
           -backend-config="region=$TF_VAR_region"
-      # The plan's text holds the stack's values and this repository's logs are public, so it goes nowhere;
+      # The plan text holds the stack's values and our logs are public, so it goes nowhere.
       # Terraform's errors are on stderr and still reach the log.
       - name: terraform plan
         id: plan

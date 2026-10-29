@@ -1,6 +1,6 @@
-// Turns `terraform show -json` of a saved plan into the pull request comment: counts, then each resource address
-// and its action. The plan JSON holds every value in the plan, sensitive ones included, in plain text; only
-// resource_changes[].address and change.actions are ever read from it, so nothing else can reach the comment.
+// Turns `terraform show -json` of a saved plan into the PR comment: counts, then each resource
+// address and action. The plan JSON holds every value in plain text, sensitive ones too, so only
+// resource_changes[].address and change.actions are ever read.
 
 export const MAX_ROWS = 200
 

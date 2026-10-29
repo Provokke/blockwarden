@@ -18,7 +18,7 @@ contract TopUpVaultTest is Test, ForwardRequests {
     uint256 internal constant THRESHOLD = 100;
     uint256 internal constant TOP_UP = 500;
     uint256 internal constant COOLDOWN = 1 hours;
-    // Foundry's clock starts at 1, which is inside the first cooldown; a real chain's is decades past it
+    // Foundry's clock starts at 1, inside the first cooldown; a real chain's is decades past it
     uint256 internal constant START = 1_750_000_000;
     uint256 internal constant SIGNER_KEY = 0xB0B;
 
@@ -249,7 +249,8 @@ contract TopUpVaultTest is Test, ForwardRequests {
             abi.encodeCall(TopUpVault.fund, (1)),
             uint48(block.timestamp + 1 hours)
         );
-        // the forwarder reports any failed call as FailedCall; the vault's own error does not surface
+        // the forwarder reports any failed call as FailedCall; the vault's own error doesn't
+        // surface
         vm.expectRevert(Errors.FailedCall.selector);
         vm.prank(relayer);
         forwarder.execute(request);

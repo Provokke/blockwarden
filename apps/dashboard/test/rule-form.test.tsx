@@ -15,8 +15,8 @@ const TRANSFER = 'event Transfer(address indexed from, address indexed to, uint2
 let calls: Call[]
 let respond: (call: Call) => Response | Promise<Response>
 
-// a stand-in for the API's validation that looks at what it is sent: a refusal follows from the body, not from a
-// switch the test flipped
+// a stand-in for the API's validation that looks at what it's sent: a refusal follows from the
+// body, not a switch the test flipped
 function fakeValidation(call: Call): Response {
   const body = call.body as {
     event?: string
@@ -80,7 +80,7 @@ describe('RuleForm', () => {
     )
     // nothing about either issue was left for a summary at the top
     expect(screen.queryByRole('alert')).toBeNull()
-    // and a field the issue does not name carries none of it
+    // and a field the issue doesn't name carries none of it
     expect(describedBy(screen.getByLabelText('Contract addresses (one per line)'))).toBe('')
   })
 

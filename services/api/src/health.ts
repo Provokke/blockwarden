@@ -7,11 +7,14 @@ import { GetCommand, type GetCommandOutput } from '@aws-sdk/lib-dynamodb'
 import { describeError } from '@blockwarden/core'
 import { ok, type ApiResult } from './http.js'
 
-// What this route can honestly see is what the table and the queues already hold. Block lag would need each chain's
-// head, which is an RPC call on every request to a paid endpoint; the monitor already publishes durableLag as a
-// metric with an alarm behind it. cursorAgeSeconds is staleness, not lag: how long since the monitor last wrote
-// the cursor. A poller that stops writes nothing, so a growing age is the signal - but a young cursor does not
-// prove the monitor is keeping up with the chain, only that it is still moving.
+// This route only sees what the table and queues already hold. Block lag would need each chain's
+// head, an RPC call
+// on every request to a paid endpoint, and the monitor already publishes durableLag as a metric
+// with an alarm behind
+// it. cursorAgeSeconds is staleness, not lag: how long since the monitor last wrote the cursor. A
+// poller that stops
+// writes nothing, so a growing age is the signal. A young cursor only shows it's still moving, not
+// keeping up.
 
 export type ChainHealth = { durableBlock: string | null; fastBlock: string | null; cursorAgeSeconds: number | null }
 export type QueueHealth = { visible: number; inFlight: number }

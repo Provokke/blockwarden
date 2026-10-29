@@ -145,7 +145,8 @@ variable "outbound_secret_prefixes" {
   default     = []
 
   # same rule as secretPrefixes() in services/actions/src/config.ts: a prefix is a parameter name with an
-  # optional trailing slash. "/" alone is not one - it expands to parameter/* and grants the whole account.
+  # optional trailing slash. "/" alone isn't one, it expands to parameter/* and grants the whole
+  # account.
   validation {
     condition = alltrue([for prefix in var.outbound_secret_prefixes :
       startswith(prefix, "/") && length(trimsuffix(prefix, "/")) <= 1011 &&
@@ -162,7 +163,8 @@ variable "rule_secret_prefixes" {
   default     = []
 
   # same rule as secretPrefixes() in services/actions/src/config.ts: a prefix is a parameter name with an
-  # optional trailing slash. "/" alone is not one - it would let a rule name any parameter in the account.
+  # optional trailing slash. "/" alone isn't one, it would let a rule name any parameter in the
+  # account.
   validation {
     condition = alltrue([for prefix in var.rule_secret_prefixes :
       startswith(prefix, "/") && length(trimsuffix(prefix, "/")) <= 1011 &&

@@ -1,10 +1,7 @@
-# One apply role per stack, each trusted only from its own GitHub environment. Its writes are what the modules'
-# resource types need to be created, updated, tagged and deleted, from the provider's own calls (6.66), scoped to
-# the stack's names wherever the service lets a name into the ARN, and otherwise to its environment tag. Its reads
-# are its own stack's read policy.
-#
-# This list is derived, not proven. Only a real apply can prove an IAM policy complete, and the first one is
-# milestone 5c's.
+# One apply role per stack, each trusted only from its own GitHub environment.
+# Writes are scoped to the stack's names where the ARN allows it, otherwise to its environment tag.
+# Reads come from the stack's own read policy.
+# The list is derived, not proven. Only a real apply can prove an IAM policy complete.
 locals {
   apply_policies = { for env in local.environments : env => {
     Version = "2012-10-17"
@@ -29,7 +26,7 @@ locals {
         Resource = ["${local.state_bucket_arn}/${env}/terraform.tfstate.tflock"]
       },
       {
-        # the table is named exactly blockwarden-<env>, with no suffix
+        # the table is named exactly blockwarden-<env>, no suffix
         Sid    = "Table"
         Effect = "Allow"
         Action = [
@@ -43,7 +40,7 @@ locals {
         ]
       },
       {
-        # a role can be created, or given an inline policy, only with this stack's boundary attached
+        # roles can only be created or given an inline policy with this stack's boundary attached
         Sid       = "BoundedRoles"
         Effect    = "Allow"
         Action    = ["iam:CreateRole", "iam:DeleteRolePolicy", "iam:PutRolePermissionsBoundary", "iam:PutRolePolicy"]
@@ -51,9 +48,9 @@ locals {
         Condition = { StringEquals = { "iam:PermissionsBoundary" = aws_iam_policy.boundary[env].arn } }
       },
       {
-        # These need no boundary condition on the assumption that every blockwarden-<env>-* role was created
-        # through BoundedRoles, so carries the boundary and can be rewritten, tagged or deleted without raising its
-        # ceiling. A role of that name made outside this policy would not be held by it.
+        # No boundary condition needed: every blockwarden-<env>-* role is made through BoundedRoles,
+        # so it already
+        # carries the boundary. A role of that name made outside this policy wouldn't be covered.
         Sid    = "Roles"
         Effect = "Allow"
         Action = [
@@ -72,9 +69,10 @@ locals {
         }
       },
       {
-        # Its own name matches the prefix above, so it is shut out of itself, its boundary and the managed policies
-        # attached to it explicitly. Nothing here allows a policy write; this keeps that true if a grant is added.
-        # No role may ever lose its boundary.
+        # Its own name matches the prefix above, so it's shut out of itself, its boundary and its
+        # attached managed policies.
+        # Nothing here allows a policy write; this keeps that true if a grant is added. No role may
+        # lose its boundary.
         Sid    = "NotItself"
         Effect = "Deny"
         Action = ["iam:*"]
@@ -103,8 +101,9 @@ locals {
         Resource = ["arn:${format(local.region_arn, "lambda")}:function:blockwarden-${env}-*"]
       },
       {
-        # Mapping ids are chosen by Lambda. Create takes no resource ARN, so both are held to this stack's
-        # functions by the function the mapping names.
+        # Lambda picks the mapping id and create takes no resource ARN, so both are held to this
+        # stack's functions
+        # by the function the mapping names.
         Sid       = "EventSourceMappings"
         Effect    = "Allow"
         Action    = ["lambda:CreateEventSourceMapping", "lambda:DeleteEventSourceMapping", "lambda:UpdateEventSourceMapping"]
@@ -112,10 +111,12 @@ locals {
         Condition = { ArnLike = { "lambda:FunctionArn" = "arn:${format(local.region_arn, "lambda")}:function:blockwarden-${env}-*" } }
       },
       {
-        # A mapping's id is chosen by Lambda and the tag actions carry no lambda:FunctionArn key, so they cannot be
-        # held to the stack's functions. A mapping already tagged can be retagged only while it carries this stack's
-        # environment, and an untagged one (a create in progress) only with it in the request, so a mapping tagged
-        # for the other stack is out of reach. The mapping's own writes are held by the function above.
+        # Mapping ids are chosen by Lambda and tag actions carry no lambda:FunctionArn key, so they
+        # can't be held to
+        # the stack's functions. Tagged mappings can be retagged only while they carry this stack's
+        # environment tag,
+        # untagged ones (a create in progress) only with it in the request. The mapping's own writes
+        # are held above.
         Sid       = "EventSourceMappingTags"
         Effect    = "Allow"
         Action    = ["lambda:TagResource"]
@@ -161,8 +162,9 @@ locals {
         Resource = ["arn:${format(local.region_arn, "sns")}:blockwarden-${env}-*"]
       },
       {
-        # CreateKey takes no resource ARN, and a key id is random, so a key belongs to this stack by the
-        # environment tag the root's default_tags put on it
+        # CreateKey takes no resource ARN and key ids are random, so a key belongs to the stack by
+        # the
+        # environment tag from the root's default_tags
         Sid       = "CreateKeys"
         Effect    = "Allow"
         Action    = ["kms:CreateKey"]
@@ -180,7 +182,8 @@ locals {
         Condition = { StringEquals = { "aws:ResourceTag/environment" = env } }
       },
       {
-        # a key can be tagged only with this stack's environment, so a stack cannot hand its key to the other
+        # a key can only be tagged with this stack's environment, so one stack can't hand its key to
+        # the other
         Sid       = "KeyTags"
         Effect    = "Allow"
         Action    = ["kms:TagResource"]
@@ -188,9 +191,10 @@ locals {
         Condition = { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
       },
       {
-        # CreateKey with tags is also authorized as kms:TagResource, on a key that carries no tag yet. That is allowed
-        # only while the key has no environment tag and the request sets this stack's, so a key already tagged for
-        # the other stack is out of reach. An untagged key in the account is not.
+        # CreateKey with tags is also authorised as kms:TagResource on a key with no tag yet.
+        # Allowed only while the key
+        # has no environment tag and the request sets this stack's, so a key tagged for the other
+        # stack stays out of reach.
         Sid      = "KeyCreateTags"
         Effect   = "Allow"
         Action   = ["kms:TagResource"]
@@ -207,8 +211,9 @@ locals {
         Resource = ["arn:${format(local.region_arn, "kms")}:alias/blockwarden-${env}-*"]
       },
       {
-        # Only what Terraform writes: the session secret and module-made API keys. The RPC URLs and the webhook
-        # secret under the same path are the owner's, and this role can neither read nor overwrite them.
+        # Only what Terraform writes: the session secret and module-made API keys. The RPC URLs and
+        # webhook secret
+        # under the same path are the owner's; this role can't read or overwrite them.
         Sid    = "Parameters"
         Effect = "Allow"
         Action = ["ssm:AddTagsToResource", "ssm:DeleteParameter", "ssm:GetParameter", "ssm:PutParameter", "ssm:RemoveTagsFromResource"]
@@ -230,8 +235,9 @@ locals {
         ]
       },
       {
-        # API Gateway sets up an HTTP API stage's access log through CloudWatch Logs' delivery API with the
-        # caller's own credentials, and none of these actions takes a resource ARN
+        # API Gateway sets up an HTTP API stage's access log via CloudWatch Logs' delivery API with
+        # the caller's
+        # credentials, and none of these actions takes a resource ARN
         Sid    = "AccessLogDelivery"
         Effect = "Allow"
         Action = [
@@ -247,9 +253,11 @@ locals {
         Resource = ["arn:${format(local.region_arn, "cloudwatch")}:alarm:blockwarden-${env}-*"]
       },
       {
-        # Bucket names come from bucket_prefix, so they carry the stack's name. GetBucketAcl and PutBucketAcl on
-        # the log bucket are how CloudFront's standard logging grants itself write access, with the caller's
-        # credentials. The object actions are the deploy's sync of the dashboard export.
+        # Bucket names come from bucket_prefix so they carry the stack's name.
+        # GetBucketAcl/PutBucketAcl on the log
+        # bucket is how CloudFront standard logging grants itself write access. The object actions
+        # are the deploy's
+        # sync of the dashboard export.
         Sid    = "Buckets"
         Effect = "Allow"
         Action = [
@@ -272,15 +280,17 @@ locals {
     ]
   } }
 
-  # The grants for the services whose resource ids AWS chooses (API Gateway, CloudFront, ACM), held to the stack by
-  # its environment tag. They are a managed policy of their own because a role's inline policies share one 10,240
-  # character limit, which the grants above fill.
+  # Grants for services where AWS picks the resource ids (API Gateway, CloudFront, ACM), held to the
+  # stack by its
+  # environment tag. Separate managed policy because a role's inline policies share one 10,240
+  # character limit.
   apply_edge_policies = { for env in local.environments : env => {
     Version = "2012-10-17"
     Statement = [
       {
-        # An HTTP API's id is chosen by API Gateway, so a stack's APIs are told apart by the environment tag the
-        # root's default_tags put on them: created only with it, and changed or deleted only while they carry it.
+        # AWS picks an HTTP API's id, so a stack's APIs are told apart by the environment tag from
+        # the root's
+        # default_tags: created only with it, changed or deleted only while they carry it.
         Sid       = "CreateApis"
         Effect    = "Allow"
         Action    = ["apigateway:POST"]
@@ -288,9 +298,11 @@ locals {
         Condition = { StringEquals = { "aws:RequestTag/environment" = env } }
       },
       {
-        # routes, integrations, authorizers and stages are authorized by the tags of the API they sit under. Nothing
-        # here writes /tags/*: that path has no resource-tag condition key, so a role that could would retag the
-        # other stack's API as its own. Tags are set when an API is created, and changing them is the owner's.
+        # Routes, integrations, authorizers and stages are authorised by the tags of their API.
+        # Nothing here writes
+        # /tags/*: that path has no resource-tag condition key, so a role that could would retag the
+        # other stack's API.
+        # Tags are set at create time; changing them is the owner's job.
         Sid       = "Apis"
         Effect    = "Allow"
         Action    = ["apigateway:DELETE", "apigateway:PATCH", "apigateway:POST", "apigateway:PUT"]
@@ -298,10 +310,13 @@ locals {
         Condition = { StringEquals = { "aws:ResourceTag/environment" = env } }
       },
       {
-        # A distribution's id is chosen by CloudFront, so a stack's distributions are told apart by the environment
-        # tag: created only with it, and changed, tagged or deleted only while they carry it. The provider creates
-        # one with tags through CreateDistributionWithTags, which is no IAM action: the API needs
-        # cloudfront:CreateDistribution, which takes no resource ARN, and cloudfront:TagResource, below.
+        # CloudFront picks a distribution's id, so they're told apart by the environment tag:
+        # created only with it,
+        # changed, tagged or deleted only while they carry it. The provider creates one via
+        # CreateDistributionWithTags,
+        # which isn't an IAM action: the API needs cloudfront:CreateDistribution (no resource ARN)
+        # and
+        # cloudfront:TagResource, below.
         Sid       = "CreateDistributions"
         Effect    = "Allow"
         Action    = ["cloudfront:CreateDistribution"]
@@ -326,7 +341,8 @@ locals {
         Condition = { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
       },
       {
-        # the TagResource half of a tagged create, on a distribution that carries no tag yet; see KeyCreateTags
+        # the TagResource half of a tagged create, on a distribution with no tag yet; see
+        # KeyCreateTags
         Sid      = "DistributionCreateTags"
         Effect   = "Allow"
         Action   = ["cloudfront:TagResource"]
@@ -337,11 +353,13 @@ locals {
         }
       },
       {
-        # An origin access control takes no tags and its id is chosen by CloudFront, so neither the name nor a tag
-        # can hold this to the stack, and a stack can change or delete the other's. That reaches availability only:
-        # an origin access control signs CloudFront's requests to the bucket and carries no content, so changing it
-        # can stop the other stack's site loading but cannot read or alter what it serves. The security headers,
-        # which a response headers policy would carry with the same reach, are a named function instead.
+        # An origin access control takes no tags and CloudFront picks its id, so neither a name nor
+        # a tag can hold it to
+        # the stack, and one stack can change or delete the other's. That only affects availability:
+        # it signs CloudFront's
+        # requests to the bucket and holds no content. The security headers are a named function
+        # instead of a
+        # response headers policy for the same reason.
         Sid      = "EdgePolicies"
         Effect   = "Allow"
         Action   = ["cloudfront:DeleteOriginAccessControl", "cloudfront:UpdateOriginAccessControl"]
@@ -368,8 +386,9 @@ locals {
         Resource = ["arn:${local.partition}:cloudfront::${local.account_id}:function/blockwarden-${env}-*"]
       },
       {
-        # the optional custom domain's certificate; RequestCertificate takes no resource ARN and an id is random,
-        # so the environment tag ties a certificate to this stack
+        # the optional custom domain's certificate. RequestCertificate takes no resource ARN and ids
+        # are random, so the
+        # environment tag ties a certificate to this stack
         Sid       = "RequestCertificates"
         Effect    = "Allow"
         Action    = ["acm:RequestCertificate"]
@@ -391,8 +410,9 @@ locals {
         Condition = { StringEquals = { "aws:ResourceTag/environment" = env, "aws:RequestTag/environment" = env } }
       },
       {
-        # RequestCertificate with tags may also be authorized as acm:AddTagsToCertificate, on a certificate that
-        # carries no tag yet; see KeyCreateTags
+        # RequestCertificate with tags may also be authorised as acm:AddTagsToCertificate on a
+        # certificate with no tag
+        # yet; see KeyCreateTags
         Sid      = "CertificateCreateTags"
         Effect   = "Allow"
         Action   = ["acm:AddTagsToCertificate"]

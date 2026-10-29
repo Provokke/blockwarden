@@ -11,7 +11,7 @@ terraform {
     }
   }
 
-  # A partial configuration, so no account id is committed. init supplies the rest:
+  # Partial config so no account id is committed. init supplies the rest:
   #   terraform init -backend-config="bucket=<state_bucket output of infra/terraform/bootstrap>" \
   #     -backend-config="key=staging/terraform.tfstate" -backend-config="region=<region output of the bootstrap>"
   # The key is the only one the staging apply role can write.
@@ -137,8 +137,9 @@ module "blockwarden" {
   }
 }
 
-# The demo's relayer with a lower daily spend cap, a lower API rate and no balance alarm: every merge lands here
-# first, and a staging signer running low is not worth a page or the custom metric the alarm needs.
+# The demo's relayer with a lower daily spend cap and API rate and no balance alarm. Every merge
+# lands here
+# first, and a staging signer running low isn't worth a page or the custom metric the alarm needs.
 module "relayer" {
   source                   = "../../modules/relayer"
   name                     = "blockwarden-staging"

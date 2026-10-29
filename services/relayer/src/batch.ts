@@ -5,19 +5,25 @@ import type { TxMessage } from './queue.js'
 // the signer's Lambda timeout, set in modules/relayer/functions.tf
 export const SIGNER_TIMEOUT_MS = 60_000
 
-// The RPC calls one message makes at worst, each of which waits out every hung URL in turn: the dependsOn estimate,
-// the cold nonce read, three for the fee estimate (block, tip, and the gas price viem falls back to on a node with no
-// eth_maxPriorityFeePerGas), the send, and the receipt check a "nonce too low" answer costs. The refusal path's
-// filler estimate lands on the same total. A nonce reset repeats a pass, which is why processTx checks the margin
-// again before one.
+// The RPC calls one message makes at worst, each waiting out every hung URL in turn: the dependsOn
+// estimate, the
+// cold nonce read, three for the fee estimate (block, tip, and the gas price viem falls back to
+// when the node has no
+// eth_maxPriorityFeePerGas), the send, and the receipt check after a "nonce too low" answer. The
+// refusal path's
+// filler estimate lands on the same total. A nonce reset repeats a pass, so processTx checks the
+// margin first.
 export const SIGNER_CALLS_PER_MESSAGE = 7
 
-// The AWS round trips around those calls: four DynamoDB reads, a nonce update, a transaction, one KMS Sign, two
-// puts, and on the refusal path a filler transaction and an SQS send. At 2 URLs the RPC calls fill the rest of the
-// budget exactly, so this is the only slack there is, and one throttled write with SDK retries can take a second.
+// The AWS round trips around those calls: four DynamoDB reads, a nonce update, a transaction, one
+// KMS Sign, two puts,
+// and on the refusal path a filler transaction and an SQS send. At 2 URLs the RPC calls fill the
+// rest of the budget
+// exactly, so this is the only slack, and one throttled write with SDK retries can take a second.
 const SIGNER_AWS_MS = 6_000
 
-// What is left of the timeout splits in two: one message's RPC calls, and the margin, which has to hold a whole
+// What's left of the timeout splits in two: one message's RPC calls, and the margin, which has to
+// hold a whole
 // message because a message may start with only the margin left. chainOptionsFor divides this by the calls and URLs.
 export const SIGNER_RPC_BUDGET_MS = (SIGNER_TIMEOUT_MS - SIGNER_AWS_MS) / 2
 

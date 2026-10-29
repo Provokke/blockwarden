@@ -1,9 +1,11 @@
 locals {
   environments = toset(["staging", "demo"])
 
-  # The most any role a stack creates may ever do: the union of what the modules' Lambda and scheduler roles are
-  # granted (modules/*/functions.tf, monitor.tf and main.tf), for that stack's names only. An apply role can
-  # create a role only with this attached, so it cannot mint one that does more than the stack's own functions.
+  # The most any role a stack creates may ever do: the union of the grants on the modules' Lambda
+  # and scheduler roles
+  # (modules/*/functions.tf, monitor.tf and main.tf), for that stack's names only. An apply role can
+  # only create
+  # a role with this attached, so it can't mint one that does more than the stack's own functions.
   # A deployment that sets ses_from_address or allowed_target_arns needs those grants added here first.
   boundary_policies = { for env in local.environments : env => {
     Version = "2012-10-17"
@@ -37,7 +39,7 @@ locals {
         Resource = ["arn:${format(local.region_arn, "sqs")}:blockwarden-${env}-*"]
       },
       {
-        # RPC URLs, the webhook secret and the session secret all sit under the stack's own path
+        # the RPC URLs, webhook secret and session secret all sit under the stack's own path
         Sid      = "Parameters"
         Effect   = "Allow"
         Action   = ["ssm:GetParameter"]
@@ -51,7 +53,7 @@ locals {
         Condition = { StringEquals = { "kms:ViaService" = "ssm.${var.region}.amazonaws.com" } }
       },
       {
-        # signer key ids are random; the stack's default tags are what tie a key to it
+        # signer key ids are random, so the stack's default tags are what tie a key to it
         Sid       = "SignerKeys"
         Effect    = "Allow"
         Action    = ["kms:GetPublicKey", "kms:Sign"]
@@ -65,7 +67,7 @@ locals {
         Resource = ["arn:${format(local.region_arn, "logs")}:log-group:/aws/lambda/blockwarden-${env}-*:*"]
       },
       {
-        # the scheduler roles invoke the pollers, the reaper and the sweeper
+        # scheduler roles invoke the pollers, the reaper and the sweeper
         Sid      = "Invoke"
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]

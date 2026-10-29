@@ -40,9 +40,9 @@ afterAll(async () => {
 
 // exactly the attributes infra/terraform/modules/relayer/signers.tf's aws_dynamodb_table_item.signer writes,
 // including the sparse GSI1 entry that lists signers: PK, SK, GSI1PK, GSI1SK, signerId, keyId, chainIds,
-// webhooks, policy - no address attribute (Terraform has no keccak256 to compute one) and no
-// webhookSecretParameter for a signer that does not configure one. Written by hand, not through
-// RelayerStore.putSigner, because that method does not set GSI1PK/GSI1SK, so only a row shaped like
+// webhooks, policy. No address attribute (Terraform has no keccak256) and no
+// webhookSecretParameter for a signer that doesn't configure one. Written by hand, not through
+// RelayerStore.putSigner, because that doesn't set GSI1PK/GSI1SK, so only a row shaped like
 // Terraform's shows whether the route can list what a deployment really holds.
 async function putTerraformSigner(id: string, chainIds: number[]): Promise<void> {
   await dynamo.doc.send(

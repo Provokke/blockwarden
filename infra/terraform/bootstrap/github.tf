@@ -1,5 +1,6 @@
-# An account holds one provider per URL. One that already has a GitHub provider passes its ARN in
-# existing_oidc_provider_arn, and this one is not created.
+# An account only holds one provider per URL. If one already exists, pass its ARN in
+# existing_oidc_provider_arn
+# and this one isn't created.
 resource "aws_iam_openid_connect_provider" "github" {
   count          = var.existing_oidc_provider_arn == null ? 1 : 0
   url            = "https://token.actions.githubusercontent.com"
@@ -7,12 +8,14 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 locals {
-  # The sub claim GitHub writes for a pull request. This repository issues the immutable subject format, which names
-  # the owner and the repository by id as well as by name, so a renamed or re-created repository cannot claim it.
-  # Pull requests from forks get no token at all: GitHub turns id-token: write into read for them, so the
-  # pull_request subject is reachable only from a branch in this repository. The assumption that remains is that no
-  # pull_request_target or workflow_run workflow requests id-token: write, since those run with the base
-  # repository's context for a trigger an outsider can cause.
+  # The sub claim GitHub writes for a pull request. Uses the immutable subject format (owner and
+  # repo by id as well as
+  # name), so a renamed or re-created repo can't claim it. Forks get no token: GitHub downgrades
+  # id-token: write to read,
+  # so this subject only comes from a branch in this repo. Remaining assumption: no
+  # pull_request_target or workflow_run
+  # workflow requests id-token: write, since those run in the base repo's context on triggers an
+  # outsider can cause.
   role_subjects = merge(
     {
       plan = ["${var.github_sub_prefix}:pull_request"]

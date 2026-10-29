@@ -4,8 +4,8 @@ pragma solidity 0.8.37;
 import {Script} from "forge-std/Script.sol";
 import {TopUpVault} from "../src/TopUpVault.sol";
 
-/// @notice Adds FUND_AMOUNT to the pool of the vault Deploy.s.sol recorded for this chain. It is its own step so that
-/// deploying again never funds again.
+/// @notice Adds FUND_AMOUNT to the pool of the vault Deploy.s.sol recorded for this chain. Its own
+/// step so deploying again never funds again.
 contract Fund is Script {
     error NothingDeployed(address vault);
 

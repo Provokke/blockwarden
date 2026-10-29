@@ -53,7 +53,7 @@ describe('sendRelay', () => {
       data: '0xabcdef01',
       value: 0n,
       gasLimit: 120_000n,
-      // the same key on every attempt, so a retry after a timeout returns the first transaction
+      // same key on every attempt, so a retry after a timeout returns the first transaction
       idempotencyKey: 'dlv_relay',
       reference: 'MATCH#0xabc',
     })
@@ -83,16 +83,14 @@ describe('sendRelay', () => {
     expect(relay3.mock.calls[0]![0].timeoutMs).toBe(3_000)
   })
 
-  // the codes services/relayer/src/api.ts and src/submit.ts really return, and the ones the client itself
-  // manufactures (packages/relayer-client/src/client.ts) when the relayer never answers with a body
+  // the codes services/relayer/src/api.ts and submit.ts return, plus the ones the client makes up
+  // (client.ts) when the relayer never answers with a body
   const REAL_OUTCOMES: [number, string, 'retry' | 'permanent'][] = [
-    // api.ts
     [404, 'not_found', 'permanent'],
     [401, 'unauthorized', 'permanent'],
     [400, 'invalid_json', 'permanent'],
     [503, 'busy', 'retry'],
     [500, 'internal', 'retry'],
-    // submit.ts
     [400, 'invalid_request', 'permanent'],
     [403, 'signer_not_allowed', 'permanent'],
     [409, 'idempotency_conflict', 'permanent'],
@@ -105,7 +103,6 @@ describe('sendRelay', () => {
     [422, 'estimate_failed', 'permanent'],
     [503, 'rpc_unavailable', 'retry'],
     [422, 'spend_cap_exceeded', 'permanent'],
-    // client.ts
     [0, 'network_error', 'retry'],
     [429, 'throttled', 'retry'],
     [502, 'http_error', 'retry'],

@@ -71,8 +71,8 @@ describe('loadConfig', () => {
     )
   })
 
-  // the sqs action schema accepts a .fifo ARN and the sender sets a group and deduplication id for one, so an
-  // allowlist that cannot hold one means a rule can name a queue the pipeline may never reach
+  // the sqs action schema accepts a .fifo ARN and the sender sets group and dedup ids, so an
+  // allowlist that can't hold one lets a rule name a queue we can never reach
   it('takes a FIFO queue ARN, whose name is still 80 characters including the suffix', () => {
     const arn = (name: string) => `arn:aws:sqs:us-east-1:111122223333:${name}`
     expect(loadConfig({ ...base, ALLOWED_TARGET_ARNS: arn('ingest.fifo') }).allowedTargetArns).toEqual([
@@ -116,7 +116,8 @@ describe('loadConfig', () => {
     ).toBe('https://api.example.com')
   })
 
-  // its own list, so granting a rule's webhook secret does not also widen what an outbound caller may name
+  // its own list, so granting a rule's webhook secret doesn't widen what an outbound caller may
+  // name
   it('reads the rule secret prefixes separately from the outbound ones', () => {
     const config = loadConfig({
       ...base,

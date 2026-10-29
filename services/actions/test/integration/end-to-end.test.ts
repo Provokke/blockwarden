@@ -25,14 +25,10 @@ import { startReceiver } from '../helpers/receiver.js'
 import { startDynamo, startMoto } from '../helpers/store.js'
 import { streamReader } from '../helpers/stream.js'
 
-// Two things this file cannot prove against DynamoDB Local, on real infrastructure elsewhere in the pipeline:
-// - it suppresses a MODIFY for a write that changes nothing, which real DynamoDB does not promise. The
-//   dispatcher's idempotence is proved by the conditional put (dispatcher.test.ts), not by anything here.
-// - it never expires a TTL item, so no TTL REMOVE record is ever produced here. The dispatcher ignores every
-//   REMOVE regardless of cause, and a unit test in events.test.ts covers that directly.
-//
-// The tests below run in order and build on each other: the second writes over the row the first created, and
-// each one counts what the receiver was sent since the one before it.
+// Two things this file can't prove against DynamoDB Local. It suppresses a MODIFY for a no-op write
+// (real DynamoDB doesn't promise that), so idempotence is proved by the conditional put in
+// dispatcher.test.ts. It never expires a TTL item, so no TTL REMOVE is produced; events.test.ts
+// covers that. The tests run in order and build on each other.
 
 let dynamo: Awaited<ReturnType<typeof startDynamo>>
 let moto: Awaited<ReturnType<typeof startMoto>>
@@ -43,8 +39,8 @@ let tableName: string
 let queueUrl: string
 let dlqUrl: string
 
-// The rule's webhook and the signer's own are separate destinations with separate secrets, so a delivery that
-// went to the wrong one, or was signed with the other one's secret, fails here rather than passing unnoticed.
+// The rule's webhook and the signer's are separate destinations with separate secrets, so a wrong
+// destination or wrong secret fails here.
 const RULE_URL = 'https://example.com/hook'
 const SIGNER_URL = 'https://example.com/tx'
 const RULE_PARAMETER = '/bw/rule-secret'
@@ -115,16 +111,17 @@ const dispatcherDeps = (): DispatcherDeps => ({
   store,
   lookup: createLookup(dynamo.doc, tableName, { ttlMs: 0 }),
   queue: queue(),
-  // the reaper's dead-letter path shares this queue with the sender's, and sweepDue's deps require it now
+  // the reaper's dead-letter path shares this queue with the sender's, and sweepDue's deps require
+  // it
   deadLetters: deadLetters(),
   now: () => new Date(),
   ruleSecretPrefixes: ['/blockwarden/'],
   log: () => {},
 })
 
-// The senders reach the local receiver the way the guard would have: the destination is resolved for them,
-// because 127.0.0.1 is refused by the guard on purpose. It is resolved from the URL the delivery really names
-// though, and each destination has its own path here, so a delivery aimed anywhere else is refused.
+// The senders reach the local receiver the way the guard would have: resolved for them, since
+// 127.0.0.1 is refused on purpose. Each destination has its own path, so a delivery aimed elsewhere
+// is refused.
 const resolve = async (raw: string): Promise<Resolved> => {
   const path = PATHS[raw]
   if (!path) throw new DestinationError(`the destination is refused: nothing in this test serves ${raw}`)
@@ -142,7 +139,7 @@ const senderDeps = (): SenderPipelineDeps => ({
   queue: queue(),
   deadLetters: deadLetters(),
   senders: { webhook: sendWebhook, email: sendEmail },
-  // a reader that answered the same secret to every name would hide a delivery signed with the wrong one
+  // a reader that gave one secret to every name would hide a delivery signed with the wrong one
   secrets: {
     read: async (name: string) => {
       const secret = SECRETS[name]
@@ -152,8 +149,8 @@ const senderDeps = (): SenderPipelineDeps => ({
   },
   now: () => Date.now(),
   log: () => {},
-  // rule-1's webhook action names no secretParameter of its own, the way an operator-configured default would
-  // stand in for it in production; the signer's webhook names its own and must not be signed with this one
+  // rule-1's webhook names no secretParameter, like an operator-configured default; the signer's
+  // names its own and must not be signed with this one
   defaultWebhookSecretParameter: RULE_PARAMETER,
   resolve,
   ses: moto.ses,
@@ -178,9 +175,8 @@ async function drain(): Promise<number> {
   }
 }
 
-// The write is acknowledged before its record is on the stream, so an empty first read is a slow machine rather
-// than an empty stream, and dispatching nothing would quietly prove nothing. This returns on the first read that
-// has records, so a healthy run waits for none of it.
+// The write is acknowledged before its record is on the stream, so an empty first read is a slow
+// machine, not an empty stream. Returns on the first read with records.
 async function readStream(): Promise<DynamoDBRecord[]> {
   for (let wait = 10; wait <= 320; wait *= 2) {
     const records = await stream.read()
@@ -196,7 +192,8 @@ async function pump(): Promise<void> {
   expect(batchItemFailures).toEqual([])
 }
 
-// what the receiver was sent since a mark, as event types; sorted, because SQS promises no order within a batch
+// what the receiver was sent since a mark, as event types; sorted because SQS promises no order
+// within a batch
 const typesSince = (mark: number) =>
   receiver.received
     .slice(mark)
@@ -211,11 +208,11 @@ describe('a match, end to end', () => {
     await dynamo.doc.send(new PutCommand({ TableName: tableName, Item: row }))
     await pump()
     expect(await drain()).toBe(2)
-    // one delivery per action, the webhook and the email, and neither of them twice
+    // one delivery per action (webhook and email), neither twice
     expect(receiver.received.length).toBe(before + 1)
 
     const delivered = receiver.received.at(-1)!
-    // the rule's own URL, not the signer's and not whatever the guard was handed
+    // the rule's own URL, not the signer's or whatever the guard was handed
     expect(delivered.path).toBe('/hook')
     const event = await verifyWebhook({
       payload: delivered.body,
@@ -245,7 +242,7 @@ describe('a match, end to end', () => {
       }),
     )
     await pump()
-    // the same two actions again, one delivery each, exactly one of which reaches the webhook
+    // same two actions again, one delivery each, exactly one reaching the webhook
     expect(await drain()).toBe(2)
     expect(receiver.received.length).toBe(before + 1)
     const delivered = receiver.received.at(-1)!
@@ -262,7 +259,7 @@ describe('a transaction, end to end', () => {
       new PutCommand({ TableName: tableName, Item: txRow({ PK: 'TX#e2e', txId: 'e2e', signerId: 'demo', history }) }),
     )
     await pump()
-    // the signer has one webhook, so every status change is one delivery and no status change is silent
+    // the signer has one webhook, so every status change is one delivery
     let mark = receiver.received.length
     expect(await drain()).toBe(1)
     expect(typesSince(mark)).toEqual(['tx.queued'])
@@ -282,7 +279,7 @@ describe('a transaction, end to end', () => {
       }),
     )
     await pump()
-    // two entries arrived on one write, and each of them is a delivery of its own
+    // two entries arrived on one write, each a delivery of its own
     mark = receiver.received.length
     expect(await drain()).toBe(2)
     expect(typesSince(mark)).toEqual(['tx.mined', 'tx.submitted'])
@@ -308,10 +305,10 @@ describe('a transaction, end to end', () => {
     expect(typesSince(mark)).toEqual(['tx.mined', 'tx.submitted'])
 
     const sent = receiver.received.slice(start)
-    // five status changes, five deliveries, every one of them at the signer's own URL
+    // five status changes, five deliveries, all at the signer's own URL
     expect(sent).toHaveLength(5)
     expect(new Set(sent.map((r) => r.path))).toEqual(new Set(['/tx']))
-    // signed with the signer's own secret, not the default the rule's webhook falls back to
+    // signed with the signer's secret, not the default the rule's webhook falls back to
     const signed = await verifyWebhook({
       payload: sent[0]!.body,
       signature: sent[0]!.headers['x-blockwarden-signature'] as string,
@@ -321,7 +318,8 @@ describe('a transaction, end to end', () => {
 
     const minedEvents = sent.filter((r) => JSON.parse(r.body).type === 'tx.mined')
     expect(minedEvents).toHaveLength(2)
-    // the second mined is a delivery of its own, so a receiver that dedupes on the header still sees both
+    // the second mined is its own delivery, so a receiver that dedupes on the header still sees
+    // both
     expect(new Set(minedEvents.map((r) => r.headers['x-blockwarden-delivery'])).size).toBe(2)
     expect(JSON.parse(minedEvents[1]!.body).data.blockNumber).toBe(9)
   })
@@ -341,7 +339,7 @@ describe('failure, dead letters and a redrive', () => {
     expect(failed.attempts).toBe(1)
     expect(failed.lastStatusCode).toBe(503)
 
-    // the reaper is what carries it on here, rather than waiting out seven real backoffs
+    // the reaper carries it on here instead of waiting out seven real backoffs
     for (let attempt = 2; attempt <= 8; attempt++) {
       const current = (await store.listDue(Date.now() + 10 ** 9, 50)).find((d) => d.deliveryId === failed.deliveryId)
       if (!current) break
@@ -352,27 +350,28 @@ describe('failure, dead letters and a redrive', () => {
 
     const dead = await store.listDead(50)
     expect(dead.map((d) => d.deliveryId)).toContain(failed.deliveryId)
-    // read the copy without hiding it, because the redrive below has to find it on the queue
+    // read the copy without hiding it, the redrive below has to find it on the queue
     const { Messages } = await moto.sqs.send(
       new ReceiveMessageCommand({ QueueUrl: dlqUrl, MaxNumberOfMessages: 10, VisibilityTimeout: 0 }),
     )
     expect((Messages ?? []).map((m) => JSON.parse(m.Body!).subject)).toContain('MATCH#0xe2e2')
 
     receiver.answerWith(204)
-    // The redrive script's own steps, in its order, through its own functions. scripts/redrive.ts is a top-level
-    // module that reads process.argv, builds its AWS clients from the environment and calls process.exit, so
-    // importing it from here would run it; everything it does past the argument parsing is allDead, store.reset,
-    // refOf, queue.send and drainRedriven, and those all run below against the real table and the real queues.
+    // The redrive script's steps, in order, through its own functions. scripts/redrive.ts reads
+    // process.argv and calls process.exit, so importing it would run it. Everything past argument
+    // parsing (allDead, store.reset, refOf, queue.send, drainRedriven) runs below against the real
+    // table and queues.
     const chosen = (await allDead(store)).find((d) => d.deliveryId === failed.deliveryId)!
     const revived = await store.reset(chosen, Date.now())
     const ref = refOf(revived)
     await queue().send(ref, 0)
-    // the delivery is on its way again; this is what takes its copy off the queue so the depth alarm can clear
+    // the delivery is on its way again; this takes its copy off the queue so the depth alarm can
+    // clear
     expect(await drainRedriven(moto.sqs, dlqUrl, [ref])).toBe(1)
     await drain()
     expect((await store.get(ref))!.status).toBe('delivered')
     expect(await store.listDead(50)).toHaveLength(0)
-    // the depth the alarm watches, not a receive: a copy that was only made invisible would read as an empty queue
+    // the depth the alarm watches, not a receive: a copy that's only invisible would read as empty
     const { Attributes } = await moto.sqs.send(
       new GetQueueAttributesCommand({
         QueueUrl: dlqUrl,

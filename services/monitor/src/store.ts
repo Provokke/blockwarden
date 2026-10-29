@@ -58,7 +58,7 @@ export interface MonitorStorePort {
   dropStaleProvisional(chainId: number, maxBlockInclusive: number): Promise<number>
 }
 
-// picks the stored fields explicitly so a caller's extra properties never reach the item
+// pick the stored fields explicitly so a caller's extras never reach the item
 function matchFields(match: NewMatch) {
   return {
     matchKey: match.matchKey,
@@ -76,7 +76,8 @@ function matchFields(match: NewMatch) {
   }
 }
 
-// a rule that cannot be read is skipped, the same as one that no longer compiles; polling goes on for the rest
+// a rule that can't be read is skipped, same as one that no longer compiles; polling goes on for
+// the rest
 function parseInput(value: unknown): unknown {
   if (typeof value !== 'string') return undefined
   try {
@@ -102,7 +103,8 @@ export class MonitorStore implements MonitorStorePort {
       await this.doc.send(
         new PutCommand({
           TableName: this.tableName,
-          // leaseUntil is milliseconds; expiresAt is the table's TTL attribute in seconds and must not be reused
+          // leaseUntil is ms; expiresAt is the table's TTL attribute in seconds and must not be
+          // reused
           Item: { ...keys.lease(chainId), owner, leaseUntil: nowMs + ttlMs },
           ConditionExpression: 'attribute_not_exists(PK) OR leaseUntil < :now',
           ExpressionAttributeValues: { ':now': nowMs },
@@ -172,7 +174,7 @@ export class MonitorStore implements MonitorStorePort {
     const item: Record<string, unknown> = {
       ...keys.rule(rule.ruleId),
       ...rule,
-      // a bigint written as a number cannot be read back past 2^53
+      // a bigint written as a number can't be read back past 2^53
       input: toStorable(rule.input),
       chainId: rule.input.chainId,
       GSI1SK: keys.ruleOrder(rule.ruleId),
@@ -189,8 +191,8 @@ export class MonitorStore implements MonitorStorePort {
     })
     const rules: StoredRule[] = []
     for (const i of items) {
-      // Terraform has no way to build a nested DynamoDB map from an arbitrary rule, so a rule it writes keeps
-      // its body as one JSON string
+      // Terraform can't build a nested DynamoDB map from an arbitrary rule, so a rule it writes
+      // keeps its body as one JSON string
       const input = i.input ?? parseInput(i.inputJson)
       // a rule that quietly stops matching is worse than one that fails loudly; lookup.ts warns for the same case
       if (!input) {
@@ -293,7 +295,7 @@ export class MonitorStore implements MonitorStorePort {
     return Math.floor(this.clock().getTime() / 1000) + MATCH_TTL_SECONDS
   }
 
-  // with a limit, each page asks only for the items still needed, so no read is spent on items thrown away
+  // with a limit, each page asks only for the items still needed, so no read is wasted
   private async queryAll(
     input: Omit<QueryCommandInput, 'TableName'>,
     limit?: number,

@@ -29,7 +29,7 @@ const record = (overrides: Partial<DeliveryRecord> = {}): DeliveryRecord => ({
   ...overrides,
 })
 
-// what the store hands back from claim(), which is the record every later write has to be conditioned on
+// what the store hands back from claim(), which every later write has to be conditioned on
 const claimed = (stored: DeliveryRecord = record()): DeliveryRecord => ({
   ...stored,
   status: 'delivering',
@@ -41,12 +41,11 @@ const claimed = (stored: DeliveryRecord = record()): DeliveryRecord => ({
   updatedAt: new Date(1_000).toISOString(),
 })
 
-// a default parameter substitutes whenever the argument is undefined, not only when it is omitted, so it
-// cannot tell "use the default record" apart from "the delivery is gone" (also undefined); a rest parameter,
-// read by its length, can
+// a default parameter kicks in whenever the arg is undefined, so it can't tell "use the default
+// record" from "the delivery is gone"; a rest parameter read by its length can
 const deps = (outcome: SendOutcome | Error, ...storedArgs: [DeliveryRecord | undefined] | []) => {
   const stored = storedArgs.length > 0 ? storedArgs[0] : record()
-  // the same version-conditioned in-memory store the dispatcher's tests use, spied on: a hand-rolled mock that
+  // the same version-conditioned in-memory store the dispatcher tests use, spied on: a mock that
   // never bumped a version would pass calls the real store refuses
   const { store: fake, items } = fakeStore()
   if (stored) items.set(itemKey, stored)
@@ -63,7 +62,7 @@ const deps = (outcome: SendOutcome | Error, ...storedArgs: [DeliveryRecord | und
     if (outcome instanceof Error) throw outcome
     return outcome
   })
-  // stands in for the Powertools Metrics instance: only the one method the pipeline calls
+  // stands in for Powertools Metrics: only the one method the pipeline calls
   const addMetric = vi.fn()
   const addDimension = vi.fn()
   const metrics = { singleMetric: () => ({ addMetric, addDimension }) }
@@ -113,7 +112,7 @@ describe('processDelivery', () => {
       503,
     )
     expect(d.queue.send).toHaveBeenCalledWith(ref, 10)
-    // an ordinary retry is not a death; counting it would make the dead-deliveries metric meaningless
+    // an ordinary retry isn't a death; counting it would make the metric meaningless
     expect(d.addMetric).not.toHaveBeenCalled()
   })
 
@@ -137,8 +136,8 @@ describe('processDelivery', () => {
     expect(d.deadLetters.send).toHaveBeenCalledWith(ref, 0)
     expect(d.queue.send).not.toHaveBeenCalled()
     expect(d.addMetric).toHaveBeenCalledWith('deliveriesDead', MetricUnit.Count, 1)
-    // a dimension multiplies the billed metric count by its cardinality, so adding one is a cost decision, not
-    // a detail: it has to fail here rather than land quietly
+    // a dimension multiplies the billed metric count by its cardinality, so adding one is a cost
+    // decision; it has to fail here
     expect(d.addDimension).not.toHaveBeenCalled()
   })
 
@@ -154,18 +153,18 @@ describe('processDelivery', () => {
     const d = deps({ kind: 'permanent', error: 'the destination answered 410', statusCode: 410 })
     d.deadLetters.send.mockRejectedValueOnce(new Error('SQS is unavailable'))
     await expect(processDelivery(d.deps, ref)).rejects.toThrow('SQS is unavailable')
-    // the item is dead now, so the redelivered message meets the terminal skip; without a copy made there the
-    // dead-letter depth alarm would never see this delivery at all
+    // the item is dead now, so the redelivered message hits the terminal skip; without a copy made
+    // there the depth alarm never sees it
     expect(await processDelivery(d.deps, ref)).toBe('skipped')
     expect(d.deadLetters.send).toHaveBeenCalledTimes(2)
     expect(d.deadLetters.send).toHaveBeenLastCalledWith(ref, 0)
-    // the first pass died inside recordOutcome before it logged anything, so this line is the only trace
-    // that the delivery is dead - without it, nothing ever classifies this invocation as having seen a dead one
+    // the first pass died inside recordOutcome before logging, so this line is the only trace that
+    // the delivery is dead
     expect(d.deps.log).toHaveBeenCalledWith('re-sent a dead-letter copy for a delivery already marked dead', {
       deliveryId: 'dlv_1',
     })
-    // the first pass died before it reached the metric too, same as the log line above; the redelivery branch
-    // is the only place either one is recorded for this delivery
+    // the first pass died before the metric too; the redelivery branch is the only place either is
+    // recorded
     expect(d.addMetric).toHaveBeenCalledTimes(1)
     expect(d.addMetric).toHaveBeenCalledWith('deliveriesDead', MetricUnit.Count, 1)
   })
@@ -184,7 +183,7 @@ describe('processDelivery', () => {
     ]
     for (const outcome of outcomes) {
       const d = deps(outcome)
-      // another sender's lease lands while this attempt is in flight, so the record step conflicts
+      // another sender's lease lands mid-attempt, so the record step conflicts
       d.send.mockImplementationOnce(async () => {
         const held = d.items.get(itemKey)!
         d.items.set(itemKey, { ...held, version: held.version + 1 })
@@ -235,21 +234,20 @@ describe('processDelivery', () => {
     })
     const d = deps({ kind: 'delivered' }, stored)
     expect(await processDelivery({ ...d.deps, senders: {} }, ref)).toBe('dead')
-    // the item has to leave the due index and the copy has to reach the queue, or the reaper picks this
-    // delivery up again for an hour and the alarm never hears about it
+    // the item has to leave the due index and the copy reach the queue, or the reaper picks it up
+    // for an hour and the alarm never hears about it
     expect(d.store.markDead).toHaveBeenCalledWith(claimed(stored), 1_000, 'no sender for channel sqs')
     expect(d.deadLetters.send).toHaveBeenCalledWith(ref, 0)
     expect(d.items.get(itemKey)?.status).toBe('dead')
-    // this path kills a delivery without ever reaching recordOutcome, so it has to count itself
+    // this path kills a delivery without reaching recordOutcome, so it has to count itself
     expect(d.addMetric).toHaveBeenCalledWith('deliveriesDead', MetricUnit.Count, 1)
   })
 })
 
 describe('fakeStore', () => {
   it('conflicts on a write to an item that is no longer there, the same as the real store', async () => {
-    // the real store's ConditionExpression names a version attribute that an absent item doesn't have, so the
-    // condition fails exactly as it would for a version mismatch; a fake that only checks the mismatch case
-    // would let a write like this through and hide a bug the real store would catch
+    // the real ConditionExpression names a version attribute an absent item doesn't have, so it
+    // fails as it would for a mismatch; a fake that only checks mismatch would hide a bug
     const { store } = fakeStore()
     await expect(store.markDelivered(record(), 1_000)).rejects.toThrow(DeliveryConflictError)
   })
@@ -272,7 +270,7 @@ describe('processMessages', () => {
       { messageId: 'm2', body: 'not json' },
     ] as never
     const response = await processMessages(broken, records, () => DEADLINE_MARGIN_MS)
-    // m1 could not be read and will be tried again; m2 can never be read and is not worth a retry
+    // m1 couldn't be read and will be tried again; m2 can never be read, not worth a retry
     expect(response.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }])
   })
 
@@ -289,7 +287,7 @@ describe('processMessages', () => {
       { messageId: 'm2', body: 'not json' },
     ] as never
     const response = await processMessages(d.deps, records, () => DEADLINE_MARGIN_MS - 1)
-    // m1 is untouched and comes back; m2 still parses into nothing, and no amount of time would change that
+    // m1 is untouched and comes back; m2 still parses into nothing, whatever the time
     expect(response.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }])
     expect(d.send).not.toHaveBeenCalled()
   })

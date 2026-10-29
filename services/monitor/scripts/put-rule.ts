@@ -26,9 +26,9 @@ if (!file || !tableName) {
 
 const input = ruleInputSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
 const ruleId = values.id ?? randomUUID()
-// compileRule only throws over what stops a rule matching; everything else it drops and reports as a warning,
-// so that a rule written before a check existed keeps being polled. A rule being written now has an author
-// watching, so this path refuses the lot.
+// compileRule only throws over what stops a rule matching; everything else it drops and warns
+// about, so older rules keep being polled. A rule being written now has an author watching, so this
+// path refuses the lot.
 const compiled = compileRule(ruleId, input)
 if (compiled.warnings.length > 0) throw new RuleValidationError(compiled.warnings)
 

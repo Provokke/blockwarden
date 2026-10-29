@@ -38,7 +38,7 @@ describe('lookup.rule', () => {
     expect(String(lines[0]?.data?.warnings)).toContain('actions.0.url')
   })
 
-  // a rule written before milestone 3 has no actions key at all; reading it must not look like a broken rule
+  // an older rule has no actions key at all; reading it mustn't look like a broken rule
   it('reads a rule stored without an actions list', async () => {
     const { lookup, lines } = lookupOf(
       ruleItem({

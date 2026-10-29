@@ -18,7 +18,7 @@ export async function toRecoverableSignature(
     try {
       recovered = await recoverAddress({ hash, signature })
     } catch {
-      // an r that is not on the curve recovers nothing
+      // an r that isn't on the curve recovers nothing
       throw new InvalidSignatureError('the signature does not recover to any address')
     }
     if (isAddressEqual(recovered, address)) return signature

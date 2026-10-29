@@ -1,5 +1,6 @@
-# Applied once, by hand, with administrator credentials. It creates the bucket every other root keeps its state
-# in, so its own state starts out local; the README's Deploying section says how to keep it or move it.
+# Applied once by hand with admin credentials. It creates the bucket every other root keeps its
+# state in,
+# so its own state starts out local (keep it there or move it afterwards).
 terraform {
   required_version = ">= 1.16.0"
   required_providers {

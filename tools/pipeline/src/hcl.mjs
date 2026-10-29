@@ -1,8 +1,9 @@
-// Just enough HCL reading to find variable blocks and their top-level attributes. Strings, templates, heredocs
-// and comments are masked first, so a brace or a quote inside one never moves a block's boundary.
+// Just enough HCL reading to find variable blocks and their top-level attributes. Strings,
+// templates, heredocs and comments are masked first so a brace or quote inside one can't move a
+// block boundary.
 
-// The text with every comment and the inside of every string and heredoc replaced by spaces. Newlines are kept,
-// so an offset or a line number in the mask is the same in the text.
+// the text with every comment and the inside of every string and heredoc replaced by spaces;
+// newlines kept, so offsets and line numbers match the original
 export function mask(text) {
   const out = text.split('')
   const blank = (from, to) => {
@@ -139,7 +140,8 @@ export function variables(text) {
       name: text.slice(nameStart, nameEnd),
       line: lineAt(text, nameStart),
       sensitive: /(^|\n)[ \t]*sensitive[ \t]*=[ \t]*true[ \t]*(\n|$)/.test(topLevel(body)),
-      // every name a type expression assigns, at any depth: the attributes of an object, and of objects inside it
+      // every name a type expression assigns, at any depth: attributes of an object, and of objects
+      // inside it
       attributes:
         type === null ? [] : [...new Set([...type.matchAll(/([A-Za-z_][A-Za-z0-9_-]*)[ \t]*=/g)].map((m) => m[1]))],
     })

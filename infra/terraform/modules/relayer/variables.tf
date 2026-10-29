@@ -66,7 +66,7 @@ variable "signers" {
     daily_spend_cap_wei          = string
     # alarm when the balance on any of its chains drops below this many gwei; null for no alarm
     balance_alarm_gwei = optional(number)
-    # read by the actions pipeline in milestone 3 to deliver tx.* events
+    # read by the actions pipeline to deliver tx.* events
     webhooks                 = optional(list(string), [])
     webhook_secret_parameter = optional(string)
   }))
@@ -77,7 +77,7 @@ variable "signers" {
   }
 
   # The actions pipeline builds a webhook delivery per URL here, and the sender's destination guard refuses
-  # anything but https with no credentials in it - a URL that fails it dead-letters every transaction event
+  # anything but https with no credentials in it, and a URL that fails it dead-letters every transaction event
   # this signer ever produces. Checked here as far as HCL can: the guard also refuses a private or loopback
   # address, and resolves the host again when it sends.
   validation {

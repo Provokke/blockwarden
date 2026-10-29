@@ -1071,7 +1071,7 @@ describe('sweepChain', () => {
   })
 
   describe('a transaction with hundreds of hashes', () => {
-    // the reviewer's probe: 100 ms a call, 10 second sweeps, and a second transaction waiting behind the big one
+    // 100 ms a call, 10 second sweeps, and a second transaction waiting behind the big one
     const CALL_MS = 100
     const SWEEP_MS = 10_000
 

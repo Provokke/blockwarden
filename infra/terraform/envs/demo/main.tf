@@ -11,7 +11,7 @@ terraform {
     }
   }
 
-  # A partial configuration, so no account id is committed. init supplies the rest:
+  # Partial config so no account id is committed. init supplies the rest:
   #   terraform init -backend-config="bucket=<state_bucket output of infra/terraform/bootstrap>" \
   #     -backend-config="key=demo/terraform.tfstate" -backend-config="region=<region output of the bootstrap>"
   # The key is the only one the demo apply role can write.
@@ -120,8 +120,9 @@ module "blockwarden" {
     }
   }
 
-  # webhooks only: no SES identity and no Telegram bot token exist for the demo yet. Both senders still deploy
-  # and fail closed on the channels that are not configured.
+  # webhooks only: no SES identity or Telegram bot token for the demo yet. Both senders still deploy
+  # and fail
+  # closed on the channels that aren't configured.
   actions = {
     source_dir               = "${path.root}/../../../../services/actions/dist"
     webhook_secret_parameter = "/blockwarden-demo/webhook-secret"
@@ -136,7 +137,8 @@ module "blockwarden" {
   }
 }
 
-# Testnet relaying only. Until the milestone 5 demo contracts exist, the allowlist holds only the burn address, and
+# Testnet relaying only. Until the demo contracts exist, the allowlist holds only the burn address,
+# and
 # "0x" there allows plain transfers with value to it, up to the 0.05 ETH daily spend cap.
 module "relayer" {
   source                   = "../../modules/relayer"

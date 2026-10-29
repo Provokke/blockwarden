@@ -19,7 +19,7 @@ type Delivery = {
 }
 
 export default function DeliveriesPage() {
-  // by delivery id: the reload that follows a redrive removes the row, and its button with it
+  // by delivery id: the reload after a redrive removes the row, and its button with it
   const [notices, setNotices] = useState<Record<string, Settled>>({})
   const list = usePagedList<Delivery>('/v1/deliveries', 'deliveries', { status: 'dead' })
   const columns: Column<Delivery>[] = [

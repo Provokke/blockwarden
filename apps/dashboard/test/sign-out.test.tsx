@@ -21,7 +21,8 @@ let logout: () => Response
 beforeEach(() => {
   calls = []
   cookieValid = true
-  // the real route clears the cookie and answers { ok: true }; the session probe answers 401 once it is gone
+  // the real route clears the cookie and answers { ok: true }; the session probe answers 401 once
+  // it's gone
   logout = () => {
     cookieValid = false
     return json(200, { ok: true })
