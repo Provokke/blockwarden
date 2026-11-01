@@ -6,14 +6,14 @@ OpenZeppelin shut down Defender on 1 July 2026. Blockwarden covers the same grou
 
 ## Status
 
-Milestones 1, 2, 3 and 4 of 5 are done. Milestone 4 is built and tested but has never been deployed.
+Milestones 1, 2, 3 and 4 of 5 are done, and so is the first part of milestone 5, the demo contracts. Milestone 4 and the contracts are built and tested but have never been deployed.
 
 - **Monitor.** It polls Ethereum, Base and Arbitrum once a minute and matches events against rules stored in DynamoDB. Durable records come from finalized blocks, and fast provisional alerts come from the chain head.
 - **Relayer.** It signs and sends transactions on Base Sepolia and Arbitrum Sepolia with keys that never leave AWS KMS, behind an API-key HTTP API. Two packages come with it: [`@blockwarden/kms-signer`](packages/kms-signer) and [`@blockwarden/relayer-client`](packages/relayer-client).
 - **Actions.** A match, or a relayed transaction changing status, becomes a delivery: a webhook, an email, a Telegram message, a relayed transaction, or a message into an SQS queue or a Lambda function. Deliveries retry, dead-letter and redrive.
 - **API and dashboard.** A session-authenticated HTTP API for rules, match history, dead deliveries and their redrive, the relayer's records and health, and a static dashboard over it. One CloudFront distribution serves both.
 
-The contracts and the public demo come next. The design lives in [docs/design](docs/design/2026-09-15-blockwarden-design.md).
+The deploy pipeline and the public demo come next. The design lives in [docs/design](docs/design/2026-09-15-blockwarden-design.md).
 
 ## How the monitor handles reorgs
 
@@ -89,14 +89,40 @@ A webhook action's own `secretParameter` is optional, and so is the deployment-w
 
 `requestId` is the idempotency key: the same id is delivered once. `secretParameter` is required here, unlike on a rule's webhook action, and must sit under one of `outbound_secret_prefixes` — a prefix names what an outbound caller may point `secretParameter` at, not the full extent of what the sender's IAM policy can read: the same policy also grants the deployment-wide webhook secret, the Telegram token, the relayer API key and every signer's own webhook secret parameter.
 
+## Contracts
+
+`contracts/` is a Foundry project, the private workspace package `@blockwarden/contracts`, holding the three contracts the public demo will use. **None of them is deployed anywhere yet.** Deploying them to Base Sepolia and Arbitrum Sepolia is part of go-live, the last part of milestone 5.
+
+| Contract | What it is for |
+|---|---|
+| `ERC2771Forwarder` | OpenZeppelin 5.6.1's forwarder, unmodified, named `BlockwardenForwarder`. It executes a signed forward request once, on behalf of whoever signed it. |
+| `DemoEmitter` | `ping(id, tag)` emits `Ping(address indexed sender, uint256 indexed id, bytes32 tag)`. `sender` is the request's signer when the call came through the forwarder. It gives a monitor rule a real event to match. |
+| `TopUpVault` | Balances in accounting units, not ETH, so a copy on a public testnet holds nothing worth taking. The owner funds a pool. `spend` emits `BalanceLow` when it takes a balance from at or above the threshold to under it; a balance that is already low does not emit it again. Anyone may call `topUp(account)`, which credits a fixed amount from the pool at most once per cooldown per account. |
+
+A rule's `relay` action sends a fixed `to` and `data`, and a forward request is good for one use, so a rule cannot carry one. The demo tops up in two ways: a `BalanceLow` rule relays the fixed call `topUp(demoAccount)` from the relayer's own signer, and a caller that wants the top-up in its own name signs a fresh forward request and relays `forwarder.execute(request)` through the relayer API.
+
+```bash
+pnpm --filter @blockwarden/contracts run build         # forge build
+pnpm --filter @blockwarden/contracts run test          # unit, fuzz and invariant tests
+pnpm --filter @blockwarden/contracts run fmt:check
+pnpm --filter @blockwarden/contracts run deploy:local  # CREATE2 deploy to the Anvil at RPC_URL, default http://127.0.0.1:8545
+FUND_AMOUNT=1000 pnpm --filter @blockwarden/contracts run fund:local
+```
+
+The scripts run `forge` from your `PATH` when it is version 1.8.1, and otherwise run the same command in the `ghcr.io/foundry-rs/foundry:v1.8.1` image through Docker, so no Foundry install is needed. Another Foundry version is never used, because it can compile to different bytecode and so to different addresses. Fuzz tests run 1000 times locally and 256 times in CI; the invariant tests run 512 sequences of 128 calls locally and 256 of 64 in CI.
+
+The deploy script sends each contract through the deterministic CREATE2 factory at `0x4e59b44847b379578588920cA78FbF26c0B4956C`, so the same inputs give the same addresses on every chain. Its inputs are `VAULT_OWNER`, `VAULT_THRESHOLD` (100), `VAULT_TOP_UP_AMOUNT` (500) and `VAULT_COOLDOWN` (3600 seconds). `VAULT_OWNER` defaults to the sender only on Anvil (chain id 31337). On any other chain it is required, and Anvil's first account is refused as owner, because its key is public. The owner and the three numbers are part of the vault's address, so another owner means another vault. The script writes the addresses and parameters to `contracts/deployments/<chainId>.json` only when it broadcasts, so a dry run leaves a recorded file alone; the file for chain 31337 is git-ignored. It never funds the vault: `fund:local` is a separate step, so deploying again cannot refund anything, and a second deploy sends nothing for an address that already has code. The fund step reads the recorded vault address and refuses one that has no code on the chain. `deploy:local` and `fund:local` send as Anvil's first, unlocked account; no key is passed on the command line.
+
+The contracts compile with solc 0.8.37 for the `prague` EVM, pinned in `foundry.toml`; Base and Arbitrum both support it. The EVM version is part of every address, so changing it means redeploying everything.
+
 ## Local development
 
 Requires Node.js 24, pnpm 12 and Docker.
 
 ```bash
 pnpm install
-pnpm run test               # unit and property tests
-pnpm run test:integration   # Anvil, DynamoDB Local and moto in Docker
+pnpm run test               # unit and property tests, and the contracts' forge tests
+pnpm run test:integration   # Anvil, DynamoDB Local and moto in Docker; builds the contracts first
 pnpm run typecheck
 node scripts/pack-check.mjs # builds and packs the two published packages and imports them from the tarballs
 node scripts/tf-check.mjs   # terraform fmt, validate, tflint, checkov
@@ -344,6 +370,8 @@ The demo stack is scale-to-zero except for CloudWatch and one KMS key, so almost
 Milestone 3 added $0.40 of that as a fixed cost — four alarms, all of them past the free ten — and up to $2.40 more in a month where a delivery dies, a stream batch fails, or a rule stops compiling: `deliveriesDead` and `deliveryBatchFailures` once each, and `ruleSkips` and `ruleWarnings` once per chain, so six metrics on the demo's three chains rather than two. That is up to $2.80 in all, and `outbound_queue = true` adds a fifth alarm and $0.10.
 
 Milestone 4 adds $0.30 as a fixed cost — the API's three alarms, all of them past the free ten — and no custom metric: API Gateway and Lambda publish what those alarms watch for free. The worst month is now $3.70 above the design's $5 goal, and it needs every occasional metric to appear in the same month.
+
+Milestone 5a, the demo contracts, adds no AWS resource and changes none of these numbers.
 
 What would bring the worst month back under $5, if the operator wants that: the monitor's five occasional metrics are fifteen of the seventeen billed ones, one of each per chain. Dropping the three skip metrics — `deadlineSkips`, `busySkips` and `laggingNodeSkips` — leaves 18 published, 8 of them billed, and a total of about **$6.00**. Dropping the two actions metrics as well leaves 16 published, 6 billed, and about **$5.40**: the dead-letter alarm already pages on a dead delivery, and both functions log every one. Under $5 costs one of the two rule metrics too. Keeping `ruleWarnings` alone leaves 13 published, 3 billed, and about **$4.50**, at the price of no metric for a rule that has left the poll entirely — which is the louder of the two failures, since such a rule matches nothing at all. These are cuts to observability, not to behaviour, and none of them touches an alarm.
 

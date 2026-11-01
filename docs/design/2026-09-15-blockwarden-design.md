@@ -55,7 +55,8 @@ blockwarden/
     api/              HTTP API handlers and the SIWE authorizer
   apps/
     dashboard/        Next.js static export
-  contracts/          Foundry project
+  contracts/          Foundry project: the forwarder, DemoEmitter and TopUpVault, their tests, the CREATE2 deploy
+                      script, and the TypeScript deploy path the integration tests use
   infra/terraform/
     modules/blockwarden/   full stack: table, monitor, alarms, and the actions and api modules
     modules/actions/       dispatcher, sender, queues and alarms; used by modules/blockwarden
@@ -82,10 +83,17 @@ pnpm workspaces. `packages/core` has no AWS or network dependencies so it can be
 
 **API and dashboard.** API Gateway HTTP API with a Lambda authorizer. The dashboard is a static Next.js export on S3. CloudFront serves both, routing `/v1/*` to API Gateway, so the session cookie is same-site.
 
-**Contracts.** The demo deploys OpenZeppelin's `ERC2771Forwarder` and two contracts of our own on Base Sepolia and Arbitrum Sepolia:
+**Contracts.** The demo deploys OpenZeppelin's `ERC2771Forwarder` (5.6.1, unmodified, named `BlockwardenForwarder`) and two contracts of our own on Base Sepolia and Arbitrum Sepolia, each through the deterministic CREATE2 factory so it has the same address on both. Nothing is deployed yet; the contracts are built and tested on Anvil.
 
-- `DemoEmitter` emits events the nightly end-to-end test watches for.
-- `TopUpVault` is `ERC2771Context`-aware and lets a relayed meta-transaction top up a balance, which the demo's "balance below threshold" rule triggers.
+- `DemoEmitter` emits `Ping(address indexed sender, uint256 indexed id, bytes32 tag)`, with `sender` from `_msgSender()`, so a ping relayed through the forwarder is attributed to its signer. The nightly end-to-end test, once it exists, watches for it.
+- `TopUpVault` keeps balances in accounting units and holds no ETH, so a copy on a public testnet holds nothing worth taking. The owner funds a pool; `spend` burns from the caller's balance and emits `BalanceLow` only on the spend that takes the balance from at or above the threshold to under it, so a rule acting on it fires once per crossing rather than on every spend while the balance is low; `topUp(account)` credits a fixed amount from the pool to any account, at most once per cooldown per account. The pool and the cooldown bound `topUp`, which is why anyone may call it. The threshold, the amount and the cooldown are set once, in the constructor, with defaults of 100, 500 and 3600 seconds.
+
+A rule's `relay` action sends a fixed `to` and `data`, with nothing templated from the match, and an ERC-2771 forward request carries a nonce and a deadline and is good for one use, so a rule cannot carry one. The demo therefore has two paths:
+
+- **Rule path.** A `BalanceLow` rule relays the fixed call `topUp(demoAccount)`, made directly by the relayer's signer, so `ToppedUp.by` is the signer's address. Inside the cooldown the relayer refuses it at the gas estimate, with `CooldownActive` as the revert data.
+- **Meta-transaction path.** A caller — the nightly run, once it exists — signs a fresh forward request each time and relays `forwarder.execute(request)` through the relayer API, so `ToppedUp.by` is the request's signer. The same request a second time, once the first is mined, is refused at the estimate with `ERC2771ForwarderInvalidSigner`, because the signer's nonce has moved on.
+
+The deploy script takes the vault's owner from `VAULT_OWNER`. It defaults to the sender only on Anvil (chain id 31337); on any other chain it is required, and Anvil's first account is refused as owner because its key is public. The script writes `deployments/<chainId>.json` only when it broadcasts, and never funds the vault: `Fund.s.sol` is a separate step and refuses a vault address that has no code. The contracts compile for the `prague` EVM, pinned in `foundry.toml`. The EVM version, the compiler and the sources are all part of every address, so changing any of them moves them. `@blockwarden/contracts/testing` deploys the same contracts from TypeScript through the same factory, which is how the integration tests get them.
 
 Solidity depth in this project is deliberately modest. The subscriptions project carries the heavier contract work.
 
@@ -309,7 +317,7 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 - **Supply chain.**
   - pnpm lockfile committed, Dependabot enabled.
   - gitleaks runs in CI.
-  - Slither runs on contracts in CI.
+  - Slither does not run on the contracts. CI's `contracts` job runs `forge fmt --check`, `forge build --sizes` and `forge test`.
 
 ## Testing
 
@@ -322,8 +330,14 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
   - the KMS-backed account signs byte for byte as viem's private key account does.
 
 **Contracts (Foundry)**
-- Unit, fuzz and invariant tests.
-- Invariants include: a forwarder request cannot be replayed, and `TopUpVault` balances never exceed deposits.
+- Unit tests for each function and each revert of `DemoEmitter` and `TopUpVault`: the owner-only `fund`, a short balance, the cooldown boundary to the second, an empty pool, `BalanceLow` only on the spend that crosses below the threshold (not above it, not landing on it, not from an already-low balance), and `_msgSender()` attribution through the forwarder for `ping`, `topUp` and `spend`. Fuzz tests on amounts and times run 1000 times locally and 256 times in CI.
+- Invariant tests drive a handler that funds, spends, tops up directly and through the forwarder, replays the last forwarded request, and moves time by up to two cooldowns, a quarter of the moves landing exactly one cooldown after, or a second short of, the last. 512 sequences of 128 calls locally, 256 of 64 in CI. The handler classifies every revert: the vault's `CooldownActive` and `PoolTooLow`, a forwarded call the vault refused, and a replay refused as expired or for its used nonce are each accepted only when the handler's own ghost state predicts it, and any other revert fails the run. The invariants:
+  1. the sum of balances plus everything spent never exceeds everything funded, equals everything credited exactly, and the pool is exactly what was funded less what was credited;
+  2. no account is topped up twice inside one cooldown;
+  3. a forward request that has executed never executes again, and the signer's nonce on the forwarder equals the number of forwarded executions.
+- `test_handlerReachesEveryState` drives the handler through each of those states once, in a fixed order and asserting each, so a handler that stopped reaching the vault cannot pass unnoticed.
+- `Deploy.t.sol` proves the deploy script reaches each contract through the CREATE2 factory at its computed address, that a second run reuses what is deployed, that another owner gives another vault, that the recorded file holds the addresses and parameters, that `VAULT_OWNER` is required off Anvil and Anvil's first account is refused, that `Fund` adds to the pool once, that a redeploy afterwards funds nothing, and that `Fund` refuses a vault with no code.
+- Seam tests on Anvil, in the integration job: `contracts/test-ts/deploy.test.ts` runs the forge script on one Anvil and the TypeScript CREATE2 path on another with a different chain id, and both land at the same addresses; `services/monitor/test/integration/demo-contracts.test.ts` matches real `Ping` and `BalanceLow` logs through the monitor's scan against DynamoDB Local, one `BalanceLow` match for three spends of which only one crosses; `services/relayer/test/integration/demo-contracts.test.ts` relays a signed forward request to `confirmed` with `ToppedUp.by` the signer, sees the same request refused at the estimate, and relays the fixed `topUp` call a rule would carry.
 
 **Integration (Docker: Anvil, DynamoDB Local and moto server for SQS; the LocalStack repository is archived)**
 - `anvil_reorg <depth> <txs>` produces real reorgs; the test asserts a `fast` rule's provisional match becomes `dropped` when its log is reorged away, and `final` when the log is finalized.
@@ -341,7 +355,7 @@ Two follow-up projects depend on this one, so these interfaces are treated as pu
 - The module's variable validations mirror the runtime schemas they stand for — the target ARN allowlist, the SSM parameter names and prefixes, a signer's policy — so a value the code would refuse at cold start fails at plan instead.
 - `terraform plan` output posted as a PR comment.
 
-**End to end (nightly GitHub Actions)**
+**End to end (nightly GitHub Actions)**, not built yet; it belongs to go-live, the last part of milestone 5.
 1. Deploy `envs/staging` through OIDC.
 2. Create a rule on Base Sepolia watching `DemoEmitter`, emit an event, assert the webhook arrives with a valid signature.
 3. Relay a `TopUpVault` top-up, assert it reaches `confirmed`.
@@ -375,6 +389,12 @@ As of milestone 4:
 13. **Resolved: the deployed CSP admits the dashboard's own hydration scripts, by hash.** The Next.js static export writes inline `<script>` tags into every page that it needs to hydrate, and `script-src 'self'` would refuse them. The policy's `script-src` is now `'self'` plus the sha256 of each inline script in the export being uploaded: `apps/dashboard/scripts/csp-hashes.mjs` computes them, `site_script_hashes` carries them into `modules/api`, and the script also refuses a page with an inline style, event handler or `javascript:` URL, and a policy over CloudFront's limit on a Content-Security-Policy header value (`POLICY_LIMIT` in the script). Hashes rather than `'unsafe-inline'`, so an injected script is still blocked. The cost is a coupling: every rebuild changes the flight-data hashes, so an upload needs the matching `terraform apply`. Measured on the current export: 11 pages, 22 inline scripts, 10 distinct hashes, a 717-character policy. No browser has enforced the policy against a deployed copy, because nothing is deployed.
 14. **Logout clears the cookie only; a copied token is valid until it expires.** The session is a signed token with no server-side record, so `POST /v1/auth/logout` has nothing to revoke. Anyone who copied the token before the logout can keep using it until its `exp`.
 
+As of milestone 5a. All three apply once go-live runs the demo, since nothing is deployed yet:
+
+15. **The relayer's policy cannot see inside a forwarded call.** `checkPolicy` matches only the outer `to` and the 4-byte selector. So allowing the forwarder's `execute` admits a forward request to any contract that trusts the forwarder, and the forwarder sits at a public CREATE2 address. Until the policy can decode `execute` and allowlist the inner target and selector, the demo signer's daily spend cap is what bounds it.
+16. **A forward request is refused as a replay only once the first copy is mined.** The relayer estimates at submit and does not re-estimate a queued transaction. The same signed request submitted twice before the first is mined is broadcast twice, and the second reverts on chain. An idempotency key derived from the request's signature would collapse the duplicate.
+17. **Anyone can call `topUp`, so a demo rule that relays `topUp(demoAccount)` can be pre-empted.** A third party can top up that account first, or drain the pool through throwaway accounts. The relayed call is then refused at the estimate and dead-lettered, which pages the dead-letter alarm.
+
 ## Cost estimate (demo instance, idle)
 
 These are estimates from published AWS pricing and have to be measured after the first deploy.
@@ -406,6 +426,8 @@ Milestone 3 raised the ceiling: it adds $0.40 a month that is always charged (fo
 
 Milestone 4 adds $0.30 a month that is always charged: three alarms, all of them past the free ten. It adds no custom metric, because API Gateway and Lambda publish the metrics its alarms watch for free. Its access log group and the extra invocations the uncached authorizer costs are cents at demo traffic, and the dashboard's distribution and its two buckets add no alarm, no metric and no fixed charge. The worst month is now $3.70 above the $5 goal.
 
+Milestone 5a, the demo contracts, adds no AWS resource and changes none of these numbers.
+
 What would bring it back under $5, if that matters more than the observability: the monitor's five occasional metrics are fifteen of the seventeen billed ones. Without `deadlineSkips`, `busySkips` and `laggingNodeSkips` the worst month publishes 18 metrics, 8 of them billed, and the total is about $6.00. Dropping `deliveriesDead` and `deliveryBatchFailures` as well leaves 16 published, 6 billed, and about $5.40; the dead-letter alarm still pages on a dead delivery, and both functions log every one. Getting under $5 costs one of the two rule metrics as well: keeping `ruleWarnings` alone leaves 13 published, 3 billed, and about $4.50, and gives up the metric for a rule that has left the poll entirely. None of these cuts touches an alarm or any behaviour.
 
 This table is the demo instance only. The two example stacks under `infra/terraform/examples` sit entirely inside the free tier: `monitor-actions-only`, with `outbound_queue = true`, creates 8 alarms; `relayer-only` creates 7 alarms and publishes 1 custom metric (`pendingAgeSeconds` — its one signer has no `balance_alarm_gwei` set, so `signerBalanceGwei` is never emitted there). Both alarm counts, and the one metric, are under the free ten.
@@ -422,9 +444,11 @@ Each milestone gets its own implementation plan.
 
 Milestones 1, 2, 3 and 4 are done. Milestone 4 is built and tested and has never been deployed.
 
+Milestone 5 is split in three. **5a, the contracts, is done**: built and tested on Anvil, deployed nowhere. **5b**, the deploy pipeline, and **5c**, go-live on the public testnets with the nightly end-to-end run, are pending.
+
 **Deferred from milestone 1:** the GitHub OIDC deploy role, `terraform plan` posted as a PR comment, and per-rule match metrics.
 
-**Deferred from milestone 3:** Base Sepolia in the monitor, which is milestone 5 with the demo contracts; and a contract-state rule type, which is Project C item 7 and is not scheduled.
+**Deferred from milestone 3:** Base Sepolia in the monitor, which belongs to go-live (5c), not to the contracts; and a contract-state rule type, which is Project C item 7 and is not scheduled.
 
 **Deferred from milestone 4:** a cancel route for a relayed transaction, so `cancelled` stays a reserved status; and per-rule match metrics, which are still not emitted. Both remain deferred.
 
@@ -438,7 +462,7 @@ The user provides:
 - testnet ETH for the signer on Base Sepolia and Arbitrum Sepolia.
 - the npm organisation `@blockwarden`. Its availability is unconfirmed because npm's site refused the automated check; if it is taken, the packages publish unscoped as `blockwarden-kms-signer` and `blockwarden-relayer-client`.
 
-Local tooling to install: AWS CLI v2, Terraform, Node.js 24, pnpm. Anvil, DynamoDB Local, tflint, checkov and gitleaks run from Docker images. Docker is already installed.
+Local tooling to install: AWS CLI v2, Terraform, Node.js 24, pnpm. Anvil, forge, DynamoDB Local, tflint, checkov and gitleaks run from Docker images; forge 1.8.1 on the `PATH` is used instead when it is installed. Docker is already installed.
 
 ## Conventions
 
