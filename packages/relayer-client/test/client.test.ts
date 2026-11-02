@@ -62,7 +62,7 @@ describe('relayer client', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const address = server.address()
     if (!address || typeof address === 'string') throw new Error('no port')
-    // a trailing slash, as an operator might paste it, must not produce //v1
+    // a trailing slash, as an operator might paste, mustn't produce //v1
     baseUrl = `http://127.0.0.1:${address.port}/`
   })
 
@@ -131,9 +131,9 @@ describe('relayer client', () => {
     expect(tx.receiptStatus).toBe('reverted')
   })
 
-  // the field has been part of every published version, so a body without it is not a transaction; the type
-  // said it was always there while the guard let it through, and a caller's `!== null` check then passed on
-  // undefined
+  // the field has been in every published version, so a body without it isn't a transaction; the
+  // type said it was always there while the guard let it through, so a caller's `!== null` check
+  // passed on undefined
   it('refuses a transaction body with no revertData', async () => {
     const { revertData: _absent, ...old } = TX
     answer = { status: 200, body: JSON.stringify(old) }

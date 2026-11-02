@@ -6,9 +6,9 @@ import { DeliveryConflictError, REAPER_GRACE_MS, type DeadCursor, type DueCursor
 import { newDelivery, startDynamo, startStore, type Harness } from '../helpers/store.js'
 import { allDead } from '../../scripts/lib.js'
 
-// Every non-terminal delivery in this table shares the due index, so listDue always sees what earlier tests left
-// behind. Assert over the deliveries the test itself created, never over a whole page, or a later test that adds
-// another pending delivery turns the assertion vacuous without failing.
+// Every non-terminal delivery shares the due index, so listDue sees what earlier tests left. Assert
+// over the deliveries this test made, never a whole page, or a later test adding another pending
+// delivery makes it vacuous.
 
 let dynamo: Awaited<ReturnType<typeof startDynamo>>
 let h: Harness
@@ -144,7 +144,7 @@ describe('dead letters', () => {
     expect(reset.status).toBe('pending')
     expect(reset.attempts).toBe(0)
     expect(reset.lastError).toBeUndefined()
-    // the previous life's first attempt would make every latency measured on the redriven delivery wrong
+    // the previous life's first attempt would skew latency on the redriven delivery
     expect(reset.firstAttemptAt).toBeUndefined()
     expect((await h.store.get(refOf(reset)))?.firstAttemptAt).toBeUndefined()
     expect((await h.store.listDead(10)).map((d) => d.deliveryId)).not.toContain(delivery.deliveryId)
@@ -187,7 +187,7 @@ describe('listDue', () => {
     expect(partitions.size).toBeGreaterThan(1)
     const due = (await h.store.listDue(100_000, 100)).filter((d) => mine.has(d.deliveryId))
     expect(due.map((d) => d.nextAttemptAt)).toEqual([99_993, 99_994, 99_995, 99_996, 99_997, 99_998, 99_999, 100_000])
-    // the limit holds over the merge, not over each shard
+    // the limit holds over the merge, not each shard
     expect(await h.store.listDue(100_000, 3)).toHaveLength(3)
   })
 
@@ -228,7 +228,7 @@ describe('paging', () => {
       if (!cursor) break
     }
     expect(cursor).toBeUndefined()
-    // nothing read twice, nothing behind the first page missed, and the due order held across the pages
+    // nothing read twice, nothing behind the first page missed, due order held across pages
     expect(new Set(seen).size).toBe(seen.length)
     expect(seen.filter((id) => mine.includes(id))).toEqual(mine)
   })
@@ -264,8 +264,8 @@ describe('paging', () => {
       const created = (await h.store.create(delivery, at(3_000 + seq)))!
       await h.store.markDead(await h.store.claim(created, 4_000, 60_000), 4_500, 'gone', 410)
     }
-    // a page of one, so a walk that stopped at the first page would answer with one delivery and the script
-    // would report the other two as deliveries that do not exist
+    // a page of one, so a walk that stopped at the first page would see one delivery and the script
+    // would call the other two missing
     const seen = (await allDead(h.store, 1)).map((d) => d.deliveryId)
     expect(seen.filter((id) => mine.includes(id))).toEqual(mine)
   })
@@ -310,7 +310,7 @@ describe('reading a delivery back', () => {
   it('lists the dead oldest first and stops at the limit', async () => {
     const subject = keys.matchSubject('0x53')
     const mine: string[] = []
-    // written out of order, so the order below is the index's doing and not the order of the writes
+    // written out of order, so the order below is the index's doing
     for (const seq of [2, 0, 1]) {
       const delivery = newDelivery({ subject, event: 'match.final', seq })
       mine.push(delivery.deliveryId)

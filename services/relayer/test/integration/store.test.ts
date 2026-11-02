@@ -144,7 +144,7 @@ describe('RelayerStore', () => {
     })
 
     it('saves a transaction at every limit, with the longest refusal a node can give', async () => {
-      // the reviewer's worst case: 8 KB of calldata, 64 attempts, 512 dropped hashes, 4 abandoned attempts, and a
+      // worst case: 8 KB of calldata, 64 attempts, 512 dropped hashes, 4 abandoned attempts, and a
       // node that answers by echoing the raw transaction back
       const data = `0x${'ab'.repeat(8_192)}` as Hex
       const raw = `0x${'cd'.repeat(8_600)}` as Hex

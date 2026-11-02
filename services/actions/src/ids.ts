@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-// a rule may be written with its keys in any order, and an action's id has to survive that
+// rule keys can come in any order, but an action's id has to survive that
 export function canonicalJson(value: unknown): string {
   return canonicalJsonValue(value, '<root>', new Set())
 }
@@ -9,8 +9,8 @@ function hasToJSON(value: unknown): value is { toJSON: (key: string) => unknown 
   return value !== null && typeof value === 'object' && typeof (value as Record<string, unknown>).toJSON === 'function'
 }
 
-// walks the value the way JSON.stringify does: call toJSON before looking at the shape, so a Date (or anything
-// else with a toJSON) canonicalises to what JSON.stringify would actually send over the wire, not `{}`
+// walks the value like JSON.stringify does: toJSON first, so a Date canonicalises to what actually
+// goes over the wire, not `{}`
 function canonicalJsonValue(value: unknown, at: string, seen: Set<unknown>): string {
   const normalised = hasToJSON(value) ? value.toJSON(at) : value
 
@@ -45,9 +45,8 @@ export function actionId(action: unknown): string {
   return `a_${sha256Hex(canonicalJson(action)).slice(0, 16)}`
 }
 
-// A subject can carry a newline: an outbound request id is the caller's own string. The sort key cannot — it is
-// DELIVERY#, an a_ hex id, an event name from a fixed set and four digits — so the last newline in the joined
-// text is always the join, and no pair of different halves gives the same input.
+// A subject can hold a newline (an outbound request id is the caller's string). The sort key can't,
+// so the last newline in the joined text is always the join.
 export function deliveryId(subject: string, sk: string): string {
   return `dlv_${sha256Hex(`${subject}\n${sk}`).slice(0, 32)}`
 }

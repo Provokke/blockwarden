@@ -50,7 +50,7 @@ contract DemoEmitterTest is Test, ForwardRequests {
     }
 
     function test_aSenderAppendedByAnyoneElseIsIgnored() public {
-        // the same calldata the forwarder builds, sent by an address the emitter does not trust
+        // the same calldata the forwarder builds, sent by an address the emitter doesn't trust
         bytes memory spoofed = abi.encodePacked(abi.encodeCall(DemoEmitter.ping, (1, bytes32("x"))), makeAddr("victim"));
         vm.expectEmit(address(emitter));
         emit Ping(relayer, 1, bytes32("x"));

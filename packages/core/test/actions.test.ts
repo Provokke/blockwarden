@@ -25,8 +25,8 @@ describe('webhook actions', () => {
     ).toBe(true)
   })
 
-  // the item is capped at 400 KB and two header names of any length go into it beside the payload; the poison
-  // check covers an oversized payload, not an oversized action
+  // the item is capped at 400 KB and two header names of any length go in beside the payload; the
+  // poison check covers an oversized payload, not an oversized action
   it('holds a header name to a length a real header has', () => {
     const ok = { type: 'webhook', url: 'https://example.com/hook', signatureHeader: 'x'.repeat(MAX_HEADER_NAME_LENGTH) }
     expect(parse(ok).success).toBe(true)
@@ -75,7 +75,7 @@ describe('webhook actions', () => {
     expect(reason({ type: 'webhook', url, signatureHeader: 'X-Sig', deliveryHeader: 'X-Sig' })).toContain('same header')
     // HTTP header names are case-insensitive, so these two are one header
     expect(reason({ type: 'webhook', url, signatureHeader: 'X-Sig', deliveryHeader: 'x-sig' })).toContain('same header')
-    // a name that is left out is still a name: the sender falls back to its default
+    // a name left out is still a name: the sender falls back to its default
     expect(reason({ type: 'webhook', url, deliveryHeader: DEFAULT_SIGNATURE_HEADER })).toContain('same header')
     expect(reason({ type: 'webhook', url, signatureHeader: 'X-Blockwarden-Delivery' })).toContain('same header')
     expect(parse({ type: 'webhook', url, signatureHeader: 'X-Sig', deliveryHeader: 'X-Dlv' }).success).toBe(true)
@@ -103,8 +103,8 @@ describe('webhook actions', () => {
     }
   })
 
-  // neither SSM nor an IAM resource ARN normalises a path, so `..` is an ordinary level with a misleading name;
-  // refused so that a prefix check and the grant that mirrors it never have to disagree about what it means
+  // neither SSM nor an IAM ARN normalises a path, so `..` is an ordinary level with a misleading
+  // name; refused so the prefix check and its grant agree
   it('refuses a parameter name with a .. level', () => {
     const url = 'https://e.com/h'
     expect(reason({ type: 'webhook', url, secretParameter: '/blockwarden/../other/secret' })).toBeTruthy()
@@ -163,7 +163,8 @@ describe('relay actions', () => {
     expect(reason({ ...base, value: 1 })).toBeTruthy()
   })
 
-  // the relayer refuses calldata over the same cap, so anything larger is stored once and then refused for ever
+  // the relayer refuses calldata over the same cap, so anything larger would be stored once and
+  // refused for ever
   it('holds calldata to the size the relayer will accept', () => {
     const base = { type: 'relay', signerId: 'd', chainId: 1, to: `0x${'2'.repeat(40)}` }
     expect(parse({ ...base, data: `0x${'ab'.repeat(MAX_RELAY_DATA_BYTES)}` }).success).toBe(true)
@@ -204,8 +205,8 @@ describe('same-account actions', () => {
     ).toContain('Lambda function ARN')
   })
 
-  // the sender implements FIFO properly, so a FIFO ARN has to survive all three checks or none: the allowlist
-  // in services/actions/src/config.ts and the Terraform input mirror this regex
+  // the sender implements FIFO properly, so a FIFO ARN has to pass all three checks or none: the
+  // allowlist in services/actions/src/config.ts and the Terraform input mirror this regex
   it('takes a FIFO queue ARN, and holds the whole name to the 80 characters SQS allows', () => {
     const arn = (name: string) => `arn:aws:sqs:us-east-1:111122223333:${name}`
     expect(parse({ type: 'sqs', queueArn: arn('ingest.fifo') }).success).toBe(true)

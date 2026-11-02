@@ -45,7 +45,7 @@ if (chosen.length === 0) {
   console.error(args.all ? 'no dead deliveries' : `no dead delivery with id ${args.id}`)
   process.exit(1)
 }
-// the count before the writes, so an operator who meant one delivery sees the size of what --all is about to do
+// count first, so someone who meant one delivery sees how much --all is about to do
 console.log(`${chosen.length} dead delivery/deliveries selected of ${dead.length}`)
 if (values['dry-run']) {
   for (const delivery of chosen) console.log(`would redrive ${delivery.deliveryId}  ${describeTarget(delivery)}`)
@@ -54,8 +54,8 @@ if (values['dry-run']) {
 const redriven: DeliveryRef[] = []
 for (const delivery of chosen) {
   const reset = await store.reset(delivery, Date.now())
-  // the same builder the dispatcher and the reaper use, so a redrive can never point the message at a sort key
-  // built some other way
+  // same builder as the dispatcher and reaper, so a redrive can't point the message at a
+  // differently built sort key
   const ref = refOf(reset)
   await queue.send(ref, 0)
   redriven.push(ref)
@@ -63,7 +63,6 @@ for (const delivery of chosen) {
 }
 console.log(`${chosen.length} delivery/deliveries queued again`)
 
-// the delivery is on its way again, but its copy still sits on the dead-letter queue holding the alarm on
 if (args.dlq) {
   const deleted = await drainRedriven(sqs, args.dlq, redriven)
   // one delivery can have several copies on the queue, so this counts messages, not deliveries

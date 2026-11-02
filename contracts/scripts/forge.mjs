@@ -16,16 +16,18 @@ const forwardedEnv = [
   'FUND_AMOUNT',
 ]
 
-// pnpm links node_modules with junctions on Windows, and Docker Desktop shows a junction inside a container as a
-// link to /mnt/host/<drive>/<path>, so the repository is mounted at that path for the remappings to resolve.
-// Elsewhere pnpm's links are relative and the host path serves as the mount point.
+// pnpm links node_modules with junctions on Windows, and Docker Desktop shows a junction inside a
+// container as a link to /mnt/host/<drive>/<path>, so mount the repo at that path for the
+// remappings to resolve. Elsewhere pnpm's links are relative and the host path works as the mount
+// point.
 export function containerPath(hostPath, platform = process.platform) {
   if (platform !== 'win32') return hostPath
   const [drive = '', ...rest] = hostPath.split(/[\\/]+/).filter(Boolean)
   return `/mnt/host/${drive.replace(':', '').toLowerCase()}/${rest.join('/')}`
 }
 
-// a container cannot reach the host's loopback, so an Anvil published on localhost is reached through the gateway
+// a container can't reach the host's loopback, so an Anvil published on localhost is reached
+// through the gateway
 export function containerRpcUrl(rpcUrl) {
   let url
   try {
@@ -58,7 +60,8 @@ export function forge(args, { rpcUrl } = {}) {
   }
   // forge downloads solc into HOME; a HOME inside the mount keeps it between runs
   dockerArgs.push('-e', `HOME=${workdir}/.forge-home`)
-  // forge asks git about the project, and git refuses a repository owned by another user unless told it is safe
+  // forge asks git about the project, and git refuses a repo owned by another user unless told it's
+  // safe
   dockerArgs.push('-e', 'GIT_CONFIG_COUNT=1', '-e', 'GIT_CONFIG_KEY_0=safe.directory', '-e', 'GIT_CONFIG_VALUE_0=*')
   for (const name of forwardedEnv) if (process.env[name] !== undefined) dockerArgs.push('-e', name)
   let forgeArgs = args

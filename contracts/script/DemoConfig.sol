@@ -5,10 +5,11 @@ pragma solidity 0.8.37;
 
 string constant FORWARDER_NAME = "BlockwardenForwarder";
 
-// every contract's address comes from its salt and its init code: the compiled bytecode plus the constructor arguments.
-// The vault's owner, threshold, top-up amount and cooldown are all constructor arguments, so changing any of them
-// gives another vault. The bytecode carries the metadata hash of the sources (foundry.toml pins bytecode_hash to ipfs), so
-// any byte changed in these contracts or in OpenZeppelin, a comment included, moves the addresses too.
+// Every contract's address comes from its salt and init code (bytecode plus constructor args). The
+// vault's owner, threshold, top-up amount and cooldown are constructor args, so changing any gives
+// another vault. The bytecode carries the sources' metadata hash (foundry.toml pins bytecode_hash
+// to ipfs), so any byte changed in these contracts or OpenZeppelin, a comment included, moves the
+// addresses.
 uint256 constant LOCAL_CHAIN_ID = 31337;
 address constant ANVIL_ACCOUNT_0 = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 

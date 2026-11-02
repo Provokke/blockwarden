@@ -1,9 +1,8 @@
 import { build } from 'esbuild'
 
-// One bundle per function. Both currently carry every sender's client code: handlers.ts holds the entry for
-// both functions and names all four ports, so either entry pulls the lot in. Splitting that would mean a
-// handler module per function, and the dispatcher's own reaper already sends to the dead-letter queue, so
-// the saving would be a few hundred kilobytes of cold start for a second copy of the wiring to keep in step.
+// One bundle per function. Both carry every sender's client code since handlers.ts names all four
+// ports. Splitting would save a few hundred KB of cold start for a second copy of the wiring to
+// keep in step.
 for (const name of ['dispatcher', 'sender']) {
   await build({
     entryPoints: [`src/lambda/${name}.ts`],
@@ -15,10 +14,10 @@ for (const name of ['dispatcher', 'sender']) {
     minify: true,
     sourcemap: 'linked',
     legalComments: 'none',
-    // Bundled CommonJS dependencies still call require(), which ESM output does not define.
+    // Bundled CommonJS deps still call require(), which ESM output doesn't define.
     banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
   })
-  // importing the bundle proves it resolves and loads without its environment; the handlers read it on first call
+  // importing the bundle proves it resolves and loads without its environment
   const loaded = await import(new URL(`../dist/${name}/index.mjs`, import.meta.url).href)
   if (typeof loaded.handler !== 'function') throw new Error(`dist/${name}/index.mjs exports no handler`)
   console.log(`built dist/${name}/index.mjs`)

@@ -64,15 +64,15 @@ describe('against a real table', () => {
     const stored = await h.store.get(ref)
     expect(stored?.status).toBe('queued')
 
-    // the case a conditional put would otherwise hide for ever: the item exists, the message never arrived
+    // the case a conditional put would otherwise hide: the item exists, the message never arrived
     await h.store.scheduleRetry(await h.store.claim(stored!, 2_000, 0), 2_000, 2_000, 'the message was lost')
     sent.length = 0
     expect(await sweepDue(deps, 2_000 + 61_000, 10)).toEqual({ requeued: 1, dead: 0 })
     expect(sent).toHaveLength(1)
   })
 
-  // the half of lookup.rule that Terraform's own rules go through: it cannot build a nested DynamoDB map, so
-  // modules/blockwarden/rules.tf writes the body as one JSON string
+  // the half of lookup.rule that Terraform's rules go through: it can't build a nested DynamoDB
+  // map, so rules.tf writes the body as one JSON string
   it('reads a rule whose body Terraform wrote as a JSON string', async () => {
     const input = {
       chainId: 8453,

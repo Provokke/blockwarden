@@ -14,11 +14,12 @@ export type RelayRequest = {
   data: Hex
   value?: bigint
   gasLimit?: bigint
-  // the same key from the same API key returns the original transaction instead of sending a second one
+  // the same key from the same API key returns the original transaction instead of sending a second
   idempotencyKey: string
-  // free text of up to 128 characters, stored and returned with the transaction
+  // free text up to 128 characters, stored and returned with the transaction
   reference?: string
-  // an earlier txId on the same chain to wait for until it is confirmed; needs gasLimit, see the README
+  // an earlier txId on the same chain to wait for until it's confirmed; needs gasLimit, see the
+  // README
   dependsOn?: string
 }
 
@@ -78,8 +79,8 @@ export type ApiErrorBody = {
 export const MATCH_STATUSES = ['provisional', 'final', 'dropped'] as const
 export type MatchStatus = (typeof MATCH_STATUSES)[number]
 
-// A decoded event argument. viem decodes a tuple as an object and a fixed or dynamic array as an array; every
-// numeric value is sent as a decimal string, because JSON numbers cannot hold a uint256.
+// A decoded event argument. viem decodes a tuple as an object and an array as an array; every
+// number is sent as a decimal string since JSON numbers can't hold a uint256.
 export type DecodedValue = string | boolean | DecodedValue[] | { [key: string]: DecodedValue }
 
 export type MatchEventData = {

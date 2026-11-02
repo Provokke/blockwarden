@@ -27,7 +27,7 @@ export type CycleDeps = {
   store: MonitorStorePort
   maxRange: number
   timeBudgetMs: number
-  // absolute epoch milliseconds; the cycle stops at the earlier of this and the end of its time budget
+  // absolute epoch ms; the cycle stops at the earlier of this and its time budget
   deadlineMs?: number
   startBlock?: number
   finalityDepth?: number
@@ -50,8 +50,8 @@ export type CycleResult = {
   dropped: number
   laggingNode: boolean
   deadlineHit: boolean
-  // rules that could not be compiled at all, and rules that compiled with something dropped; both mean a rule
-  // is not doing what it says, so the handler publishes each as its own metric and an alarm can watch them
+  // rules that couldn't compile, and rules that compiled with something dropped; both mean a rule
+  // isn't doing what it says, so each gets its own metric for an alarm
   ruleSkips: number
   ruleWarnings: number
 }
@@ -144,7 +144,8 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
   } else if (finalized !== undefined) {
     cursor = { durableBlock: finalized, fastBlock: head, version: 0 }
   } else {
-    // starting at the head would skip the blocks between finalized and the head for good once finalized returns
+    // starting at the head would skip the blocks between finalized and head for good once finalized
+    // returns
     log('finalized block is unavailable and no start block is set, waiting to create the cursor', { chainId })
     return report('ok', { durableBlock: 0, fastBlock: 0 })
   }
@@ -157,8 +158,8 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
       const filter = buildLogFilter(rules)
       // a range the RPC refused is likely refused again, so the next range starts at the size that fitted
       let span = deps.maxRange
-      // once a range is refused after an earlier read fitted, that read's size caps growth for the rest of the run,
-      // so the size stops alternating between one that fits and a doubled one that is refused
+      // once a range is refused after an earlier read fitted, that size caps growth for the rest of
+      // the run, so it stops flipping between fits and refused
       let ceiling = deps.maxRange
       let lastFitted: number | undefined
       try {
@@ -168,7 +169,7 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
             break
           }
           if (!filter) {
-            // there is nothing to read, so one write moves the cursor all the way
+            // nothing to read, so one write moves the cursor all the way
             cursor = await store.saveCursor(chainId, { ...cursor, durableBlock: finalized })
             continue
           }
@@ -190,7 +191,8 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
                 cursor = await store.saveCursor(chainId, { ...cursor, durableBlock: t })
                 const size = t - f + 1
                 if (f === from && t === to) {
-                  // a range read whole may mean the node recovered, so the size grows back towards the ceiling
+                  // a range read whole may mean the node recovered, so grow back towards the
+                  // ceiling
                   span = Math.min(ceiling, span * 2)
                 } else {
                   if (!halved && lastFitted !== undefined) ceiling = Math.min(ceiling, lastFitted)
@@ -236,8 +238,9 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
         const filter = buildLogFilter(fastRules)!
         let reached = from
         try {
-          // a chunk never splits a block, so ordinals computed per chunk match the durable scan's; a halved chunk is
-          // several reads that a reorg can separate, which is why ordinals are counted per block, not per transaction
+          // a chunk never splits a block, so per-chunk ordinals match the durable scan's; a halved
+          // chunk is several reads a reorg can separate, hence ordinals per block, not per
+          // transaction
           while (reached < head) {
             const end = Math.min(head, reached + deps.maxRange)
             const logs = await fetchLogs(chain, filter, reached + 1, end, shouldStop)
@@ -251,9 +254,10 @@ async function poll(deps: CycleDeps, now: () => number, log: Log): Promise<Cycle
           log('the deadline passed inside the fast scan, stopping it this run', { chainId, fastBlock: reached })
           deadlineHit = true
         }
-        // the overlap starts behind the cursor, so a run stopped inside it must not pull the cursor back
+        // the overlap starts behind the cursor, so a run stopped inside it mustn't pull the cursor
+        // back
         const fastBlock = Math.max(cursor.fastBlock, reached)
-        // saved once, not per chunk, so a narrow maxRange does not multiply cursor writes
+        // saved once, not per chunk, so a narrow maxRange doesn't multiply cursor writes
         if (reached > from && fastBlock !== cursor.fastBlock) {
           cursor = await store.saveCursor(chainId, { ...cursor, fastBlock })
         }
@@ -304,13 +308,14 @@ async function readFinalRange(
   shouldStop: () => boolean,
 ): Promise<RawLog[]> {
   const { logs, head, headBefore } = await chain.getLogsWithHead(filter, from, to, { shouldStop })
-  // both heads, because a node that runs batch entries concurrently can read the batched head after the logs
+  // both heads, because a node running batch entries concurrently can read the batched head after
+  // the logs
   if (head < to || headBefore < to) throw new LaggingNodeError(Math.min(head, headBefore), to)
   return logs
 }
 
-// Both endings are quiet failures - a rule stops being monitored, or stops delivering part of what it says -
-// so both are logged at warn and counted for a metric, rather than sitting in an info line nobody reads.
+// Both endings are quiet failures (a rule stops being monitored, or stops delivering part of what
+// it says), so log at warn and count a metric rather than leave an info line nobody reads.
 async function loadRules(
   deps: CycleDeps,
   log: Log,

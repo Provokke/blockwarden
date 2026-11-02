@@ -18,9 +18,9 @@ import {
     VAULT_SALT
 } from "./DemoConfig.sol";
 
-/// @notice Deploys the forwarder, the emitter and the vault through the deterministic CREATE2 factory, so the same
-/// inputs give the same addresses on every chain. It never funds the vault: that is Fund.s.sol, run by the owner,
-/// so a second run of this script cannot refund anything.
+/// @notice Deploys the forwarder, emitter and vault through the deterministic CREATE2 factory, so
+/// the same inputs give the same addresses on every chain. It never funds the vault (that's
+/// Fund.s.sol, run by the owner), so a second run can't refund anything.
 contract Deploy is Script {
     struct Params {
         address owner;
@@ -39,9 +39,9 @@ contract Deploy is Script {
     error OwnerIsAnvilAccount();
 
     function run() external returns (Deployed memory deployed) {
-        // the owner is part of the vault's init code, so a chain given another owner gets another vault address. Only
-        // Anvil may fall back to the sender: everywhere else the owner must be named, and must not be Anvil's
-        // first account, whose key is public.
+        // the owner is part of the vault's init code, so another owner means another vault address.
+        // Only Anvil may fall back to the sender; everywhere else the owner must be named and must
+        // not be Anvil's first account, whose key is public.
         address owner;
         if (block.chainid == LOCAL_CHAIN_ID) {
             owner = vm.envOr("VAULT_OWNER", msg.sender);
@@ -58,7 +58,7 @@ contract Deploy is Script {
         vm.startBroadcast();
         deployed = deploy(params);
         vm.stopBroadcast();
-        // a dry run must not overwrite a committed file with addresses that were never deployed
+        // a dry run mustn't overwrite a committed file with addresses that were never deployed
         if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume)) {
             string memory dir = string.concat(vm.projectRoot(), "/deployments");
             vm.createDir(dir, true);
@@ -95,16 +95,17 @@ contract Deploy is Script {
         vm.serializeAddress(key, "emitter", deployed.emitter);
         vm.serializeAddress(key, "vault", deployed.vault);
         vm.serializeAddress(key, "owner", params.owner);
-        // decimal strings, as every other amount in this repository is, so a reader never meets a number past 2^53
+        // decimal strings, like every other amount in this repo, so a reader never meets a number
+        // past 2^53
         vm.serializeString(key, "threshold", vm.toString(params.threshold));
         vm.serializeString(key, "topUpAmount", vm.toString(params.topUpAmount));
         string memory json = vm.serializeString(key, "cooldown", vm.toString(params.cooldown));
         vm.writeJson(json, path);
     }
 
-    // the same transaction ts/testing.ts sends: the salt, then the init code, to the factory Anvil and the chains the
-    // demo targets already carry. Where it is missing the call fails safely with Create2Failed. An address that already
-    // has code is left as it is, so a second run changes nothing.
+    // the same transaction ts/testing.ts sends: salt, then init code, to the factory Anvil and the
+    // demo chains already carry. Where it's missing the call fails safely with Create2Failed. An
+    // address that already has code is left alone, so a second run changes nothing.
     function create2(bytes32 salt, bytes memory initCode) internal returns (address deployed) {
         deployed = vm.computeCreate2Address(salt, keccak256(initCode));
         if (deployed.code.length > 0) return deployed;

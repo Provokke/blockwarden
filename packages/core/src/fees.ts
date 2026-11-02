@@ -38,8 +38,9 @@ export function clampFees(estimate: Fees, cap: Fees): Fees {
   }
 }
 
-// Each field goes to the greater of 12.5% over previous and the current estimate, and never below the node's
-// minimum, then the policy cap applies. A cap under that minimum makes a replacement impossible, so ok is false.
+// Each field goes to the greater of 12.5% over previous and the current estimate, never below the
+// node's minimum, then the policy cap applies. A cap under that minimum makes a replacement
+// impossible, so ok is false.
 export function bumpFees(
   previous: Fees,
   estimate: Fees,

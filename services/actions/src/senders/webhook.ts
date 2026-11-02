@@ -14,7 +14,7 @@ export async function signatureFor(payload: string, secrets: string[], nowMs: nu
 export const sendWebhook: Sender = async (deps, delivery) => {
   if (delivery.target.channel !== 'webhook') throw new Error(`delivery ${delivery.deliveryId} is not a webhook`)
   const { url, secretParameter, signatureHeader, deliveryHeader } = delivery.target
-  // an empty name is no name, and falling through to the default beats dead-lettering the delivery
+  // an empty name is no name; fall back to the default rather than dead-lettering
   const parameter = secretParameter || deps.defaultWebhookSecretParameter
   if (!parameter) {
     deps.log('a webhook action names no secret parameter', { deliveryId: delivery.deliveryId }, 'warn')
@@ -23,8 +23,8 @@ export const sendWebhook: Sender = async (deps, delivery) => {
 
   const signatureName = signatureHeader ?? SIGNATURE_HEADER
   const deliveryName = deliveryHeader ?? DELIVERY_HEADER
-  // the rule schema refuses this pair, but a rule stored before it did can still reach here, and one object
-  // literal would let the delivery id land on the signature's key and ship the request unsigned
+  // the rule schema refuses this pair, but an older rule can reach here, and one object literal
+  // would put the delivery id on the signature's key and ship it unsigned
   if (signatureName.toLowerCase() === deliveryName.toLowerCase()) {
     deps.log(
       'a webhook action names the signature and delivery headers the same header',
@@ -41,7 +41,7 @@ export const sendWebhook: Sender = async (deps, delivery) => {
   try {
     secrets = await deps.secrets.read(parameter)
   } catch (err) {
-    // a throttled or briefly unavailable parameter is not the receiver's fault
+    // a throttled or briefly unavailable parameter isn't the receiver's fault
     return { kind: 'retry', error: truncate(`the webhook secret could not be read: ${(err as Error).message}`) }
   }
 
@@ -52,11 +52,11 @@ export const sendWebhook: Sender = async (deps, delivery) => {
       [deliveryName]: delivery.target.eventId ?? delivery.deliveryId,
     }
   } catch (err) {
-    // an empty or unusable secret is a fault in the configuration, not a destination that would not answer
+    // an empty or unusable secret is a config fault, not a destination that wouldn't answer
     deps.log('a webhook delivery could not be signed', { deliveryId: delivery.deliveryId }, 'warn')
     return { kind: 'permanent', error: truncate(`the delivery could not be signed: ${(err as Error).message}`) }
   }
-  // the names were compared above; this is the proof that both of them survived the object literal
+  // the names were compared above; this proves both survived the object literal
   if (Object.keys(headers).length !== 2) {
     return { kind: 'permanent', error: 'the signature header was displaced, so the delivery was not sent' }
   }
@@ -83,7 +83,7 @@ export const sendWebhook: Sender = async (deps, delivery) => {
 function classify(statusCode: number, body: string, retryAfterSeconds?: number): SendOutcome {
   if (statusCode >= 200 && statusCode < 300) return { kind: 'delivered', statusCode }
   if (statusCode >= 300 && statusCode < 400) {
-    // the URL has to be the final one; following it is how an SSRF guard is walked around
+    // the URL has to be the final one; following redirects is how an SSRF guard gets walked around
     return { kind: 'permanent', error: `the destination answered with a redirect, which is not followed`, statusCode }
   }
   if (statusCode === 429 || statusCode >= 500) {

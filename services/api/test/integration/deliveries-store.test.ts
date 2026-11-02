@@ -57,7 +57,7 @@ function refOf(delivery: DeliveryRecord): DeliveryRef {
 }
 
 // writes a delivery through the actions service's own store (the only writer real infrastructure ever uses),
-// then kills it the same way the sender does - never by poking status onto a row by hand
+// then kills it the same way the sender does, never by poking status onto a row by hand
 async function deadDelivery(subject: string): Promise<DeliveryRecord> {
   const created = await actionsStore.create(newDelivery({ subject }), new Date(1_000))
   if (!created) throw new Error('delivery already existed')
@@ -65,7 +65,8 @@ async function deadDelivery(subject: string): Promise<DeliveryRecord> {
 }
 
 // same as deadDelivery, but claimed first so firstAttemptAt (and lastAttemptAt) are set on the row before it
-// dies - without a real attempt on it, a test can't tell a redrive that clears the field from one that never
+// dies. Without a real attempt on it, a test can't tell a redrive that clears the field from one
+// that never
 // had it to begin with
 async function deadDeliveryWithAttempt(subject: string): Promise<DeliveryRecord> {
   const created = await actionsStore.create(newDelivery({ subject }), new Date(1_000))
@@ -135,7 +136,8 @@ describe('deliveries through the API, over rows the actions store wrote', () => 
     expect(message?.Body).toBeDefined()
 
     // the sender's own parser (services/actions/src/sender.ts's processMessages), run on the exact body the
-    // API put on the queue - no sender is registered here, so a body that parses and finds the row runs all
+    // API put on the queue. No sender is registered here, so a body that parses and finds the row
+    // runs all
     // the way to "no sender for channel" and marks it dead again with that error; a body the parser cannot
     // read is instead logged and dropped, and the row is left untouched at pending
     const senderDeps: SenderPipelineDeps = {
@@ -216,7 +218,7 @@ describe('store resilience to a dead row it cannot fully read', () => {
     const subject = keys.matchSubject('0x-malformed')
     const badId = deliveryId(subject, 'DELIVERY#a_bad#match.final#0')
     // shaped like a real dead item (item() in services/actions/src/store.ts), minus the one field this test
-    // knocks out - Terraform and a hand edit are both ways a row like this reaches production
+    // knocks out. Terraform and a hand edit are both ways a row like this reaches production
     await dynamo.doc.send(
       new PutCommand({
         TableName: table,
@@ -249,7 +251,7 @@ describe('store resilience to a dead row it cannot fully read', () => {
 describe("targetString: what a listing shows for each channel's target, and what it must never show", () => {
   const subject = keys.matchSubject('0x-targets')
   // a secretParameter is an SSM parameter path, not the secret itself, but it is still the credential's
-  // address - nothing that reduces a target for a listing may ever repeat it back, on any channel
+  // address, so nothing that reduces a target for a listing may ever repeat it back, on any channel
   const secretParameterValue = '/blockwarden/secrets/do-not-leak-this-parameter'
   const headerValue = 'do-not-leak-this-header-value'
 
@@ -296,7 +298,7 @@ describe("targetString: what a listing shows for each channel's target, and what
     await putDeliveryWithTarget('DELIVERY#a6#match.final#0', 'lambda', {
       functionArn: 'arn:aws:lambda:us-east-1:111111111111:function:deliveries',
     })
-    // a channel this build does not recognise - the reducer has never heard of 'carrier-pigeon'
+    // a channel this build does not recognise: the reducer has never heard of 'carrier-pigeon'
     await putDeliveryWithTarget('DELIVERY#a7#match.final#0', 'carrier-pigeon', {
       anything: 'goes-here',
       secretParameter: secretParameterValue,

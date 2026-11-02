@@ -71,8 +71,8 @@ describe('createLocalDigestSigner', () => {
 })
 
 describe('toDigestSignerAccount', () => {
-  // viem's own account signs with RFC 6979 and low s; the digest signer uses the same nonce, so once s is
-  // normalised every signature must match byte for byte
+  // viem's own account signs with RFC 6979 and low s; the digest signer uses the same nonce, so
+  // once s is normalised every signature must match byte for byte
   it('signs exactly as a viem private key account does', async () => {
     await fc.assert(
       fc.asyncProperty(
@@ -141,8 +141,8 @@ describe('toDigestSignerAccount', () => {
 
   it('refuses an untyped transaction that carries blob fields', async () => {
     const account = await toDigestSignerAccount(createLocalDigestSigner(`0x${'44'.repeat(32)}`))
-    // no `type`; viem's own serializer infers eip4844 from these fields and would sign over a hash
-    // that includes the sidecars, so this must be refused just like the explicitly typed case above
+    // no `type`; viem's serializer infers eip4844 from these fields and would sign a hash that
+    // includes the sidecars, so this must be refused like the explicitly typed case above
     const untypedBlob = {
       chainId: 84532,
       nonce: 0,

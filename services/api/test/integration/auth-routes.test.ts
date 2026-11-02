@@ -18,8 +18,10 @@ let rpcCalls = 0
 beforeAll(async () => {
   dynamo = await startDynamo()
   const table = await dynamo.newTable()
-  // no chain here: a chain-specialized client isn't structurally a bare PublicClient, and this client is
-  // only reached by a contract-wallet path an EOA signature doesn't take with mode: 'eoa' — throwing on
+  // no chain here: a chain-specialised client isn't structurally a bare PublicClient, and this
+  // client is
+  // only reached by a contract-wallet path an EOA signature doesn't take with mode: 'eoa'. Throwing
+  // on
   // every request, rather than pointing at an unroutable address, is what proves that path is never taken
   const client = createPublicClient({
     transport: custom({
@@ -125,7 +127,8 @@ describe('the SIWE round trip', () => {
   it('refuses a malformed message with 400, not the 401 a real rejected message gets', async () => {
     const { message, signature } = await signIn()
     // parseSiweMessage's suffix fields all come from one match against one regex, so dropping the URI line
-    // also drops version, chain ID and nonce - this is a client error, not a signature this deployment rejects
+    // also drops version, chain ID and nonce, so this is a client error, not a signature this
+    // deployment rejects
     const malformed = message.replace(/URI: .+\n/, '')
     const result = await handleVerify(deps, event({ message: malformed, signature }))
     expect(result.status).toBe(400)

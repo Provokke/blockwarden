@@ -70,8 +70,8 @@ const deps = (extra: Partial<SenderDeps> = {}): SenderDeps => ({
   ...extra,
 })
 
-// the guard refuses loopback, so the API base is supplied the way the guard would have supplied it, and the
-// request itself still goes out through the real postJson
+// the guard refuses loopback, so the API base is supplied as the guard would, and the request still
+// goes through the real postJson
 const local = () => ({
   url: new URL(`http://127.0.0.1:${port}`),
   host: '127.0.0.1',

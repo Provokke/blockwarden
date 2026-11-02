@@ -46,7 +46,7 @@ const delivery = (
   expiresAt: 0,
 })
 
-// the fake records the parameter it was asked for, so the tests below prove which name the sender read
+// the fake records the parameter it was asked for, so tests prove which name the sender read
 const asked: string[] = []
 const deps = {
   secrets: {
@@ -68,7 +68,7 @@ describe('the real sender', () => {
   })
 
   it('signs a real request so verifyWebhook accepts it under either secret', async () => {
-    // the guard refuses loopback, so the destination is supplied the way the guard would have supplied it
+    // the guard refuses loopback, so the destination is supplied as the guard would
     const target = {
       url: new URL(`http://127.0.0.1:${port}/hook`),
       host: '127.0.0.1',
@@ -88,7 +88,7 @@ describe('the real sender', () => {
       })
     }
     expect(received!.headers['x-blockwarden-delivery']).toBe('dlv_real')
-    // the name the action carries, not the action id and not some default
+    // the name the action carries, not the action id or a default
     expect(asked).toContain('/bw/secret')
   })
 
@@ -103,7 +103,7 @@ describe('the real sender', () => {
     }
     const outcome = await sendWebhook(
       { ...deps, resolve: async () => target },
-      // the shape the rule schema now refuses, as a rule stored before it could still hold it
+      // the shape the rule schema now refuses, as an older stored rule could still hold it
       delivery('https://example.com/hook', { deliveryHeader: SIGNATURE_HEADER }),
     )
     expect(outcome).toMatchObject({ kind: 'permanent' })

@@ -2,12 +2,12 @@ import type { Hex } from 'viem'
 
 export type DeliveryChannel = 'webhook' | 'email' | 'telegram' | 'relay' | 'sqs' | 'lambda'
 
-// every component takes the same logger shape, so nothing has to reach into Powertools; info unless a level is
-// given, and a failure goes to warn or error so a filter on the level finds it
+// every component takes the same logger shape so nothing reaches into Powertools; failures go to
+// warn or error so level filters find them
 export type Log = (message: string, data?: Record<string, unknown>, level?: 'warn' | 'error') => void
 
-// pending: the item exists but no message has been sent yet; queued: a message is on the queue;
-// delivering: a sender has claimed it; failed is not terminal, it is waiting for its next attempt
+// pending: item exists, no message yet. queued: message on the queue. delivering: a sender claimed
+// it. failed isn't terminal, it's waiting for its next attempt.
 export type DeliveryStatus = 'pending' | 'queued' | 'delivering' | 'delivered' | 'failed' | 'dead'
 
 export const TERMINAL: ReadonlySet<DeliveryStatus> = new Set(['delivered', 'dead'])
@@ -17,7 +17,7 @@ export type DeliveryTarget =
       channel: 'webhook'
       url: string
       secretParameter?: string
-      // Project B's merchants see their own header name, not ours
+      // merchants see their own header name, not ours
       signatureHeader?: string
       deliveryHeader?: string
       // what the delivery header carries; an outbound request sets its own, everything else uses the delivery id
@@ -46,7 +46,7 @@ export type DeliveryRecord = {
   seq: number
   channel: DeliveryChannel
   target: DeliveryTarget
-  // the exact bytes signed and sent; a redrive sends these again rather than rendering the item afresh
+  // the exact bytes signed and sent; a redrive resends these instead of rendering afresh
   payload: string
   status: DeliveryStatus
   attempts: number
@@ -66,17 +66,17 @@ export type NewDelivery = Pick<
   'deliveryId' | 'subject' | 'actionId' | 'event' | 'seq' | 'channel' | 'target' | 'payload'
 >
 
-// what an SQS message carries: enough to read the item, and nothing that could be stale
+// what an SQS message carries: enough to read the item, nothing that could go stale
 export type DeliveryRef = { subject: string; sk: string }
 
 export const DELIVERY_TTL_SECONDS = 30 * 24 * 60 * 60
 
-// A delivery holds the bytes it sends. The table's item limit is 400 KB, and a payload anywhere near this is a
-// rule matching something it should not; the dispatcher fails the delivery rather than storing it.
+// A delivery holds the bytes it sends. The table's item limit is 400 KB, and a payload near this
+// means a rule is matching something it shouldn't, so the dispatcher fails it.
 export const MAX_PAYLOAD_BYTES = 64 * 1024
 
-// The cap is a property of the payload, not a passing condition: the same bytes are refused every time, so a
-// caller can tell this apart from a throttle and stop retrying instead of stalling its shard on it.
+// A property of the payload: the same bytes are refused every time, so callers can tell this from a
+// throttle and stop retrying.
 export class PayloadTooLargeError extends Error {
   constructor(
     readonly deliveryId: string,
@@ -87,14 +87,14 @@ export class PayloadTooLargeError extends Error {
   }
 }
 
-// the same rule as a node's refusal in the relayer: a receiver can answer with a whole HTML page
+// same rule as a node's refusal in the relayer: a receiver can answer with a whole HTML page
 export const MAX_ERROR_CHARACTERS = 256
 
 export function truncate(text: string, max = MAX_ERROR_CHARACTERS): string {
   if (text.length <= max) return text
   let end = max
-  // slice() counts UTF-16 code units; back off one so we don't split a surrogate pair and leave a lone
-  // surrogate, which DynamoDB stores as a replacement character
+  // slice() counts UTF-16 units; back off one so we don't leave a lone surrogate (DynamoDB stores
+  // it as a replacement char)
   if (end > 0 && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff) end -= 1
   return `${text.slice(0, end)}...`
 }

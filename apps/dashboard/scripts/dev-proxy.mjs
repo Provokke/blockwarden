@@ -1,17 +1,8 @@
-// Reproduces what CloudFront does in production: one origin that serves the site and forwards /v1/* to the API.
-// Open http://localhost:3100, not the next dev server directly.
-//
-// Two things here look like bugs when met cold:
-//
-// 1. A Secure cookie does work over http://localhost. Browsers treat localhost as a secure context, so the
-//    session cookie is set and sent. The same cookie over http://192.168.1.10 is not, which is why this binds
-//    localhost and says so rather than listening on every interface.
-//
-// 2. Running next dev on 3000 and calling the API on 3200 directly appears to work until login. The fetch
-//    succeeds, the Set-Cookie is accepted for localhost:3200, and the next request from localhost:3000 carries
-//    nothing. Always go through this proxy.
-//
-// The ports come from the environment so a test can run it on free ones; the defaults are the documented ones.
+// Reproduces CloudFront in production: one origin that serves the site and forwards /v1/* to the API. Open http://localhost:3100, not the next dev server directly.
+// A Secure cookie works over http://localhost (browsers treat it as a secure context) but not over http://192.168.1.10, which is why this binds localhost only.
+// Running next dev on 3000 and calling the API on 3200 directly looks fine until login: the
+// Set-Cookie is accepted for localhost:3200 and the next request from 3000 carries nothing.
+// Ports come from the environment so a test can use free ones.
 import { request } from 'node:http'
 import { createServer } from 'node:http'
 import { connect } from 'node:net'
@@ -41,12 +32,12 @@ const server = createServer((req, res) => {
       port: upstreamPort,
       method: req.method,
       path: req.url,
-      // the browser's host names the proxy; the upstream is told where the request really came in
+      // the browser's host names the proxy; tell the upstream where the request really came in
       headers: { ...req.headers, host: `localhost:${upstreamPort}`, 'x-forwarded-host': req.headers.host ?? '' },
     },
     (upstreamRes) => {
-      // rawHeaders would keep duplicates but headers already holds set-cookie as an array, which writeHead
-      // emits as one header line per cookie
+      // rawHeaders would keep duplicates but headers already holds set-cookie as an array, which
+      // writeHead emits as one line per cookie
       res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
       upstreamRes.pipe(res)
     },

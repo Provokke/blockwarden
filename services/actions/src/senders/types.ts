@@ -11,9 +11,9 @@ export type SendOutcome =
   | { kind: 'retry'; error: string; statusCode?: number; afterSeconds?: number }
   | { kind: 'permanent'; error: string; statusCode?: number }
 
-// The two local-server escape hatches a test injects to reach a fake destination without weakening the
-// destination guard itself. Kept as their own type so production wiring can omit them by construction rather
-// than by discipline: see `ProductionSenderDeps` below.
+// The two local-server escape hatches a test injects to reach a fake destination without weakening
+// the guard. Their own type so production wiring can omit them by construction (see
+// `ProductionSenderDeps`).
 type TestOnlyDeps = {
   resolve?: (raw: string) => Promise<Resolved>
   post?: (
@@ -36,12 +36,12 @@ export type SenderDeps = TestOnlyDeps & {
   fromAddress?: string
   configurationSet?: string
   telegramTokenParameter?: string
-  // the real one is api.telegram.org. An override is operator configuration and still goes through the
-  // destination guard, so a test that points it at a local server injects `resolve` as well
+  // the real one is api.telegram.org. An override is operator config and still goes through the
+  // guard, so tests that point it at a local server inject `resolve` too
   telegramApiBase?: string
   relayerApiUrl?: string
   relayerApiKeyParameter?: string
-  // injected so a test drives the published client's behaviour without an HTTP server
+  // injected so a test drives the published client without an HTTP server
   relay?: typeof relay
   sqs?: Pick<SQSClient, 'send'>
   lambda?: Pick<LambdaClient, 'send'>
@@ -50,9 +50,8 @@ export type SenderDeps = TestOnlyDeps & {
   region?: string
 }
 
-// What real infrastructure wiring builds. Omitting `resolve` and `post` (rather than leaving them optional and
-// unset) makes setting either one from production code a compile error: an object literal assigned to this
-// type that names one is an excess property, not a silently accepted no-op.
+// What real wiring builds. Omitting `resolve` and `post` makes setting either from production code
+// a compile error (excess property), not a silent no-op.
 export type ProductionSenderDeps = Omit<SenderDeps, keyof TestOnlyDeps>
 
 export type Sender = (deps: SenderDeps, delivery: DeliveryRecord) => Promise<SendOutcome>

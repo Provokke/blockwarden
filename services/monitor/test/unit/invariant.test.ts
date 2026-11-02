@@ -100,7 +100,7 @@ const round = fc.record({
   budgetAfterLogs: fc.option(fc.integer({ min: 1, max: 4 }), { nil: undefined }),
   // a node that caps eth_getLogs at a few blocks makes both scans halve their ranges
   rangeLimit: fc.constantFrom(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, 1, 2, 3),
-  // each log request can be the one during which the deadline passes, often inside a halved range
+  // each log request can be the one the deadline passes during, often inside a halved range
   deadlineFlake: fc.constantFrom(0, 0, 0.2, 0.5),
 })
 
@@ -191,7 +191,8 @@ describe('scanning invariant', () => {
           if (before === 'dropped' && result === 'upgraded') seen.droppedToFinal++
           return result
         }
-        // the durable block the cursor was created at; the durable scan never reads it or anything below it
+        // the durable block the cursor was created at; the durable scan never reads it or anything
+        // below
         let origin: number | undefined
         const saveCursor = store.saveCursor.bind(store)
         store.saveCursor = async (chainId, next) => {
@@ -369,7 +370,7 @@ describe('scanning invariant', () => {
         const stale = store.withStatus('provisional').filter((m) => m.blockNumber <= durable - DROP_AFTER_BLOCKS)
         expect(stale).toEqual([])
 
-        // an event in one block has one ordinal, so both scans must have keyed it the same way
+        // an event in one block has one ordinal, so both scans must key it the same way
         for (const [event, keys] of fastKeys) {
           const finalKeys = durableKeys.get(event)
           if (!finalKeys) continue

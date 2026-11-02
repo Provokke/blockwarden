@@ -45,7 +45,7 @@ export default function EditRulePage() {
   return (
     <main>
       <h1>Edit rule</h1>
-      {/* useSearchParams has no value at build time, and a static export fails without a boundary to defer it to */}
+      {/* useSearchParams has no value at build time, so a static export needs a boundary to defer it to */}
       <Suspense fallback={<p className="muted">Loading...</p>}>
         <EditRule />
       </Suspense>

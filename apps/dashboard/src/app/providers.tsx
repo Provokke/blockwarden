@@ -6,11 +6,11 @@ import { WagmiProvider } from 'wagmi'
 import { wagmiConfig } from '../lib/wagmi'
 
 export function Providers({ children }: { children: ReactNode }) {
-  // in state so a re-render keeps the cache instead of building a new one
+  // in state so a re-render keeps the cache
   const [queryClient] = useState(
     () =>
-      // a refused request is shown with a Retry button; retrying it silently behind a spinner would hide a 4xx the
-      // operator has to act on
+      // a refused request shows a Retry button; retrying silently behind a spinner would hide a 4xx
+      // the operator has to act on
       new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } }),
   )
   return (

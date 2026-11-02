@@ -6,11 +6,13 @@ import { DEAD_PARTITION, type DeliveryItem, type DeliveryRef, type DeliveryStore
 const MAX_PAGE = 100
 const SUBJECT_KINDS = ['MATCH#', 'TX#', 'OUTBOUND#']
 
-// GSI1's own LastEvaluatedKey for the dead-letter query is always exactly these four string attributes, as
-// the integration test reads back from DynamoDB Local (same reasoning as matches.ts's isMatchListKey).
-// The cursor is unsigned base64, so any caller can hand back a crafted key; anything of another shape must
-// never reach ExclusiveStartKey, where DynamoDB answers a bad key with a ValidationException that has no
-// route-level catch.
+// GSI1's LastEvaluatedKey for the dead-letter query is always exactly these four string attributes
+// (see the
+// integration test against DynamoDB Local). The cursor is unsigned base64, so a caller can hand
+// back a crafted key,
+// and anything of another shape must never reach ExclusiveStartKey: DynamoDB answers a bad key with
+// a
+// ValidationException that nothing catches at route level.
 const DEAD_LIST_KEY_ATTRS = ['PK', 'SK', 'GSI1PK', 'GSI1SK'] as const
 
 function isDeadListKey(value: unknown): value is Record<(typeof DEAD_LIST_KEY_ATTRS)[number], string> {
@@ -23,8 +25,9 @@ function isDeadListKey(value: unknown): value is Record<(typeof DEAD_LIST_KEY_AT
   return record.GSI1PK === DEAD_PARTITION
 }
 
-// listBySubject queries the base table, not GSI1, so its own LastEvaluatedKey is the table's own key alone -
-// same reasoning as DEAD_LIST_KEY_ATTRS above, one attribute pair narrower
+// listBySubject queries the base table, not GSI1, so its LastEvaluatedKey is the table's own key
+// alone (same as
+// DEAD_LIST_KEY_ATTRS above, one attribute pair narrower)
 const SUBJECT_LIST_KEY_ATTRS = ['PK', 'SK'] as const
 
 function isSubjectListKey(
@@ -121,8 +124,9 @@ export async function handleRedrive(deps: DeliveryDeps, event: APIGatewayProxyEv
   // a row still marked dead, which the sender refuses
   const reset = await deps.store.requeueDelivery(delivery, deps.now())
   if (!reset) return error(409, 'not_dead', 'that delivery changed before it could be redriven')
-  // the exact shape services/actions/src/sender.ts's processMessages parses off the queue: a DeliveryRef,
-  // nothing more - the item itself is the truth, so the message carries only a pointer to it
+  // exactly what services/actions/src/sender.ts's processMessages parses off the queue: a
+  // DeliveryRef and nothing
+  // more. The item itself is the truth, so the message only carries a pointer to it
   await deps.queue.send(JSON.stringify({ subject: delivery.subject, sk: delivery.sk }))
   return ok({ deliveryId, status: 'pending' })
 }

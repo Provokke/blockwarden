@@ -34,7 +34,7 @@ const COLUMNS: Column<Match>[] = [
   { header: 'First seen', cell: (match) => match.firstSeenAt },
 ]
 
-// the matches index is per rule, so with no rule chosen there is nothing to ask the API for
+// the matches index is per rule, so with no rule chosen there's nothing to ask the API for
 function RulePicker() {
   const list = usePagedList<RuleRow>('/v1/rules', 'rules')
   const columns: Column<RuleRow>[] = [
@@ -89,7 +89,7 @@ export default function MatchesPage() {
   return (
     <main>
       <h1>Matches</h1>
-      {/* useSearchParams has no value at build time, and a static export fails without a boundary to defer it to */}
+      {/* useSearchParams has no value at build time, so a static export needs a boundary to defer it to */}
       <Suspense fallback={<p className="muted">Loading...</p>}>
         <Matches />
       </Suspense>

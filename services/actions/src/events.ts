@@ -28,7 +28,7 @@ export type Change = MatchChange | TxChange
 const isMatchStatus = (v: unknown): v is MatchStatus => (MATCH_STATUSES as readonly unknown[]).includes(v)
 const isTxStatus = (v: unknown): v is TxStatus => (TX_STATUSES as readonly unknown[]).includes(v)
 
-// history is a list of { status, at }; historyBase counts the entries dropped off the front
+// history is a list of { status, at }; historyBase counts entries dropped off the front
 function entries(row: Row): { seq: number; status: unknown; at: unknown }[] {
   const base = typeof row.historyBase === 'number' ? row.historyBase : 0
   const history = Array.isArray(row.history) ? row.history : []
@@ -42,9 +42,9 @@ function count(row: Row | undefined): number {
 }
 
 export function changesFor(change: StreamChange): Change[] {
-  // a deletion is a TTL expiry or an operator's DeleteItem, neither of which is something that happened on chain
+  // a deletion is a TTL expiry or an operator's DeleteItem, not something that happened on chain
   if (change.eventName === 'REMOVE' || !change.newImage) return []
-  // every item kind shares the table; a delivery even shares its partition key with the match it belongs to
+  // every item kind shares the table; a delivery even shares its partition key with its match
   if (change.sk !== 'META') return []
   const row = change.newImage
 

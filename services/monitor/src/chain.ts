@@ -11,7 +11,7 @@ import {
 } from 'viem'
 
 export interface ChainReader {
-  // absolute epoch milliseconds; every request still running then is aborted and rejects with DeadlineError
+  // absolute epoch ms; every request still running then is aborted and rejects with DeadlineError
   setHardStop(epochMs: number | undefined): void
   // forgets each node's remembered head, so the next log read pre-reads it again
   resetRememberedHeads(): void
@@ -70,12 +70,13 @@ export function isHalvableError(err: unknown): boolean {
 
 const NULL_BODY_STATUSES = new Set([204, 205, 304])
 
-// viem's default limit; it can only apply it to a body this fetch has already read, so the limit is enforced here too
+// viem's default limit only applies to a body this fetch has already read, so enforce it here too
 export const MAX_RESPONSE_BODY_BYTES = 10_485_760
 
-// viem retries an error that has no numeric code (utils/buildRequest.ts:291-322), which would download an oversized
-// body again from the same URL. A code viem neither retries nor maps to its own error classes (buildRequest.ts:171-263)
-// stops that, and the error still reaches us as this instance. The code is outside JSON-RPC's reserved range.
+// viem retries an error with no numeric code (utils/buildRequest.ts:291-322), which would
+// re-download an oversized body. A code viem neither retries nor maps (buildRequest.ts:171-263)
+// stops that and the error still reaches us as this instance. The code is outside JSON-RPC's
+// reserved range.
 class OversizedResponseError extends ResponseBodyTooLargeError {
   readonly code = -39_001
 }
@@ -118,8 +119,8 @@ class HardStopError extends Error {
   }
 }
 
-// viem's own timeout stops waiting once the headers arrive, so a body that stalls would hang the invocation;
-// reading the body here, under one abort signal and a byte limit, bounds the whole request in time and memory
+// viem's own timeout stops waiting once headers arrive, so a stalled body would hang the
+// invocation. Reading it here under one abort signal and a byte limit bounds time and memory.
 export function boundedFetch(timeoutMs: number, hardStop: () => number | undefined = () => undefined) {
   return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const stopAt = hardStop()
@@ -143,7 +144,7 @@ export function boundedFetch(timeoutMs: number, hardStop: () => number | undefin
     } catch (err) {
       // viem rethrows it unchanged, and a smaller range can fit under the limit
       if (err instanceof ResponseBodyTooLargeError) throw err
-      // a plain error, so viem reports it as a transport failure rather than passing an abort through
+      // a plain error, so viem reports a transport failure instead of passing an abort through
       if (timeout.aborted) {
         throw stoppedEarly ? new HardStopError() : new Error(`the RPC request did not finish within ${timeoutMs} ms`)
       }
@@ -152,7 +153,7 @@ export function boundedFetch(timeoutMs: number, hardStop: () => number | undefin
   }
 }
 
-// viem wraps the fetch error, so the hard stop is found along the cause chain
+// viem wraps the fetch error, so find the hard stop along the cause chain
 function causedByHardStop(err: unknown): boolean {
   let current = err
   for (let depth = 0; current instanceof Error && depth <= 5; depth++) {
@@ -166,7 +167,7 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
   if (rpcUrls.length === 0) throw new Error('at least one RPC URL is required')
   let hardStop: number | undefined
   const hardStopPassed = () => hardStop !== undefined && Date.now() >= hardStop
-  // any failure once the hard stop has passed is reported as the stop, so the cycle keeps what it committed
+  // any failure after the hard stop is reported as the stop, so the cycle keeps what it committed
   const stoppedBy = (err: unknown) => causedByHardStop(err) || hardStopPassed()
   const hardStopError = () => new DeadlineError('the invocation hard stop passed before the RPC request finished')
   const guarded = async <T>(request: () => Promise<T>): Promise<T> => {
@@ -186,9 +187,9 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
     ),
     cacheTime: 0,
   })
-  // the same retries as client, but fallback walks on to the next URL unless shouldThrow stops it
-  // (clients/transports/fallback.ts:162). An oversized body needs a smaller range, not another node, and after the
-  // hard stop every URL would refuse anyway, only after sitting through its retry backoff
+  // same retries as client, but fallback walks on to the next URL unless shouldThrow stops it
+  // (clients/transports/fallback.ts:162). An oversized body needs a smaller range, not another
+  // node, and after the hard stop every URL would refuse anyway.
   const logsClient = createPublicClient({
     transport: fallback(
       rpcUrls.map((url) => http(url, { timeout: timeoutMs, retryCount: 1, fetchFn })),
@@ -196,7 +197,7 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
     ),
     cacheTime: 0,
   })
-  // fallback fails over each call on its own, which would pair one node's head with another node's logs;
+  // fallback fails over each call on its own, which would pair one node's head with another's logs;
   // viem retries each call on its own too, so retries happen per pair in getLogsWithHead
   const nodeClients = rpcUrls.map((url) =>
     createPublicClient({
@@ -234,13 +235,13 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
     )
   }
 
-  // called in the same tick as requestLogs, so both still go out in one batch
+  // called in the same tick as requestLogs so both go out in one batch
   const readBatchedHead = async (node: (typeof nodeClients)[number]): Promise<number> => {
     try {
       return hexToNumber(await node.request({ method: 'eth_blockNumber' }))
     } catch (err) {
-      // a head the node cannot answer says nothing about the log range, just like a failed pre-read;
-      // an oversized body fails the whole batch, and a smaller range can fit
+      // a head the node can't answer says nothing about the log range, like a failed pre-read; an
+      // oversized body fails the whole batch, and a smaller range can fit
       if (stoppedBy(err) || isTransportError(err) || err instanceof ResponseBodyTooLargeError) throw err
       throw new HeadReadError(err)
     }
@@ -279,21 +280,21 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
           if (options?.shouldStop?.()) throw new DeadlineError()
           if (hardStopPassed()) throw hardStopError()
           try {
-            // Erigon runs batch entries concurrently, so its batched head can be read after the logs were;
-            // a head from a request that completed before this batch was sent cannot be
+            // Erigon runs batch entries concurrently, so its batched head can be read after the
+            // logs; a head from a request that finished before this batch was sent can't be
             let headBefore = knownHeads[i]!
             if (headBefore < to) {
               try {
                 headBefore = hexToNumber(await node.request({ method: 'eth_blockNumber' }))
               } catch (err) {
-                // a node that cannot answer its head is skipped; its failure must not make the range halve
+                // a node that can't answer its head is skipped; that mustn't make the range halve
                 if (stoppedBy(err) || isTransportError(err)) throw err
                 headReadError ??= new HeadReadError(err)
                 break
               }
               knownHeads[i] = Math.max(knownHeads[i]!, headBefore)
             }
-            // issued in the same tick so the batching http transport sends both in one HTTP request, head first
+            // same tick so the batching http transport sends both in one request, head first
             const [head, logs] = await Promise.all([readBatchedHead(node), requestLogs(node, filter, from, to)])
             knownHeads[i] = Math.max(knownHeads[i]!, head)
             return { logs, head, headBefore }
@@ -312,8 +313,8 @@ export function createChainReader(rpcUrls: string[], timeoutMs = 10_000): ChainR
           }
         }
       }
-      // every node failed; a halvable error lets fetchLogsAdaptive try a smaller range even when an earlier
-      // node refused the method, and each sub-range reads a fresh head, starting from the first URL again
+      // every node failed; a halvable error lets fetchLogsAdaptive try a smaller range even if an
+      // earlier node refused the method, and each sub-range reads a fresh head from the first URL
       if (rpcErrors.length > 0) throw rpcErrors.find(isHalvableError) ?? rpcErrors[0]
       throw lastTransportError ?? headReadError
     },

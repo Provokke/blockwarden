@@ -107,8 +107,8 @@ contract DeployTest is Test {
         assertEq(vm.parseJsonString(json, ".cooldown"), "3600");
     }
 
-    // the environment is process-wide and forge runs test functions in parallel, so every case that sets a variable
-    // lives in this one function
+    // the environment is process-wide and forge runs test functions in parallel, so every case that
+    // sets a variable lives in this one function
     function test_runAndFundReadTheirInputsFromTheEnvironment() public {
         vm.setEnv("VAULT_OWNER", "");
         vm.setEnv("VAULT_THRESHOLD", "");
@@ -125,7 +125,7 @@ contract DeployTest is Test {
         assertEq(localVault.cooldown(), DEFAULT_COOLDOWN);
 
         // any other chain: no owner, no deploy
-        vm.chainId(84532);
+        vm.chainId(424244);
         vm.expectRevert();
         script.run();
 
@@ -143,8 +143,9 @@ contract DeployTest is Test {
         assertEq(other.emitter, local.emitter);
         assertTrue(other.vault != local.vault);
 
-        // only a broadcast records a deployment; a plain run must not overwrite the file a public chain's deploy commits
-        assertFalse(vm.exists("deployments/84532.json"));
+        // only a broadcast records a deployment; a plain run mustn't overwrite the file a public
+        // chain's deploy commits
+        assertFalse(vm.exists("deployments/424244.json"));
 
         vm.setEnv("VAULT_THRESHOLD", "");
         vm.setEnv("VAULT_OWNER", "");
@@ -153,8 +154,8 @@ contract DeployTest is Test {
         checkFundRefusesAVaultThatHasNoCode();
     }
 
-    // deploy, fund as the owner, deploy again: the second deploy funds nothing. Chain 424242 keeps the recorded file
-    // apart from any 31337.json a developer has.
+    // deploy, fund as the owner, deploy again: the second deploy funds nothing. Chain 424242 keeps
+    // the recorded file apart from any 31337.json a developer has.
     function checkFundAddsToThePoolOnceAndARedeployLeavesItAlone() internal {
         vm.chainId(424242);
         vm.setEnv("VAULT_OWNER", vm.toString(DEFAULT_SENDER));

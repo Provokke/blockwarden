@@ -13,10 +13,10 @@ const metrics = new Metrics({ namespace: 'Blockwarden', serviceName: 'monitor' }
 
 type Runtime = { config: MonitorConfig; store: MonitorStore; chain: ChainReader }
 
-// Built once per warm Lambda so the SSM read and HTTP clients are reused between invocations.
+// Built once per warm Lambda so the SSM read and HTTP clients are reused.
 let runtime: Promise<Runtime> | undefined
 
-// every URL gets two attempts, so a list of dead RPCs still fails inside the time budget
+// two attempts per URL, so a list of dead RPCs still fails inside the time budget
 export function requestTimeoutMs(budgetMs: number, urlCount: number): number {
   return Math.max(2_000, Math.min(10_000, Math.floor(budgetMs / (2 * urlCount))))
 }
@@ -47,14 +47,15 @@ export async function handler(_event: unknown, context?: { getRemainingTimeInMil
   const { config, store, chain } = await runtime
 
   metrics.addDimension('chainId', String(config.chainId))
-  // a warm reader would otherwise trust a head from an earlier invocation, perhaps from a node since swapped
-  // behind the same URL; it costs one eth_blockNumber per node per run
+  // a warm reader would trust a head from an earlier invocation, maybe from a node since swapped
+  // behind the same URL; costs one eth_blockNumber per node per run
   chain.resetRememberedHeads()
   const redact = (text: string) => redactUrls(text, config.rpcUrls)
   const now = Date.now()
   const remainingMs = context?.getRemainingTimeInMillis()
   const deadlineMs = remainingMs === undefined ? now + config.timeBudgetMs : now + remainingMs - DEADLINE_MARGIN_MS
-  // the deadline is only checked between requests; this aborts a request still running when the invocation must end
+  // the deadline is only checked between requests; this aborts one still running when the
+  // invocation must end
   chain.setHardStop(
     remainingMs === undefined
       ? now + config.timeBudgetMs + HARD_STOP_SLACK_MS
@@ -95,13 +96,13 @@ export async function handler(_event: unknown, context?: { getRemainingTimeInMil
       if (result.finalizedAgeSeconds !== undefined) {
         metrics.addMetric('finalizedAgeSeconds', MetricUnit.Seconds, result.finalizedAgeSeconds)
       }
-      // match counts stay in the cycle finished log below: past ten custom metrics each costs $0.30 a month
-      // no alarms of their own: a node that keeps lagging, or runs that keep running out of time, trip durableLag
+      // match counts stay in the cycle finished log: past ten custom metrics each costs $0.30 a
+      // month. No alarms of their own; a lagging node or runs that keep timing out trip durableLag.
       if (result.laggingNode) metrics.addMetric('laggingNodeSkips', MetricUnit.Count, 1)
       if (result.deadlineHit) metrics.addMetric('deadlineSkips', MetricUnit.Count, 1)
-      // a rule that no longer compiles has left the poll, and one polled with an action dropped delivers less
-      // than it says; both are otherwise only a log line, so an alarm needs these. Published only when they
-      // happen, as every other count here is, because a custom metric is billed per name.
+      // a rule that no longer compiles has left the poll, and one polled with an action dropped
+      // delivers less than it says; both are otherwise just a log line. Published only when they
+      // happen, since a custom metric is billed per name.
       if (result.ruleSkips > 0) metrics.addMetric('ruleSkips', MetricUnit.Count, result.ruleSkips)
       if (result.ruleWarnings > 0) metrics.addMetric('ruleWarnings', MetricUnit.Count, result.ruleWarnings)
     }

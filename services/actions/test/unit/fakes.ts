@@ -15,8 +15,8 @@ import { DeliveryConflictError, REAPER_GRACE_MS, type DeliveryStore, type DueCur
 export function fakeQueue() {
   const sent: { ref: DeliveryRef; delaySeconds: number }[] = []
   const queue: DeliveryQueue = {
-    // sqsDeliveryQueue clamps and rounds before SQS sees the delay, so recording the raw number would let a
-    // caller pass one SQS refuses and no test would notice
+    // sqsDeliveryQueue clamps and rounds before SQS sees the delay, so recording the raw number
+    // would hide a value SQS refuses
     send: async (ref, delaySeconds) => {
       sent.push({ ref, delaySeconds: Math.max(0, Math.min(MAX_DELAY_SECONDS, Math.round(delaySeconds))) })
     },
@@ -31,30 +31,29 @@ export function fakeLookup(rules: Record<string, CompiledRuleView>, signers: Rec
   }
 }
 
-// the store methods the fake stands in for; taking them off DeliveryStore is what makes the fake diverging from
-// the real store a compile error rather than something a test quietly proves nothing about
+// the store methods the fake stands in for; deriving them from DeliveryStore makes drift a compile
+// error
 export type FakeDeliveryStore = Pick<
   DeliveryStore,
   'create' | 'get' | 'markQueued' | 'claim' | 'markDelivered' | 'scheduleRetry' | 'markDead' | 'listDue' | 'listDuePage'
 >
 
-// where a page of the fake's due index stopped: the real store keeps the last item's keys per shard, and the
-// fake keeps the same thing for its one list, so requeuing an item does not shift the position of the next page
+// where a page of the fake's due index stopped; like the real store, it keeps the last item's keys
+// so requeuing doesn't shift the next page
 type FakeStartKey = { due: number; key: string }
 
-// an in-memory stand-in for DeliveryStore with the same methods the dispatcher uses
+// an in-memory stand-in for DeliveryStore with the methods the dispatcher uses
 export function fakeStore(): { store: FakeDeliveryStore; items: Map<string, DeliveryRecord> } {
   const items = new Map<string, DeliveryRecord>()
   const keyOf = (d: Pick<DeliveryRecord, 'subject' | 'actionId' | 'event' | 'seq'>) =>
     `${d.subject}|${keys.delivery(d.subject, d.actionId, d.event, d.seq).SK}`
 
-  // mirrors store.save: the write is conditioned on the version that was read, and the loser of a race gets a
-  // conflict rather than overwriting the winner
+  // mirrors store.save: conditioned on the version that was read, the loser of a race gets a
+  // conflict
   function save(next: DeliveryRecord, previous: DeliveryRecord, nowMs: number): DeliveryRecord {
     const key = keyOf(previous)
     const stored = items.get(key)
-    // mirrors the real condition, #version = :version: an item that is no longer there fails it too, the same
-    // as one whose version moved on, rather than letting a write to a vanished item quietly succeed
+    // mirrors #version = :version: a vanished item fails it too, same as a moved-on version
     if (!stored || stored.version !== previous.version) throw new DeliveryConflictError(previous.deliveryId)
     const saved = { ...next, version: previous.version + 1, updatedAt: new Date(nowMs).toISOString() }
     items.set(key, saved)
@@ -65,8 +64,8 @@ export function fakeStore(): { store: FakeDeliveryStore; items: Map<string, Deli
 
   const store: FakeDeliveryStore = {
     async create(delivery, now) {
-      // the real store refuses an oversized payload before it writes anything, and the dispatcher's handling of
-      // that refusal is only worth testing against a fake that makes it
+      // the real store refuses an oversized payload before writing; the dispatcher's handling of
+      // that needs a fake that does it too
       if (Buffer.byteLength(delivery.payload, 'utf8') > MAX_PAYLOAD_BYTES) {
         throw new PayloadTooLargeError(delivery.deliveryId, Buffer.byteLength(delivery.payload, 'utf8'))
       }
@@ -86,18 +85,17 @@ export function fakeStore(): { store: FakeDeliveryStore; items: Map<string, Deli
       items.set(key, record)
       return record
     },
-    // the real store reads by the table's own key, so the fake looks the item up by the same pair rather than
-    // searching its map for something that merely resembles it
+    // the real store reads by the table's own key, so look up by the same pair
     async get(ref) {
       return items.get(`${ref.subject}|${ref.sk}`)
     },
-    // mirrors store.ts: queuing moves the due time out by the reaper's grace, or every sweep would queue this
-    // delivery again the moment it looked at it
+    // mirrors store.ts: queuing moves the due time out by the reaper's grace, or every sweep would
+    // queue it again
     async markQueued(delivery, nowMs) {
       return save({ ...delivery, status: 'queued', nextAttemptAt: nowMs + REAPER_GRACE_MS }, delivery, nowMs)
     },
-    // mirrors store.ts: the claim is the lease, so the due time moves out by leaseMs. A fake that ignored the
-    // lease would let a caller pass one that leaves the reaper racing the attempt and no test would notice
+    // mirrors store.ts: the claim is the lease, so the due time moves out by leaseMs. A fake that
+    // ignored it would hide a lease that races the attempt.
     async claim(delivery, nowMs, leaseMs) {
       return save(
         {
@@ -130,9 +128,8 @@ export function fakeStore(): { store: FakeDeliveryStore; items: Map<string, Deli
     async listDue(nowMs, limit) {
       return (await store.listDuePage(nowMs, limit)).deliveries
     },
-    // the real store pages four shards and merges them oldest first; the fake pages one list, which is all the
-    // sweep can tell apart, but it has to sort and to honour nowMs the same way (delivery.nextAttemptAt,
-    // defaulting to 0 as item() does, queried with GSI2SK <= :now) or every delivery reads as due, in any order
+    // the real store merges four shards oldest first; the fake pages one list but has to sort and
+    // honour nowMs the same way (nextAttemptAt defaulting to 0, GSI2SK <= :now)
     async listDuePage(nowMs, limit, cursor) {
       const all = [...items.values()]
         .filter((d) => !TERMINAL.has(d.status))

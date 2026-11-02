@@ -14,18 +14,18 @@ export const SIGNATURE_HEADER = 'x-blockwarden-signature'
 export const DELIVERY_HEADER = 'x-blockwarden-delivery'
 export const DEFAULT_TOLERANCE_SECONDS = 300
 
-// The schema published at docs/webhooks/v1.md. A body's shape changes only with this number, which is why a
-// reader should branch on it rather than on the presence of a field.
+// Body shape only changes with this number, so a reader should branch on it rather than on whether
+// a field is present.
 export const WEBHOOK_SPEC_VERSION = 1
 
 export type WebhookEvent = {
-  // the delivery id, and the only copy of it a receiver should dedupe on: the X-Blockwarden-Delivery header
-  // carries the same id but sits outside the signature, so a replay can change it
+  // the delivery id, and the only copy a receiver should dedupe on: the X-Blockwarden-Delivery
+  // header carries the same id but sits outside the signature, so a replay can change it
   id: string
   type: string
   createdAt: string
-  // the schema version of data; every version of Blockwarden sends 1. Optional because verifyWebhook checks
-  // id, type and createdAt and nothing else, so the type promises only what was actually looked at.
+  // the schema version of data; every Blockwarden version sends 1. Optional because verifyWebhook
+  // only checks id, type and createdAt, so the type only promises what was looked at.
   specVersion?: number
   data: unknown
 }
@@ -46,7 +46,7 @@ export class WebhookVerificationError extends Error {
 }
 
 export type VerifyWebhookOptions = {
-  // the raw request body, exactly as received; a re-serialised body will not verify
+  // the raw request body exactly as received; a re-serialised body won't verify
   payload: string
   // the X-Blockwarden-Signature header
   signature: string | null | undefined
@@ -56,7 +56,8 @@ export type VerifyWebhookOptions = {
   nowMs?: number
 }
 
-// The header is `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<payload>">`. A header can carry several v1 values.
+// The header is `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<payload>">`. It can carry several v1
+// values.
 export async function verifyWebhook(options: VerifyWebhookOptions): Promise<WebhookEvent> {
   const { timestamp, signatures } = parseHeader(options.signature)
   const tolerance = options.toleranceSeconds ?? DEFAULT_TOLERANCE_SECONDS
@@ -78,7 +79,7 @@ export async function verifyWebhook(options: VerifyWebhookOptions): Promise<Webh
   let matched = false
   for (const secret of secrets) {
     const expected = await hmacHex(secret as string, `${timestamp}.${options.payload}`)
-    // every candidate is compared, so the time taken does not reveal which one matched
+    // every candidate is compared, so the time taken doesn't reveal which one matched
     for (const candidate of signatures) if (constantTimeEqual(candidate, expected)) matched = true
   }
   if (!matched) throw new WebhookVerificationError('no signature matches the payload')
@@ -112,13 +113,14 @@ export function parseTx(body: RelayerTxBody): RelayerTx {
   return { ...body, value: BigInt(body.value), gasLimit: BigInt(body.gasLimit) }
 }
 
-// The sending half of the wire form, where parseTx is the receiving half. viem decodes an ABI integer of 48
-// bits or fewer as a JS number and anything wider as a bigint, but the schema publishes every integer as a
-// decimal string, so a sender converts here and the guard stays strict for everyone reading a payload.
+// The sending half of the wire form (parseTx is the receiving half). viem decodes an ABI integer of
+// 48 bits or fewer as a JS number and wider as a bigint, but the schema says every integer is a
+// decimal string, so a sender converts here.
 export function toDecodedValue(value: unknown): DecodedValue {
   if (typeof value === 'bigint') return value.toString()
   if (typeof value === 'number') {
-    // no ABI integer decodes to a fraction, so this is a bug in whatever built the value, not a value to round
+    // no ABI integer decodes to a fraction, so this is a bug in whatever built the value, not
+    // something to round
     if (!Number.isSafeInteger(value)) throw new TypeError(`${value} is not an integer, so it is not a decoded value`)
     return value.toString()
   }
