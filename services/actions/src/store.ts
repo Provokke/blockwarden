@@ -12,11 +12,11 @@ import {
   type NewDelivery,
 } from './records.js'
 
-// The reaper leaves a delivery alone until its due time is this far past, so a sweep never races a message
-// already on the queue: it asks for what was due a grace ago.
+// The reaper leaves a delivery alone until its due time is this far past, so a sweep never races a
+// message already on the queue.
 export const REAPER_GRACE_MS = 60_000
 
-// one page of the due index, and where the next page starts: one start key per shard
+// one page of the due index, and where the next starts: one start key per shard
 export type DueCursor = Record<string, Record<string, unknown>>
 
 export type DuePage = { deliveries: DeliveryRecord[]; cursor?: DueCursor }
@@ -35,7 +35,7 @@ export class DeliveryConflictError extends Error {
 function item(delivery: DeliveryRecord): Record<string, unknown> {
   const { PK, SK } = keys.delivery(delivery.subject, delivery.actionId, delivery.event, delivery.seq)
   const indexes: Record<string, unknown> = {}
-  // sparse: a delivery with nothing outstanding is in neither index, so neither is ever scanned
+  // sparse: a delivery with nothing outstanding is in neither index
   if (!TERMINAL.has(delivery.status)) {
     indexes.GSI2PK = keys.dueDeliveries(keys.dueShard(delivery.deliveryId))
     indexes.GSI2SK = delivery.nextAttemptAt ?? 0
@@ -47,7 +47,7 @@ function item(delivery: DeliveryRecord): Record<string, unknown> {
   return { PK, SK, ...delivery, ...indexes }
 }
 
-// what a GSI query needs to carry on where it stopped: the table's own key and the index's
+// what a GSI query needs to carry on where it stopped: the table's key and the index's
 function startKey(raw: Record<string, unknown>): Record<string, unknown> {
   return { PK: raw.PK, SK: raw.SK, GSI2PK: raw.GSI2PK, GSI2SK: raw.GSI2SK }
 }
@@ -101,13 +101,14 @@ export class DeliveryStore {
     return Item ? read(Item) : undefined
   }
 
-  // queuing moves the due time out by the reaper's grace, or every sweep would queue this delivery again and
-  // the version-conditioned claim would throw all but one of the messages away
+  // queuing moves the due time out by the reaper's grace, or every sweep would queue it again and
+  // the claim would throw all but one message away
   markQueued(delivery: DeliveryRecord, nowMs: number): Promise<DeliveryRecord> {
     return this.save({ ...delivery, status: 'queued', nextAttemptAt: nowMs + REAPER_GRACE_MS }, nowMs)
   }
 
-  // the claim is the lease: nextAttemptAt moves out by the lease, so the reaper leaves an attempt in flight alone
+  // the claim is the lease: nextAttemptAt moves out by the lease so the reaper leaves an in-flight
+  // attempt alone
   claim(delivery: DeliveryRecord, nowMs: number, leaseMs: number): Promise<DeliveryRecord> {
     return this.save(
       {
@@ -145,7 +146,7 @@ export class DeliveryStore {
     return this.save({ ...rest, status: 'dead', lastError: truncate(error), ...codeOf(statusCode) }, nowMs)
   }
 
-  // a redrive is a new life: the old first attempt would make any latency measured on it wrong for ever
+  // a redrive is a new life: the old first attempt would skew any latency measured on it
   reset(delivery: DeliveryRecord, nowMs: number): Promise<DeliveryRecord> {
     const { lastError: _cleared, lastStatusCode: _code, firstAttemptAt: _first, ...rest } = delivery
     return this.save({ ...rest, status: 'pending', attempts: 0, nextAttemptAt: nowMs }, nowMs)
@@ -155,8 +156,8 @@ export class DeliveryStore {
     return (await this.listDuePage(nowMs, limit)).deliveries
   }
 
-  // One page of the deliveries due by nowMs, oldest first; pass the cursor back for the next one, or a backlog
-  // longer than the limit hands back the same oldest page for ever and hides everything behind it.
+  // One page of deliveries due by nowMs, oldest first. Pass the cursor back for the next page, or a
+  // long backlog keeps returning the same oldest page.
   async listDuePage(nowMs: number, limit: number, cursor?: DueCursor): Promise<DuePage> {
     const shards = await Promise.all(
       Array.from({ length: DUE_SHARDS }, async (_, shard) => {
@@ -174,7 +175,7 @@ export class DeliveryStore {
         return { shard, from, items: page.Items ?? [], more: page.LastEvaluatedKey !== undefined }
       }),
     )
-    // each shard comes back oldest first, so merging on the due time is what makes the whole index oldest first
+    // each shard is oldest first, so merging on due time keeps the whole index oldest first
     const merged = shards
       .flatMap(({ shard, items }) => items.map((item) => ({ shard, item })))
       .sort((a, b) => Number(a.item.GSI2SK) - Number(b.item.GSI2SK))
@@ -184,8 +185,8 @@ export class DeliveryStore {
       const taken = page.filter((entry) => entry.shard === shard)
       const last = taken[taken.length - 1]
       if (last) next[shard] = startKey(last.item)
-      // nothing of this shard made the page, so the next one starts it exactly where this one did; dropping the
-      // start key here would send an exhausted shard back to its oldest item and read it all again
+      // nothing from this shard made the page, so the next one starts at the same spot; dropping
+      // the start key would reread the shard from its oldest item
       else if (from) next[shard] = from
     }
     const drained = page.length === merged.length && shards.every(({ more }) => !more)
@@ -196,7 +197,7 @@ export class DeliveryStore {
     return (await this.listDeadPage(limit)).deliveries
   }
 
-  // one page of the dead letters, oldest first; the redrive script walks the whole list with the cursor
+  // one page of dead letters, oldest first; the redrive script walks the list with the cursor
   async listDeadPage(limit: number, cursor?: DeadCursor): Promise<DeadPage> {
     const { Items, LastEvaluatedKey } = await this.doc.send(
       new QueryCommand({
@@ -211,9 +212,9 @@ export class DeliveryStore {
     return { deliveries: (Items ?? []).map(read), ...(LastEvaluatedKey ? { cursor: LastEvaluatedKey } : {}) }
   }
 
-  // Nothing writes a delivery item inside a DynamoDB transaction, so a raw TransactionConflictException cannot
-  // reach a caller and the version condition below is the only failure to map. A transactional writer on these
-  // items would need the relayer's retry treatment here too.
+  // Nothing writes a delivery inside a DynamoDB transaction, so a raw TransactionConflictException
+  // can't reach a caller and the version condition is the only failure to map. A transactional
+  // writer would need the relayer's retry treatment here too.
   private async save(next: DeliveryRecord, nowMs: number): Promise<DeliveryRecord> {
     const saved = { ...next, version: next.version + 1, updatedAt: new Date(nowMs).toISOString() }
     try {

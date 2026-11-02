@@ -35,8 +35,8 @@ const resolved: Resolved = {
   port: 443,
 }
 
-// every fake records what it was given, so a test can prove which parameter was read, which base was resolved
-// and which options were forwarded, rather than only that something was passed
+// every fake records what it was given, so a test can prove which parameter was read, which base
+// resolved and which options were forwarded
 const deps = (
   answer: HttpAnswer | Error,
   options: { secrets?: string[] | Error; extra?: Partial<SenderDeps> } = {},
@@ -87,7 +87,7 @@ describe('sendTelegram', () => {
       text: expect.stringContaining('match.final'),
       disable_web_page_preview: true,
     })
-    // the parameter the sender read, and the base it resolved, are both the configured ones
+    // the parameter the sender read and the base it resolved are the configured ones
     expect(d.asked).toEqual(['/bw/telegram'])
     expect(d.resolve).toHaveBeenCalledWith('https://api.telegram.org/')
   })

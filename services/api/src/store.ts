@@ -105,10 +105,13 @@ export type DeliveryItem = {
   subject: string
   sk: string
   channel: string
-  // the channel's one identifying string - a webhook's raw URL (toRow redacts it), an email address, a chat
-  // id, a contract address, a queue or function ARN, or the channel name alone if the shape is not recognised.
-  // never the stored target object itself: for a webhook that object also carries secretParameter and
-  // caller-supplied headers, neither of which belongs on a listing
+  // the channel's one identifying string: a webhook's raw URL (toRow redacts it), an email address,
+  // a chat id,
+  // a contract address, a queue or function ARN, or the channel name alone if the shape isn't
+  // recognised.
+  // Never the stored target object itself: for a webhook it also carries secretParameter and
+  // caller-supplied
+  // headers, neither of which belongs on a listing
   target: string
   status: string
   attempts: number
@@ -138,9 +141,11 @@ export type DeliveryStore = {
 export type StoredSigner = {
   signerId: string
   chainIds: number[]
-  // Terraform never writes this attribute (no keccak256 there) - the relayer derives it from the KMS public
-  // key at read time, and this API does not call KMS on a listing. The field is present only for a row that
-  // really carries one; a dashboard shows the signer without it rather than guessing
+  // Terraform never writes this attribute (no keccak256 there). The relayer derives it from the KMS
+  // public key at
+  // read time and this API doesn't call KMS on a listing, so it's only present for a row that
+  // really carries one;
+  // a dashboard shows the signer without it rather than guessing
   address?: string
 }
 
@@ -477,7 +482,8 @@ function toStoredRule(
   const raw = typeof item.inputJson === 'string' ? parseInput(item.inputJson) : item.input
   const parsed = raw === undefined ? undefined : ruleInputSchema.safeParse(raw)
   if (!parsed || !parsed.success) {
-    // a row that fails to parse or fails the schema is invisible through the API from here on - log its id
+    // a row that fails to parse or fails the schema is invisible through the API from here on, so
+    // log its id
     // (never the body, which can carry a secretParameter name) so it can be found and repaired directly
     log('skipping a rule whose body cannot be read', { ruleId: item.ruleId }, 'error')
     return undefined
@@ -495,11 +501,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-// The stored target is the channel's own shape (services/actions/src/records.ts's DeliveryTarget union), and
-// for a webhook that shape also carries secretParameter and caller-supplied headers. A listing must show only
-// the one field that identifies where an action goes - never the object, not even as a fallback, or an
-// operator's screen (and the logs) gets more than the route intends. Redacting the webhook URL itself is
-// toRow's job (deliveries.ts), so this returns it raw.
+// The stored target is the channel's own shape (DeliveryTarget union in
+// services/actions/src/records.ts), and for a
+// webhook that also carries secretParameter and caller-supplied headers. A listing shows only the
+// one field that
+// identifies where an action goes, never the object, not even as a fallback, or an operator's
+// screen (and the logs)
+// gets more than the route intends. Redacting the webhook URL is toRow's job (deliveries.ts), so
+// this returns it raw.
 function targetString(channel: string, target: unknown): string {
   const record = isRecord(target) ? target : undefined
   switch (channel) {
@@ -621,7 +630,8 @@ function toStoredTx(
     return undefined
   }
   // mirrors services/relayer/src/records.ts's toTxBody/latestAttempt: the latest signed hash until mined,
-  // then the mined hash. Not imported (services/* depend on packages/*, not on each other) - a copied literal
+  // then the mined hash. Not imported (services/* depend on packages/*, not on each other), so a
+  // copied literal
   const mined = isRecord(item.mined) ? item.mined : undefined
   const attempts = Array.isArray(item.attempts) ? item.attempts : []
   const latest = attempts.length > 0 ? attempts[attempts.length - 1] : undefined
@@ -636,8 +646,10 @@ function toStoredTx(
     from: String(item.from ?? ''),
     to: String(item.to ?? ''),
     data: String(item.data ?? '0x'),
-    // written as decimal strings already, but coerced the same defensive way as blockNumber below - a value
-    // or gas limit large enough to matter must never round-trip through the document client as a Number
+    // written as decimal strings already, but coerced the same defensive way as blockNumber below:
+    // a value
+    // or gas limit big enough to matter must never round-trip through the document client as a
+    // Number
     value: String(item.value ?? '0'),
     gasLimit: String(item.gasLimit ?? '0'),
     status,

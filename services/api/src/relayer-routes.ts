@@ -28,12 +28,15 @@ export async function handleGetTx(
   return ok(tx)
 }
 
-// GSI2's own LastEvaluatedKey for a pending-transactions-by-chain query is always exactly these four
-// attributes - PK, SK and GSI2PK as strings, GSI2SK as a number (packages/dynamo/src/table.ts's GSI2SK is
-// type N), as the integration test reads back from DynamoDB Local. The cursor
-// is unsigned base64, so any caller can hand back a crafted key; anything of another shape must never reach
-// ExclusiveStartKey, where DynamoDB answers a bad key with a ValidationException that has no route-level
-// catch (same convention as matches.ts's isMatchListKey and rules.ts's isRuleListKey)
+// GSI2's LastEvaluatedKey for a pending-transactions-by-chain query is always exactly these four
+// attributes: PK, SK
+// and GSI2PK as strings, GSI2SK as a number (type N in packages/dynamo/src/table.ts). The cursor is
+// unsigned base64,
+// so a caller can hand back a crafted key, and anything of another shape must never reach
+// ExclusiveStartKey, where
+// DynamoDB answers a bad key with a ValidationException that nothing catches at route level (same
+// convention as
+// matches.ts's isMatchListKey and rules.ts's isRuleListKey)
 const TX_LIST_KEY_ATTRS = ['PK', 'SK', 'GSI2PK'] as const
 
 function isTxListKey(

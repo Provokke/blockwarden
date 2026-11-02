@@ -421,7 +421,7 @@ describe('runCycle', () => {
       chain.lagHead = () => 6
       const getLogsWithHead = vi.spyOn(chain, 'getLogsWithHead')
 
-      // the left half was read in full below the lagging head, so it is kept
+      // the left half was read in full below the lagging head, so it's kept
       expect(await runCycle(deps(chain, store, { maxRange: 8 }))).toMatchObject({
         status: 'ok',
         durableBlock: 4,
@@ -444,7 +444,8 @@ describe('runCycle', () => {
       const store = new InMemoryStore()
       store.rules.push(pingRule('final', { mode: 'finalized' }))
       const read = chain.getLogsWithHead.bind(chain)
-      // a node that runs batch entries concurrently answered the head after it caught up and the logs before
+      // a node running batch entries concurrently answered the head after it caught up and the logs
+      // before
       vi.spyOn(chain, 'getLogsWithHead').mockImplementation(async (filter, from, to, options) => ({
         ...(await read(filter, from, to, options)),
         headBefore: to - 1,
@@ -975,7 +976,7 @@ describe('runCycle', () => {
       store.rules.push(pingRule('final', { mode: 'finalized' }))
       let clock = NOW_MS
       const read = chain.getLogs.bind(chain)
-      // the primary refuses the range only after the dead backup has used up its timeout
+      // the primary refuses the range only after the dead backup has used its timeout
       vi.spyOn(chain, 'getLogs').mockImplementation(async (filter, from, to) => {
         clock += to - from + 1 > chain.rangeLimit ? 6_000 : 1_000
         return read(filter, from, to)
@@ -1226,8 +1227,8 @@ describe('runCycle', () => {
   })
 })
 
-// Milestone 3 added action validation and a deep condition-path check to compileRule. Both ran before a rule
-// could match, so a rule written under milestones 1 and 2 stopped being polled the day this shipped.
+// compileRule gained action validation and a deep condition-path check later on. Both ran before a
+// rule could match, so older rules stopped being polled the day that shipped.
 describe('a rule milestone 3 made stricter is still polled', () => {
   const stored = (ruleId: string, patch: Partial<RuleInput>): StoredRule => {
     const rule = pingRule(ruleId, { mode: 'fast' })

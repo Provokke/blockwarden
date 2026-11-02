@@ -203,8 +203,8 @@ describe('isTxEvent and parseTx', () => {
     if (isTxEvent(verified)) expect(parseTx(verified.data).value).toBe(10n ** 21n)
   })
 
-  // isTxEvent used to vouch for a body with no revertData while the type promised one, so a caller's
-  // `revertData !== null` guard passed and the .slice() behind it threw on undefined
+  // isTxEvent used to vouch for a body with no revertData while the type promised one, so a
+  // caller's `revertData !== null` guard passed and .slice() threw on undefined
   it('refuses a body that has no revertData, which the type says is always there', async () => {
     const { revertData: _absent, ...old } = TX
     const payload = event('tx.failed', old)
@@ -329,7 +329,7 @@ describe('isMatchEvent', () => {
     }
   })
 
-  // the doc no longer promises a lowercase address, so a checksummed one has to be accepted
+  // a checksummed address has to be accepted, the doc no longer promises lowercase
   it('accepts an address in the case the node returned it', () => {
     const checksummed = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
     expect(isMatchEvent(eventFor('match.final', { ...matchData, address: checksummed }))).toBe(true)

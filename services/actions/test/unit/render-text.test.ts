@@ -63,7 +63,7 @@ describe('summarise', () => {
     const { html, subject } = summarise(payload)
     expect(html).toContain('&lt;img src=x&gt;')
     expect(html).not.toContain('<img src=x>')
-    // the subject is plain text and is not escaped, but it must not carry a newline into a header
+    // the subject is plain text and not escaped, but mustn't carry a newline into a header
     expect(subject).not.toContain('\n')
   })
 
@@ -100,7 +100,7 @@ describe('summarise', () => {
     const lines = summarise(payload).text.split('\n')
     expect(lines.some((line) => line.startsWith('transactionHash:'))).toBe(false)
     expect(lines.some((line) => line.startsWith('value:'))).toBe(false)
-    // the value itself is still there, on the one line it belongs to
+    // the value is still there, on the one line it belongs to
     expect(lines.some((line) => line.startsWith('args.memo: ') && line.includes('nothing here'))).toBe(true)
   })
 

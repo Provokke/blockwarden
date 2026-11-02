@@ -6,8 +6,8 @@ import { encodeDerSignature, InvalidSignatureError, parseDerSignature, SECP256K1
 import { toRecoverableSignature } from '../src/signature.js'
 import { InvalidPublicKeyError, publicKeyFromSpki } from '../src/spki.js'
 
-// OpenSSL is the oracle here: it produces DER the way KMS does, with random nonces, so high s, short r and s,
-// and zero-padded integers all turn up without this code having made them
+// OpenSSL is the oracle: it produces DER like KMS does, with random nonces, so high s, short r and
+// s, and zero-padded integers turn up without us making them
 function opensslKey() {
   const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'secp256k1' })
   const jwk = publicKey.export({ format: 'jwk' })
@@ -45,7 +45,7 @@ describe('DER signatures from OpenSSL', () => {
 
   it('recovers a signature whose r or s is shorter than 32 bytes', async () => {
     const key = opensslKey()
-    // about one signature in 128 has a short integer, so this finds one within a few hundred tries
+    // about one signature in 128 has a short integer, so a few hundred tries finds one
     for (let i = 0; i < 5000; i++) {
       const message = Buffer.from(`short-${i}`)
       const der = new Uint8Array(sign('sha256', message, key.privateKey))

@@ -35,7 +35,7 @@ describe('readRecord', () => {
 
 describe('jsonSafe', () => {
   it('turns a bigint into a decimal string, because JSON.stringify throws on one', () => {
-    // unmarshall gives back a bigint for any N above Number.MAX_SAFE_INTEGER
+    // unmarshall gives back a bigint above Number.MAX_SAFE_INTEGER
     expect(jsonSafe({ n: 99999999999999999999999n })).toEqual({ n: '99999999999999999999999' })
     expect(() => JSON.stringify(jsonSafe({ n: 1n }))).not.toThrow()
   })

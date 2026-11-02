@@ -21,9 +21,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run format:check
       - run: pnpm run typecheck
-      # the contracts job runs forge's tests with the CI profile's counts; here they would run again at local counts
+      # The contracts job already runs forge's tests with the CI profile's counts, so skip the
+      # duplicate run here
       - run: pnpm -r --filter '!@blockwarden/contracts' run test
-      # pulled up front so the downloads do not count against the tests' container start timeouts
+      # Pull up front so the downloads don't eat into the tests' container start timeouts
       - run: |
           docker pull ghcr.io/foundry-rs/foundry:v1.8.1
           docker pull amazon/dynamodb-local:3.3.1
@@ -31,7 +32,7 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@v1.9.1
         with:
           version: v1.8.1
-      # the seam tests deploy from contracts/out, which is built here rather than committed
+      # Seam tests deploy from contracts/out, which is built here and not committed
       - run: pnpm --filter @blockwarden/contracts run build
       - run: pnpm run test:integration
       - run: pnpm --filter @blockwarden/monitor run build
@@ -53,7 +54,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      # OpenZeppelin and forge-std come through the lockfile, not forge install
+      # OpenZeppelin and forge-std come from the lockfile, not forge install
       - run: pnpm install --frozen-lockfile
       - uses: foundry-rs/foundry-toolchain@v1.9.1
         with:

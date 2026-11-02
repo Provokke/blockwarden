@@ -3,14 +3,14 @@ import { once } from 'node:events'
 
 export type Received = { path: string; body: string; headers: http.IncomingHttpHeaders }
 
-// a destination that answers however the test tells it to, and keeps everything it was sent
+// a destination that answers however the test says, and keeps everything it was sent
 export async function startReceiver() {
   const received: Received[] = []
   let status = 204
   const server = http.createServer((req, res) => {
     let body = ''
-    // decode as the chunks arrive: concatenating Buffers through += would decode each one on its own, and a
-    // multi-byte character split across two of them would come out mangled and fail its signature
+    // decode as chunks arrive: += on Buffers would decode each on its own and mangle a split
+    // multi-byte character
     req.setEncoding('utf8')
     req.on('data', (chunk) => (body += chunk))
     req.on('end', () => {
@@ -28,7 +28,7 @@ export async function startReceiver() {
     answerWith(next: number) {
       status = next
     },
-    // one receiver serves every destination the test resolves to it; the path is how a delivery says which
+    // one receiver serves every destination the test resolves to it; the path says which
     urlFor(path: string) {
       return `http://127.0.0.1:${port}${path}`
     },

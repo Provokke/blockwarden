@@ -51,8 +51,8 @@ describe('the request schema', () => {
     expect(outboundRequestSchema.safeParse(request({ signatureHeader: 'has space' })).success).toBe(false)
   })
 
-  // this is the field that decides which secret bytes are read, on the surface a third party writes, so it is
-  // held to the same SSM name rule a rule's own webhook action is held to, not to a looser local one
+  // this field picks which secret bytes are read, on a surface a third party writes, so it gets the
+  // same SSM name rule as a rule's webhook action
   it('holds the secret parameter to the same name rule a rule action uses', () => {
     for (const secretParameter of [
       '/billwarden/../gaswarden/secret',
@@ -68,20 +68,20 @@ describe('the request schema', () => {
 
   it('refuses an event id that is not printable ASCII', () => {
     expect(outboundRequestSchema.safeParse(request({ eventId: 'evt_01J8Z' })).success).toBe(true)
-    // a newline would make Node throw on the header write, which the sender reads as worth retrying
+    // a newline would make Node throw on the header write, which the sender would retry
     expect(outboundRequestSchema.safeParse(request({ eventId: 'evt\n1' })).success).toBe(false)
     expect(outboundRequestSchema.safeParse(request({ eventId: 'evté' })).success).toBe(false)
   })
 
-  // the caller chooses these names, so they go through the same guard a webhook action's own header names do:
-  // a reserved header would either be overwritten by the sender or steer the connection to the wrong host
+  // the caller chooses these names, so they get the same guard as a webhook action's: a reserved
+  // header would be overwritten or steer the connection elsewhere
   it('refuses a header name the sender computes for itself, or that frames the message', () => {
     expect(outboundRequestSchema.safeParse(request({ signatureHeader: 'Host' })).success).toBe(false)
     expect(outboundRequestSchema.safeParse(request({ deliveryHeader: 'content-length' })).success).toBe(false)
   })
 
-  // one name for both headers means one of them wins the object literal; if it is the signature that loses,
-  // the request would go out unsigned
+  // one name for both headers means one wins the object literal; if the signature loses, the
+  // request goes out unsigned
   it('refuses two header names that are the same header, case-insensitively', () => {
     expect(
       outboundRequestSchema.safeParse(request({ signatureHeader: 'X-Sig', deliveryHeader: 'X-Sig' })).success,
@@ -128,12 +128,12 @@ describe('acceptOutbound', () => {
     ])
     expect(d.items.size).toBe(1)
     expect(d.sent).toHaveLength(1)
-    // the first body is the one that was accepted; the second is logged and dropped
+    // the first body is the accepted one; the second is logged and dropped
     expect(JSON.parse([...d.items.values()][0]!.payload).data.invoiceId).toBe('1001')
   })
 
-  // the contract Billwarden reads: the delivery is keyed on the request id alone, so the same id is the same
-  // delivery however the destination happens to be spelt
+  // the contract Billwarden reads: the delivery is keyed on the request id alone, however the
+  // destination is spelt
   it('treats a repeat that only spells the same destination differently as the same delivery', async () => {
     const d = deps()
     await acceptOutbound(d.deps, [message(request())])
@@ -194,13 +194,13 @@ describe('acceptOutbound', () => {
     )
   })
 
-  // a prefix is a path, not a string: /billwarden must not admit /billwardenX, which is another tenant
+  // a prefix is a path, not a string: /billwarden must not admit /billwardenX, another tenant
   it('does not let a prefix written without its trailing slash admit a sibling', async () => {
     const d = deps(['/billwarden'])
     const response = await acceptOutbound(d.deps, [message(request({ secretParameter: '/billwardenX/secret' }))])
     expect(response.batchItemFailures).toEqual([{ itemIdentifier: 'm1' }])
     expect(d.items.size).toBe(0)
-    // and the prefix it was meant to name still works
+    // and the intended prefix still works
     expect((await acceptOutbound(d.deps, [message(request(), 'm2')])).batchItemFailures).toEqual([])
     expect(d.items.size).toBe(1)
   })
@@ -212,8 +212,8 @@ describe('acceptOutbound', () => {
     expect(d.items.size).toBe(0)
   })
 
-  // the reason is built from what the caller sent, so a caller can decide how long the log line is unless the
-  // same cap every other error string in the package uses is applied to it
+  // the reason is built from what the caller sent, so it needs the same cap as every other error
+  // string or a caller sets the log line length
   it('keeps the refusal reason inside the error cap, however long the caller made it', async () => {
     const d = deps()
     const body = JSON.stringify({ ...request(), ['k'.repeat(5_000)]: 1 })
@@ -250,8 +250,8 @@ describe('acceptOutbound', () => {
     )
   })
 
-  // the item is written before the message is sent, so a queue failure leaves a delivery nothing has queued;
-  // it is still due immediately, which is what the reaper sweeps for
+  // the item is written before the message is sent, so a queue failure leaves a delivery nothing
+  // has queued; it's still due immediately, which is what the reaper sweeps for
   it('reports the message back when the queue will not take it, and leaves the delivery due', async () => {
     const d = deps()
     const failing = {
@@ -284,7 +284,7 @@ describe('acceptOutbound', () => {
     const response = await acceptOutbound(d.deps, [message(request(), 'm1-again')])
     expect(response.batchItemFailures).toEqual([])
     expect(d.items.size).toBe(1)
-    // the retry does not queue it either: the item is the reaper's to pick up, not this handler's to re-send
+    // the retry doesn't queue it either: the item is the reaper's to pick up
     expect(d.sent).toHaveLength(0)
     expect(d.log).toHaveBeenCalledWith('outbound request already accepted', {
       requestId: 'merchant-42:invoice-1001:paid',
@@ -295,7 +295,7 @@ describe('acceptOutbound', () => {
     const d = deps()
     await acceptOutbound(d.deps, [
       { messageId: 'bad', body: JSON.stringify(request({ url: 'http://x.example.com/' })) },
-      // the refusal that is about the secret parameter is the one most tempting to quote it back
+      // the refusal about the secret parameter is the one most tempting to quote back
       { messageId: 'outside', body: JSON.stringify(request({ secretParameter: '/other/service/secret' })) },
     ])
     const logged = JSON.stringify(d.log.mock.calls)

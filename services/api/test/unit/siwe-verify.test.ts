@@ -126,7 +126,8 @@ describe('checkSiweMessage', () => {
       expirationTime: new Date(now + 300_000),
     } as never)
     // parseSiweMessage's suffix fields all come from one match against one regex, so dropping the URI line
-    // also drops version, chain ID and nonce - which is exactly the "not a SIWE message" case this guards
+    // also drops version, chain ID and nonce, which is exactly the "not a SIWE message" case this
+    // guards
     const withoutUri = text.replace(/URI: .+\n/, '')
     expect(checkSiweMessage(parseSiweMessage(withoutUri), settings, now)).toMatchObject({
       ok: false,

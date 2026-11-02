@@ -192,7 +192,7 @@ describe('MonitorStore', () => {
     })
     const rules = await logging.listActiveRules(8453)
     expect(rules.map((r) => r.ruleId)).not.toContain('tf-2')
-    // a rule that silently stops matching leaves nothing to find; the log line is the only trace there is
+    // a rule that silently stops matching leaves nothing to find; the log line is the only trace
     expect(logged).toHaveLength(1)
     expect(logged[0]?.data).toEqual({ ruleId: 'tf-2', chainId: 8453 })
   })

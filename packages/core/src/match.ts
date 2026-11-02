@@ -6,7 +6,8 @@ import type { RawLog } from './types.js'
 export type LogMatch = { rule: CompiledRule; args: Record<string, unknown>; log: RawLog }
 export type KeyedMatch = LogMatch & { ordinal: number }
 
-// a provider can return one log twice; the copy would take the next ordinal and become a record of its own
+// a provider can return one log twice; the copy would take the next ordinal and become its own
+// record
 export function dedupeLogs(logs: RawLog[]): RawLog[] {
   const seen = new Set<string>()
   return logs.filter((log) => {

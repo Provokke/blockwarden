@@ -8,14 +8,15 @@ import {StdUtils} from "forge-std/StdUtils.sol";
 import {TopUpVault} from "../../src/TopUpVault.sol";
 import {ForwardRequests} from "../utils/ForwardRequests.sol";
 
-/// @notice The only contract the invariant fuzzer calls. Every path that changes the vault goes through here, so the
-/// ghost totals see every unit funded, credited and spent.
+/// @notice The only contract the invariant fuzzer calls. Every path that changes the vault goes
+/// through here, so the ghost totals see every unit funded, credited and spent.
 contract VaultHandler is CommonBase, StdUtils, ForwardRequests {
     uint256 internal constant MAX_FUND = 1e30;
     // most funding is a few top-ups' worth so the pool runs dry; one call in sixteen is large, to exercise big sums
     uint256 internal constant SMALL_FUND_TOP_UPS = 5;
 
-    // any refusal the handler cannot justify from its own ghosts: the run fails instead of being counted as a skip
+    // any refusal the handler can't justify from its own ghosts: the run fails instead of counting
+    // as a skip
     error UnexpectedRefusal(bytes reason);
 
     TopUpVault public immutable vault;
@@ -25,8 +26,8 @@ contract VaultHandler is CommonBase, StdUtils, ForwardRequests {
     address public immutable metaSigner;
     address[] internal actors;
 
-    // the clock is kept here and set at the start of every call, so the time a run has reached never depends on how
-    // the fuzzer carries block state from one call to the next
+    // the clock is kept here and set at the start of every call, so the time a run reaches never
+    // depends on how the fuzzer carries block state between calls
     uint256 public currentTime;
 
     uint256 public ghostFunded;
@@ -120,7 +121,8 @@ contract VaultHandler is CommonBase, StdUtils, ForwardRequests {
     }
 
     function forwardTopUp() external useTime {
-        // twice the cooldown, so an accepted replay could not be masked by the request having expired
+        // twice the cooldown, so an accepted replay couldn't be masked by the request having
+        // expired
         ERC2771Forwarder.ForwardRequestData memory request = signRequest(
             forwarder,
             metaSignerKey,

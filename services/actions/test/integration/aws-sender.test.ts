@@ -42,15 +42,16 @@ describe('sendSqs against a real queue', () => {
       version: 1,
       expiresAt: 0,
     }
-    // moto's queue URL is not the public sqs.<region>.amazonaws.com form, so the client is pointed at it directly
+    // moto's queue URL isn't the public sqs.<region>.amazonaws.com form, so point the client at it
+    // directly
     const deps = {
       secrets: { read: async () => ['x'] },
       now: () => 0,
       log: () => {},
       region: 'us-east-1',
       allowedTargetArns: [queueArn],
-      // spreading the command would drop its prototype methods (resolveMiddleware lives there, not on the
-      // instance), so the URL is swapped in place on the same command moto's client expects
+      // spreading the command would drop its prototype methods (resolveMiddleware), so swap the URL
+      // in place
       sqs: {
         send: (command: { input: { QueueUrl?: string } }) => {
           command.input.QueueUrl = queueUrl
@@ -69,9 +70,8 @@ describe('sendSqs against a real queue', () => {
 
 const FUNCTION = 'arn:aws:lambda:us-east-1:111122223333:function:ingest'
 
-// moto has no working Lambda invoke (it needs Docker to actually run a function's code), so this plays the
-// real Invoke REST endpoint instead: POST /2015-03-31/functions/<name>/invocations, answered with whatever
-// this test wants. What matters is that a real LambdaClient - not a hand-typed fake - sends and parses it.
+// moto can't invoke Lambda (needs Docker), so play the real Invoke REST endpoint instead. What
+// matters is that a real LambdaClient sends and parses it.
 async function serveLambda(
   answer: (body: string) => { status: number; headers?: Record<string, string>; body: string },
 ): Promise<{ endpoint: string; close(): Promise<void> }> {
@@ -122,7 +122,7 @@ describe('sendLambda against a real client', () => {
       return { status: 200, body: '{"ok":true}' }
     })
     try {
-      // a real LambdaClient, typed exactly as SenderDeps expects it - not a fake standing in for its shape
+      // a real LambdaClient, typed as SenderDeps expects, not a fake
       const lambda = new LambdaClient({
         endpoint: server.endpoint,
         region: 'us-east-1',

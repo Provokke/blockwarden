@@ -61,7 +61,7 @@ describe('truncate', () => {
   })
 
   it('cuts a whole code point instead of splitting a surrogate pair', () => {
-    // the emoji is two UTF-16 code units; a plain slice(0, 5) would land on the high surrogate
+    // the emoji is two UTF-16 units; a plain slice(0, 5) would land on the high surrogate
     const text = `aaaa${String.fromCodePoint(0x1f600)}bbbb`
     const cut = truncate(text, 5)
     expect(cut).toBe('aaaa...')

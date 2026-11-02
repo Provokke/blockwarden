@@ -84,8 +84,9 @@ module "blockwarden" {
     }
   }
 
-  # webhooks only: no SES identity and no Telegram bot token exist for the demo yet. Both senders still deploy
-  # and fail closed on the channels that are not configured.
+  # webhooks only: no SES identity or Telegram bot token for the demo yet. Both senders still deploy
+  # and fail
+  # closed on the channels that aren't configured.
   actions = {
     source_dir               = "${path.root}/../../../../services/actions/dist"
     webhook_secret_parameter = "/blockwarden-demo/webhook-secret"
@@ -100,7 +101,8 @@ module "blockwarden" {
   }
 }
 
-# Testnet relaying only. Until the milestone 5 demo contracts exist, the allowlist holds only the burn address, and
+# Testnet relaying only. Until the demo contracts exist, the allowlist holds only the burn address,
+# and
 # "0x" there allows plain transfers with value to it, up to the 0.05 ETH daily spend cap.
 module "relayer" {
   source             = "../../modules/relayer"

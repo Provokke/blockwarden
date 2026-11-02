@@ -7,8 +7,8 @@ type Outcome = { kind: 'idle' } | { kind: 'sent' } | { kind: 'refused'; message:
 
 export type Settled = { kind: 'sent' } | { kind: 'refused'; message: string }
 
-// `deliveryRef` is the opaque ref the listing gave this row; the API reads the row's address out of it and
-// refuses one that belongs to another delivery
+// `deliveryRef` is the opaque ref the listing gave this row; the API reads the row's address from
+// it and refuses one for another delivery
 export function RedriveButton({
   deliveryId,
   deliveryRef,
@@ -18,7 +18,8 @@ export function RedriveButton({
   deliveryId: string
   deliveryRef: string
   onChanged: () => void
-  // a reload can remove this row and this component with it, so the page keeps the outcome where it survives
+  // a reload can remove this row and this component, so the page keeps the outcome where it
+  // survives
   onSettled?: (settled: Settled) => void
 }) {
   const [busy, setBusy] = useState(false)
@@ -42,8 +43,8 @@ export function RedriveButton({
       if (err instanceof ApiError) {
         setOutcome({ kind: 'refused', message: err.message })
         onSettled?.({ kind: 'refused', message: err.message })
-        // 409 means the listing is out of date (it was redriven or sent meanwhile), not that the click was
-        // wrong. Any other refusal changed nothing, and reloading would only hide its message.
+        // 409 means the listing is out of date (redriven or sent meanwhile), not that the click was
+        // wrong. Any other refusal changed nothing, and reloading would hide its message.
         if (err.status === 409) onChanged()
       } else {
         console.error('redrive failed', err)

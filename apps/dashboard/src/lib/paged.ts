@@ -18,8 +18,8 @@ export type Paged<T> = {
 
 type Page = { cursor?: unknown } & Record<string, unknown>
 
-// Every list route answers `{ <field>: [...], cursor? }` and takes the cursor back verbatim, so the cursor is
-// only ever passed on and never read.
+// Every list route answers `{ <field>: [...], cursor? }` and takes the cursor back verbatim, so the
+// cursor is only ever passed on, never read.
 export function usePagedList<T>(
   path: string,
   field: string,

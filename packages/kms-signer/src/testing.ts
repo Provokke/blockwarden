@@ -4,8 +4,8 @@ import type { DigestSigner } from './account.js'
 import { encodeDerSignature, SECP256K1_N } from './der.js'
 import { spkiFromPublicKey } from './spki.js'
 
-// An in-memory stand-in for a KMS key, for tests and local development. Like KMS it returns DER and about half
-// of its signatures carry a high s, so code under test has to normalise them as it would for the real thing.
+// An in-memory stand-in for a KMS key, for tests and local dev. Like KMS it returns DER and about
+// half its signatures have a high s, so code under test has to normalise them.
 export function createLocalDigestSigner(privateKey: Hex): DigestSigner {
   const { publicKey } = privateKeyToAccount(privateKey)
   return {

@@ -41,8 +41,8 @@ export function readOffset(cursor: string | null): number | undefined {
   }
 }
 
-// a listing that honours limit and cursor, and refuses a cursor it did not issue; its own cap is below the
-// dashboard's page size so the second page exists
+// a listing that honours limit and cursor and refuses a cursor it didn't issue; its cap is below
+// the dashboard's page size so a second page exists
 export function paged<T>(rows: T[], query: URLSearchParams, field: string, cap = 2) {
   const offset = readOffset(query.get('cursor'))
   if (offset === undefined) return apiError(400, 'invalid_cursor', 'that cursor cannot be read')

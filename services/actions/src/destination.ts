@@ -6,7 +6,8 @@ import { StringDecoder } from 'node:string_decoder'
 import { checkDestinationUrl, classifyAddress } from '@blockwarden/core'
 
 export class DestinationError extends Error {
-  // a refused range or a bad URL will be refused again next time; a resolver that could not answer may not be
+  // A refused range or bad URL will be refused again; a resolver that couldn't answer may work next
+  // time.
   constructor(
     message: string,
     readonly retryable = false,
@@ -22,12 +23,9 @@ export type Resolver = (host: string) => Promise<{ address: string; family: numb
 export const MAX_RESPONSE_BYTES = 2048
 // how long the socket may stay silent
 export const DEFAULT_TIMEOUT_MS = 10_000
-// how long the whole attempt may take. The socket timeout only measures silence, so a destination that writes a
-// byte every few seconds can hold the sender for hours; a tenant writes the URL, so a tenant could do that on
-// purpose. The sender Lambda has 30 seconds, and it still has to record the outcome and queue the next attempt,
-// so half of that is the attempt's share. It sits above DEFAULT_TIMEOUT_MS so the silence rule still bites
-// first, and a destination that honestly needs longer is better served by the next attempt: Task 13 gives it
-// eight of them over about an hour.
+// Cap on the whole attempt. The socket timeout only measures silence, so a slow trickle could hold
+// the sender for hours. Half the Lambda's 30s, leaving room to record the outcome and queue the
+// next try. Above DEFAULT_TIMEOUT_MS so the silence rule bites first.
 export const DEFAULT_DEADLINE_MS = 15_000
 
 const systemResolver: Resolver = (host) => lookup(host, { all: true, verbatim: true })
@@ -39,8 +37,7 @@ export async function resolveDestination(raw: string, resolve: Resolver = system
   const host = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname
   const port = Number(url.port || 443)
 
-  // a literal address was already judged by checkDestinationUrl; asking a resolver about it would be a second
-  // chance to say yes
+  // A literal address was already judged by checkDestinationUrl, so skip the resolver.
   if (isIP(host) !== 0) {
     return { url, host, address: host, family: isIP(host) === 6 ? 6 : 4, port }
   }
@@ -73,15 +70,15 @@ export function postJson(
 ): Promise<HttpAnswer> {
   const secure = target.url.protocol === 'https:'
   const transport = secure ? https : http
-  // Node calls this instead of DNS, so the connection goes to the address the guard judged. A second resolution
-  // — the rebinding window — never happens. Node 24 calls it with { all: true }.
+  // Node calls this instead of DNS, so the connection goes to the address the guard judged (no
+  // rebinding window). Node 24 passes { all: true }.
   const pinned: LookupFunction = (_host, lookupOptions, cb) =>
     lookupOptions && lookupOptions.all
       ? cb(null, [{ address: target.address, family: target.family }])
       : cb(null, target.address, target.family)
   return new Promise((resolve, reject) => {
     let deadline: NodeJS.Timeout | undefined
-    // set when a timer ends the attempt, so the half-read response does not get to explain it instead
+    // set when a timer ends the attempt, so the half-read response doesn't explain it instead
     let givenUp = false
     const giveUp = (err: Error) => {
       givenUp = true
@@ -101,13 +98,12 @@ export function postJson(
         port: target.port,
         path: `${target.url.pathname}${target.url.search}`,
         method: 'POST',
-        // no pooled socket, so every attempt resolves through the pinned lookup below
+        // no pooled socket, so every attempt goes through the pinned lookup
         agent: false,
-        // the certificate is checked against the name, not the pinned address
+        // cert is checked against the name, not the pinned address
         ...(secure ? { servername: target.host } : {}),
         lookup: pinned,
-        // the computed headers come last, and Host is named rather than left to Node, so a caller-supplied
-        // header cannot displace any of them
+        // computed headers go last so a caller-supplied header can't displace them
         headers: {
           ...headers,
           host: hostHeader(target, secure),
@@ -118,9 +114,9 @@ export function postJson(
         timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       },
       (response) => {
-        // a redirect is never followed: its status is the answer
-        // read here rather than when the body ends: a TLS socket the destination closes is already gone by
-        // then, and the address it answered from is the evidence that the connection went where it was pinned
+        // never follow a redirect, its status is the answer
+        // Read the address now, a TLS socket the destination closes is gone by the time the body
+        // ends.
         const peer = response.socket.remoteAddress
         let read = 0
         let capped = false
@@ -128,30 +124,30 @@ export function postJson(
         const chunks: Buffer[] = []
         response.on('data', (chunk: Buffer) => {
           read += chunk.length
-          // bytes, not characters: two-byte characters would otherwise buy twice the cap
+          // bytes, not characters, or two-byte chars buy twice the cap
           if (kept < MAX_RESPONSE_BYTES) {
             const slice = chunk.subarray(0, MAX_RESPONSE_BYTES - kept)
             chunks.push(slice)
             kept += slice.length
           }
-          // the first chunk can already be 64 KB, so this caps what is kept, not what arrives
+          // the first chunk can already be 64 KB, so this caps what's kept, not what arrives
           if (read > MAX_RESPONSE_BYTES) {
             capped = true
             response.destroy()
           }
         })
         response.on('close', () => {
-          // the request error carries the reason a timer ended this
+          // the request error carries why a timer ended this
           if (givenUp) return
-          // a body that stops early is not an answer: reporting it delivered would record a success that never
-          // happened. Stopping it ourselves at the cap is not the destination's fault, so that still counts.
+          // A body that stops early isn't an answer. Stopping at our own cap isn't the
+          // destination's fault, so that still counts.
           if (!capped && !response.complete) {
             return failed(new Error('the destination closed the connection before the answer was complete'))
           }
           done({
             statusCode: response.statusCode ?? 0,
             ...retryAfter(response.headers['retry-after']),
-            // the decoder holds back a character split across chunks, and drops one the cap cut in half
+            // the decoder holds back a split character and drops one the cap cut in half
             body: new StringDecoder('utf8').write(Buffer.concat(chunks)),
             ...(peer ? { remoteAddress: peer } : {}),
           })
@@ -161,8 +157,8 @@ export function postJson(
     request.on('timeout', () => giveUp(new Error('the destination did not answer in time')))
     request.on('error', failed)
     request.end(body)
-    // armed once the request is on its way, and cleared however it settles: the socket timeout above only
-    // measures silence, and a trickle of bytes is not silence
+    // armed once the request is on its way, cleared however it settles; the socket timeout can't
+    // catch a trickle
     deadline = setTimeout(
       () => giveUp(new Error('the destination took longer than the deadline')),
       options.deadlineMs ?? DEFAULT_DEADLINE_MS,
@@ -170,8 +166,7 @@ export function postJson(
   })
 }
 
-// what Node would have written itself: the name, in brackets if it is an IPv6 literal, and the port unless it is
-// the default for the scheme
+// what Node would write itself: the name (bracketed if IPv6) and the port unless it's the default
 function hostHeader(target: Resolved, secure: boolean): string {
   const name = isIP(target.host) === 6 ? `[${target.host}]` : target.host
   return target.port === (secure ? 443 : 80) ? name : `${name}:${target.port}`

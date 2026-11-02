@@ -27,7 +27,7 @@ const delivery = (subject?: string): DeliveryRecord => ({
   expiresAt: 0,
 })
 
-// the fake records the command it was given, so a test can prove what SES was actually asked to send
+// the fake records the command it was given, so a test can prove what SES was asked to send
 const fakeSes = (answer: unknown = { MessageId: 'ses-message-1' }) => {
   const sent: SendEmailCommand[] = []
   const send = vi.fn(async (command: SendEmailCommand) => {

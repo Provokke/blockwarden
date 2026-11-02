@@ -7,7 +7,7 @@ export type SignerRecord = {
   keyId: string
   chainIds: number[]
   policy: Policy
-  // read by the actions pipeline in milestone 3
+  // read by the actions pipeline
   webhooks?: string[]
   webhookSecretParameter?: string
 }
@@ -68,7 +68,7 @@ export type TxRecord = {
   nonceUsedAtBlock?: number
   nonceUsedAt?: string
   error?: string
-  // the raw revert data a node returned for a call that reverts; set by the signer in Task 4
+  // the raw revert data a node returned for a call that reverts; set by the signer
   revertData?: Hex
   fillerTxId?: string
   fillsTxId?: string

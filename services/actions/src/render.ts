@@ -26,17 +26,16 @@ export function matchEventData(row: Row, rule: { event: string; eventName: strin
     ordinal: num(row.ordinal),
     event: rule.event,
     eventName: rule.eventName,
-    // the monitor stores decoded arguments with bigints already turned into strings, but not the numbers viem
-    // returns for an integer of 48 bits or fewer; jsonSafe turns those into the decimal strings the schema
-    // publishes, and covers a record written before toStorable and a number set
+    // the monitor stringifies bigints, but not the numbers viem returns for integers up to 48 bits;
+    // jsonSafe turns those into decimal strings and also covers older records
     args: jsonSafe(row.args ?? {}) as Record<string, DecodedValue>,
     firstSeenAt: str(row.firstSeenAt),
     finalizedAt: orNull(row.finalizedAt),
   }
 }
 
-// the same body GET /v1/relayer/txs/{txId} returns, built from the stream image rather than from the relayer's
-// own record type, because this service does not import the relayer
+// same body as GET /v1/relayer/txs/{txId}, built from the stream image because this service doesn't
+// import the relayer
 export function txEventData(row: Row): RelayerTxBody {
   const mined = (row.mined ?? {}) as Mined
   const attempts = Array.isArray(row.attempts) ? (row.attempts as { hash?: unknown }[]) : []

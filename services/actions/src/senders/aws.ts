@@ -3,15 +3,10 @@ import { SendMessageCommand } from '@aws-sdk/client-sqs'
 import { truncate } from '../records.js'
 import type { Sender, SendOutcome } from './types.js'
 
-// AWS answers these the same way however often it is asked. Sourced against the installed SDKs rather than
-// guessed AWS vocabulary:
-//   - AccessDeniedException, UnrecognizedClientException: not modeled by either service - they come from the
-//     shared authentication/authorization front door every AWS API sits behind (a bad signature or a denied
-//     IAM policy), so no @aws-sdk/client-* package exports a class for them
-//   - ResourceNotFoundException, QueueDoesNotExist, InvalidMessageContents, InvalidAddress, InvalidSecurity,
-//     UnsupportedOperation, and the Kms* family: @aws-sdk/client-sqs@3.1131.0, dist-types/models/errors.d.ts
-//   - InvalidParameterValueException, RequestTooLargeException, and the KMS* family: @aws-sdk/client-lambda@
-//     3.1131.0, dist-types/models/errors.d.ts (note the different capitalisation of "KMS" from SQS's "Kms")
+// AWS answers these the same way however often it's asked. AccessDeniedException and
+// UnrecognizedClientException come from the shared auth front door, so no SDK package exports a
+// class for them. The rest are in the SQS and Lambda SDK error models (note "Kms" vs "KMS"
+// capitalisation).
 const PERMANENT = new Set([
   'AccessDeniedException',
   'UnrecognizedClientException',
@@ -35,16 +30,15 @@ const PERMANENT = new Set([
   'KMSNotFoundException',
 ])
 
-// the host each partition's queues answer on; an ARN naming any other partition is refused rather than
-// guessed at
+// the host each partition's queues answer on; an ARN in any other partition is refused
 const PARTITION_HOSTS: Record<string, string> = {
   aws: 'amazonaws.com',
   'aws-us-gov': 'amazonaws.com',
   'aws-cn': 'amazonaws.com.cn',
 }
 
-// checked by both queueUrlFromArn and sendLambda: an ARN naming a service, region or partition other than
-// the one this function is deployed for is a fault in the allowlist entry, not something a retry fixes
+// checked by queueUrlFromArn and sendLambda: an ARN for another service, region or partition is a
+// fault in the allowlist entry, not something a retry fixes
 function checkArn(arn: string, service: string, region: string): { partition: string; accountId: string } {
   const [prefix, partition, arnService, arnRegion, accountId] = arn.split(':')
   if (prefix !== 'arn' || arnService !== service || !accountId) {
@@ -60,8 +54,8 @@ function checkArn(arn: string, service: string, region: string): { partition: st
 export function queueUrlFromArn(arn: string, region: string): string {
   const parts = arn.split(':')
   const { partition, accountId } = checkArn(arn, 'sqs', region)
-  // a queue name never contains a colon, so anything past the account id must be exactly one segment - an
-  // extra segment here would otherwise silently address a different queue
+  // a queue name has no colon, so anything past the account id must be one segment, or it'd address
+  // a different queue
   const name = parts[5]
   if (parts.length !== 6 || !name) throw new Error(`${arn} is not a queue ARN`)
   return `https://sqs.${parts[3]}.${PARTITION_HOSTS[partition]}/${accountId}/${name}`
@@ -72,7 +66,7 @@ function allowed(deps: { allowedTargetArns?: readonly string[] }, arn: string): 
 }
 
 function refuse(arn: string): SendOutcome {
-  // the IAM policy grants the same list, so this is the readable half of a check AWS also makes
+  // IAM grants the same list, so this is the readable half of a check AWS also makes
   return { kind: 'permanent', error: `${arn} is not an allowed delivery target` }
 }
 
@@ -92,7 +86,7 @@ export const sendSqs: Sender = async (deps, delivery) => {
   try {
     queueUrl = queueUrlFromArn(queueArn, deps.region)
   } catch (err) {
-    // a malformed or cross-region allowlist entry is a configuration fault, not a delivery AWS ever attempted
+    // a bad allowlist entry is a config fault, not a delivery AWS ever attempted
     return { kind: 'permanent', error: truncate((err as Error).message) }
   }
 
@@ -105,7 +99,8 @@ export const sendSqs: Sender = async (deps, delivery) => {
           deliveryId: { DataType: 'String', StringValue: delivery.deliveryId },
           type: { DataType: 'String', StringValue: delivery.event },
         },
-        // a FIFO queue needs both; the subject keeps one match's events in order and the id deduplicates a retry
+        // a FIFO queue needs both; the subject keeps one match's events in order and the id dedupes
+        // a retry
         ...(queueArn.endsWith('.fifo')
           ? { MessageGroupId: delivery.subject, MessageDeduplicationId: delivery.deliveryId }
           : {}),
@@ -124,8 +119,8 @@ export const sendLambda: Sender = async (deps, delivery) => {
   if (!allowed(deps, functionArn)) return refuse(functionArn)
 
   try {
-    // the mirror of queueUrlFromArn's check: sendSqs builds a URL from the region and partition, sendLambda
-    // invokes the ARN directly, but a wrong region or partition is the same configuration fault either way
+    // mirror of queueUrlFromArn's check; a wrong region or partition is the same config fault
+    // either way
     checkArn(functionArn, 'lambda', deps.region)
   } catch (err) {
     return { kind: 'permanent', error: truncate((err as Error).message) }
@@ -135,7 +130,7 @@ export const sendLambda: Sender = async (deps, delivery) => {
     const answer = await deps.lambda.send(
       new InvokeCommand({
         FunctionName: functionArn,
-        // the answer is what makes a failure visible here rather than in the target's own dead-letter queue
+        // the answer makes a failure visible here, not just in the target's own dead-letter queue
         InvocationType: 'RequestResponse',
         Payload: new TextEncoder().encode(delivery.payload),
       }),

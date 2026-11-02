@@ -11,8 +11,8 @@ export class RuleValidationError extends Error {
   }
 }
 
-// `warnings` holds what is wrong with the rule but does not stop it matching: an action that was dropped, and
-// a condition path that reaches past what the event carries. `actions` is only the ones that passed.
+// `warnings` is what's wrong with the rule but doesn't stop it matching: a dropped action, or a
+// condition path past what the event carries. `actions` is only the ones that passed.
 export type CompiledRule = RuleInput & {
   ruleId: string
   abiEvent: AbiEvent
@@ -22,11 +22,10 @@ export type CompiledRule = RuleInput & {
 
 const CONTEXT_FIELDS = new Set(['address', 'blockNumber', 'transactionHash', 'logIndex'])
 
-// A rule only fails to compile over something that stops it matching at all: an event signature that will not
-// parse, an input with no name, a condition field the event has no such thing as. Everything else is collected
-// as a warning and the rule goes on being polled - a rule written before a check existed must not silently
-// leave the poll the day the check ships. The write paths (scripts/put-rule.ts, the Terraform rules validation)
-// refuse a warning outright, which is where strictness costs nobody a missed match.
+// A rule only fails to compile over something that stops it matching at all (bad event signature,
+// unnamed input, unknown condition field). Everything else becomes a warning and the rule keeps
+// being polled, so older rules don't silently leave when a new check ships. The write paths
+// (scripts/put-rule.ts, the Terraform rules validation) refuse any warning.
 export function compileRule(ruleId: string, input: RuleInput): CompiledRule {
   const issues: ValidationIssue[] = []
   const warnings: ValidationIssue[] = []
@@ -41,8 +40,8 @@ export function compileRule(ruleId: string, input: RuleInput): CompiledRule {
       if (head === 'args') {
         const [name, ...deeper] = rest
         const found = abiEvent.inputs.find((i) => i.name === name)
-        // the first segment is the one milestone 1 checked, and a rule naming an input the event does not have
-        // is a rule about another event
+        // the first segment is checked, and a rule naming an input the event doesn't have is a rule
+        // about another event
         if (!found) issues.push({ path, message: `event has no input named "${name ?? ''}"` })
         else {
           const message = walkFrom(found, name ?? '', deeper)
@@ -54,14 +53,15 @@ export function compileRule(ruleId: string, input: RuleInput): CompiledRule {
     }
   }
 
-  // ruleInputSchema only runs in scripts/put-rule.ts; a rule written any other way is compiled and dispatched
-  // without it, so the actions are checked here too. An action that fails is dropped and warned about: the rule
-  // keeps matching and the actions that do pass keep being delivered.
+  // ruleInputSchema only runs in scripts/put-rule.ts; a rule written any other way is compiled
+  // without it, so actions are checked here too. A failing action is dropped and warned about; the
+  // rest keep delivering.
   const actions: RuleInput['actions'] = []
   for (const [i, action] of (input.actions ?? []).entries()) {
     const parsed = actionSchema.safeParse(action)
     if (parsed.success) {
-      // the action as it was stored, not as zod re-made it: actionId hashes this object and a delivery is keyed by it
+      // the action as stored, not as zod re-made it: actionId hashes this object and deliveries are
+      // keyed by it
       actions.push(action)
       continue
     }
@@ -101,22 +101,22 @@ function* leafFields(condition: Condition | undefined, path: string): Generator<
 
 type AbiParameter = AbiEvent['inputs'][number]
 
-// "an address", "an int256", but "a uint256", which is said "you-int"
+// "an address", "an int256", but "a uint256" (said "you-int")
 const article = (type: string) => (/^[aeio]/.test(type) ? 'an' : 'a')
 
-// viem decodes a tuple as an object, so args.permission.spender is a real path; validating only the first
-// segment let a typo past and the rule then matched nothing, silently
+// viem decodes a tuple as an object, so args.permission.spender is a real path; validating only the
+// first segment let a typo through and the rule matched nothing
 function walkFrom(param: AbiParameter, name: string, segments: string[]): string | undefined {
-  // an indexed array, tuple, string or bytes is not in the log at all: the topic holds keccak256 of it, and
-  // viem hands that hash over as the value, so every path into it resolves to undefined for ever
+  // an indexed array, tuple, string or bytes isn't in the log: the topic holds keccak256 of it and
+  // viem hands that hash over, so every path into it is undefined
   if (param.indexed && segments.length > 0) {
     return `field "${name}" is indexed, so the log carries only its hash and it has no components`
   }
   return walk(param, name, segments)
 }
 
-// viem decodes an array as an array, so args.items.0.to and args.amounts.length both resolve at run time;
-// refusing them here stopped a live rule compiling, and the monitor then drops such a rule with one log line
+// viem decodes an array as an array, so args.items.0.to and args.amounts.length resolve at run
+// time; refusing them stopped a live rule compiling
 function walk(param: AbiParameter, name: string, segments: string[]): string | undefined {
   const [next, ...rest] = segments
   if (next === undefined) return undefined

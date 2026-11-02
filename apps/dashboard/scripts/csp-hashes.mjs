@@ -1,19 +1,18 @@
-// Hashes the export's inline scripts for the CloudFront Content-Security-Policy, and refuses a page the policy
-// cannot admit. Usage: node scripts/csp-hashes.mjs [--dir out] [--out file | --check]
-//
-// Next writes its bootstrap and flight data inline, and the flight data changes with every build, so the hashes
-// come from the build being uploaded and travel to Terraform as site.auto.tfvars.json.
+// Hashes the export's inline scripts for the CloudFront Content-Security-Policy and refuses a page
+// the policy can't admit. Usage: node scripts/csp-hashes.mjs [--dir out] [--out file | --check]
+// Next writes its bootstrap and flight data inline and the flight data changes every build, so
+// hashes come from the build being uploaded and go to Terraform as site.auto.tfvars.json.
 import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// CloudFront's documented quota on a Content-Security-Policy header value (Quotas, "Maximum length of the
-// Content-Security-Policy header value"). It can be raised through Service Quotas.
+// CloudFront's documented limit on a Content-Security-Policy header value. Service Quotas can
+// raise it.
 export const POLICY_LIMIT = 1783
 
-// modules/api/site.tf builds the same list, and a test fails when the two differ. script-src is where the
-// hashes go.
+// modules/api/site.tf builds the same list and a test fails when they differ. script-src is where
+// the hashes go.
 export const BASE_DIRECTIVES = [
   "default-src 'self'",
   "script-src 'self'",
@@ -26,8 +25,8 @@ export const BASE_DIRECTIVES = [
   "object-src 'none'",
 ]
 
-// Next's default not-found pages carry inline styles. CloudFront's rewrite function never serves them: a path
-// with no exported page is an error from S3.
+// Next's default not-found pages carry inline styles. CloudFront's rewrite function never serves
+// them: a path with no exported page is an error from S3.
 const STYLE_EXEMPT = [/^404\.html$/, /^404\/index\.html$/, /^_not-found\//]
 
 export function buildPolicy(hashes) {
@@ -54,13 +53,14 @@ async function htmlFiles(root) {
   return found
 }
 
-// quote-aware like START_TAG: a > inside a quoted attribute value does not end the tag
+// quote-aware like START_TAG: a > inside a quoted attribute value doesn't end the tag
 const SCRIPT_ELEMENT = /<script\b((?:"[^"]*"|'[^']*'|[^>"'])*)>([\s\S]*?)<\/script\s*>/gi
 const START_TAG = /<([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g
 
 function inspect(html) {
   const inline = []
-  // a script's text is code or data, and can hold anything, so the markup checks look at the page without it
+  // a script's text is code or data and can hold anything, so the markup checks look at the page
+  // without it
   const markup = html.replace(SCRIPT_ELEMENT, (_all, attributes, content) => {
     if (!/(^|\s)src\s*=/i.test(attributes)) inline.push(content)
     return '<script></script>'
@@ -84,8 +84,8 @@ export async function collect(root) {
   for (const file of (await htmlFiles(root)).sort()) {
     const name = relative(root, file).split(sep).join('/')
     const { inline, found } = inspect(await readFile(file, 'utf8'))
-    // The HTML parser turns CRLF and a lone CR into LF before a script's text exists, so a CR here would hash to
-    // something the browser never computes.
+    // The HTML parser turns CRLF and a lone CR into LF before a script's text exists, so a CR here
+    // would hash to something the browser never computes.
     if (inline.some((content) => content.includes('\r'))) {
       problems.push(`${name} has an inline script containing a carriage return, which a browser hashes as a line feed`)
     }
@@ -139,7 +139,6 @@ async function main() {
 
   const json = `${JSON.stringify({ site_script_hashes: result.hashes }, null, 2)}\n`
   if (check) {
-    // the checks above are the whole job
   } else if (out === undefined) {
     process.stdout.write(json)
   } else {

@@ -22,7 +22,7 @@ describe('matchEventData', () => {
   it('turns a bigint or a number in args into a decimal string rather than throwing', () => {
     const data = matchEventData(matchRow({ args: { value: 99999999999999999999999n, tick: -201_234 } }), rule)
     expect(data.args.value).toBe('99999999999999999999999')
-    // an int24 decodes to a JS number, which the guard refuses, so the sender is what makes it a string
+    // an int24 decodes to a JS number, which the guard refuses, so the sender makes it a string
     expect(data.args.tick).toBe('-201234')
     expect(() => JSON.stringify(data)).not.toThrow()
   })

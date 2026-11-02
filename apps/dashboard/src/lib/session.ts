@@ -5,9 +5,8 @@ import { ApiError, apiFetch } from './api'
 
 export type SessionState = 'loading' | 'signedIn' | 'signedOut' | 'error'
 
-// There is no session route: an existing one already answers, and a 401 from it means signed out. A
-// different failure (a 502, the network) is not the same thing and must not send the user to a login form
-// that cannot work.
+// There's no session route: an existing one already answers, and a 401 from it means signed out.
+// Any other failure (a 502, the network) must not send the user to a login form that can't work.
 export function useSession(): { state: SessionState; refresh: () => void } {
   const [state, setState] = useState<SessionState>('loading')
   const [attempt, setAttempt] = useState(0)

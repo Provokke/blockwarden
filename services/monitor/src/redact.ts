@@ -1,7 +1,7 @@
 const MAX_CAUSE_DEPTH = 5
 
 export function redactUrls(text: string, urls: string[]): string {
-  // longest first, so a URL that is a prefix of another never leaves the rest of that key behind
+  // longest first, so a URL that prefixes another never leaves the rest of that key behind
   const replacements = urls
     .flatMap((url, i) => forms(url).map((form) => ({ form, label: `rpc[${i}]` })))
     .sort((a, b) => b.form.length - a.form.length)
@@ -27,7 +27,8 @@ export function redactError(err: unknown, urls: string[]): { message: string; st
 const MAX_DATA_DEPTH = 5
 const TOO_DEEP = '[nested too deep to log]'
 
-// log data can carry an error or a URL at any depth; past the bound it is dropped rather than logged unredacted
+// log data can carry an error or URL at any depth; past the bound it's dropped, not logged
+// unredacted
 export function redactData(value: unknown, urls: string[], depth = 0): unknown {
   if (typeof value === 'string') return redactUrls(value, urls)
   if (value === null || typeof value !== 'object') return value

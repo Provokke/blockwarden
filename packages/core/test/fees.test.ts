@@ -96,14 +96,15 @@ describe('bumpFees', () => {
           } else {
             refused++
             expect(result.required).toEqual(minReplacementFees(previous))
-            // the cap is the highest candidate, so when it is refused every fee under the cap is refused too
+            // the cap is the highest candidate, so when it's refused every fee under it is refused
+            // too
             expect(isAcceptedReplacement(previous, cap)).toBe(false)
           }
         },
       ),
       { numRuns: 2000 },
     )
-    // without these the property could pass on a generator that only ever reaches one branch
+    // without these the property could pass on a generator that only reaches one branch
     expect(replaced).toBeGreaterThan(200)
     expect(refused).toBeGreaterThan(200)
   })

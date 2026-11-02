@@ -11,8 +11,8 @@ import {
 import type { DeliveryRecord, DeliveryRef } from '../../src/records.js'
 import type { DeadPage } from '../../src/store.js'
 
-// the path shape of a Slack incoming webhook, on a host that is not Slack's: a fixture carrying the real
-// host matches secret scanning on every push, and nothing here reads the host
+// the path shape of a Slack incoming webhook on a non-Slack host: a fixture with the real host
+// trips secret scanning on every push
 const SLACK_SHAPED = 'https://hooks.example.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX'
 const DISCORD = 'https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyz-secret'
 
@@ -98,7 +98,7 @@ describe('allDead', () => {
 
 const ref = (sk: string): DeliveryRef => ({ subject: 'MATCH#1', sk })
 
-// a fake SQS that answers one receive per queued batch and then nothing, which is what the real queue does once
+// a fake SQS that answers one receive per queued batch, then nothing, like the real queue once
 // everything visible is in flight
 function fakeSqs(batches: { Body: string; ReceiptHandle: string }[][]) {
   const deleted: string[] = []
@@ -139,8 +139,8 @@ describe('drainRedriven', () => {
     expect(receives).toHaveLength(2)
   })
 
-  // the pipeline makes several copies of one delivery on purpose: the sender copies it again every time an
-  // already-dead delivery comes round, and the reaper copies before markDead. Deleting one leaves the alarm on.
+  // several copies of one delivery on purpose: the sender copies it each time an already-dead
+  // delivery comes round, and the reaper copies before markDead. Deleting one leaves the alarm on.
   it('deletes every copy of a redriven delivery, not just the first', async () => {
     const mine = ref('DELIVERY#mine')
     const { sqs, deleted } = fakeSqs([

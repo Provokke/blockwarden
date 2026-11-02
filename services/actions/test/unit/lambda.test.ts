@@ -4,8 +4,8 @@ import { loadConfig } from '../../src/config.js'
 import { createDispatcherHandler, createSenderHandler } from '../../src/lambda/handlers.js'
 import { matchRow, streamRecord } from '../helpers/images.js'
 
-// the real thing, not a stand-in: what the handlers read off the config is what Terraform's variables become,
-// and a default that only the fake carried would hide a wiring that never reads the setting
+// the real config, not a stand-in: what the handlers read is what Terraform's variables become, and
+// a default only the fake carried would hide an unread setting
 const config = loadConfig({
   TABLE_NAME: 'blockwarden',
   DELIVERY_QUEUE_URL: 'https://sqs.us-east-1.amazonaws.com/111122223333/deliveries',
@@ -23,13 +23,13 @@ const fakes = () => {
     dispatchRecords: vi.fn(async () => ({ batchItemFailures: [] })),
     sweepDue: vi.fn(async () => ({ requeued: 2, dead: 1 })),
     acceptOutbound: vi.fn(async () => ({ batchItemFailures: [] })),
-    // the empty array below has no context to infer an element type from, so vi.fn would otherwise type this
-    // mock's result as `never[]` and refuse the non-empty one `mockResolvedValueOnce` sets below
+    // the empty array gives vi.fn nothing to infer from, so the mock would be typed `never[]` and
+    // refuse the non-empty result set below
     processMessages: vi.fn(async () => ({ batchItemFailures: [] as { itemIdentifier: string }[] })),
   }
   const log = vi.fn()
-  // strings stand in for the clients and the store: the assertions are about which collaborator was handed on,
-  // and a string shows up in a failure message as itself
+  // strings stand in for clients and the store: the assertions are about which collaborator was
+  // handed on
   const runtime = {
     config,
     store: 'store',
@@ -42,8 +42,8 @@ const fakes = () => {
     lambda: 'lambda',
     log,
   }
-  // one addMetric across every singleMetric() call, as sender.test.ts does it: a fresh spy per call would let
-  // an emission happen and still assert nothing
+  // one addMetric across every singleMetric() call, like sender.test.ts: a fresh spy per call could
+  // assert nothing
   const addMetric = vi.fn()
   const addDimension = vi.fn()
   const metrics = { singleMetric: () => ({ addMetric, addDimension }) }
@@ -157,9 +157,9 @@ describe('the sender handler', () => {
       allowedTargetArns: ['arn:aws:sqs:us-east-1:111122223333:targets'],
       telegramTokenParameter: '/bw/telegram',
     })
-    // the deadline margin is only a margin if the pipeline can read the clock, not a number read once
+    // the deadline margin only counts if the pipeline reads the clock each time, not once
     expect(remainingMs()).toBe(12_345)
-    // nothing was configured for these, so they are absent rather than undefined
+    // nothing configured for these, so absent rather than undefined
     expect(deps).not.toHaveProperty('fromAddress')
     expect(deps).not.toHaveProperty('ses')
   })
@@ -177,7 +177,8 @@ describe('the sender handler', () => {
 })
 
 describe('the metrics both handlers emit', () => {
-  // a dimension multiplies the billed metric count by its cardinality, and CloudWatch would take it silently
+  // a dimension multiplies the billed metric count by its cardinality and CloudWatch would take it
+  // silently
   it('carries no dimension', async () => {
     const f = fakes()
     f.ports.processMessages.mockResolvedValueOnce({ batchItemFailures: [{ itemIdentifier: 'm2' }] })

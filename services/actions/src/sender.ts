@@ -11,21 +11,19 @@ import type { ProductionSenderDeps, Sender, SendOutcome, SenderDeps } from './se
 
 export type Outcome = 'delivered' | 'retrying' | 'dead' | 'skipped'
 
-// The DynamoDB and SQS round trips around one attempt: the get, the claim, the record write and the queue send,
-// with enough slack for one throttled write the SDK retries.
+// The DynamoDB and SQS round trips around one attempt (get, claim, record write, queue send), plus
+// slack for one throttled write.
 const ATTEMPT_AWS_MS = 5_000
 
-// Stop taking messages once less than one whole attempt's time remains. A send runs to its own absolute deadline
-// before it gives up, so a batch started with less than that left times out mid-attempt, and Lambda throws the
-// partial-batch response away: every message in it comes back, including the ones whose sends already happened.
+// Stop taking messages once less than one whole attempt remains. A send runs to its own deadline,
+// and a timeout throws away the partial-batch response, so already-sent messages would come back.
 export const DEADLINE_MARGIN_MS = DEFAULT_DEADLINE_MS + ATTEMPT_AWS_MS
 
-// only the store methods the pipeline uses, as the dispatcher does it: the real DeliveryStore still satisfies
-// it, and a test fake is a plain object whose drift from the store is a compile error rather than a silence
+// only the store methods the pipeline uses, like the dispatcher, so fake drift is a compile error
 export type SenderStore = Pick<DeliveryStore, 'get' | 'claim' | 'markDelivered' | 'scheduleRetry' | 'markDead'>
 
-// fields every pipeline wiring adds on top of a plain sender's own deps; kept once so the production and test
-// shapes below cannot drift apart on these
+// fields every pipeline wiring adds on top of a plain sender's deps, kept once so the production
+// and test shapes can't drift
 type PipelineExtras = {
   store: SenderStore
   queue: DeliveryQueue
@@ -33,21 +31,20 @@ type PipelineExtras = {
   senders: Partial<Record<DeliveryChannel, Sender>>
   random?: () => number
   log: Log
-  // Task 14's delivery-failure metric. Optional so a unit test that builds its deps by hand keeps compiling
-  // without one; production wiring always supplies it.
+  // delivery-failure metric. Optional so hand-built test deps still compile; production always
+  // supplies it.
   metrics?: Metrics
 }
 
 export type SenderPipelineDeps = SenderDeps & PipelineExtras
 
-// what the Lambda entry point builds: `SenderDeps` minus the two local-server escape hatches, so wiring this
-// pipeline from real infrastructure can never set `resolve` or `post` and bypass the destination guard
+// what the Lambda entry point builds: `SenderDeps` minus the two local-server hatches, so real
+// wiring can't set `resolve` or `post` and bypass the guard
 export type ProductionSenderPipelineDeps = ProductionSenderDeps & PipelineExtras
 
-// The design's one delivery-failure metric. It shares the reaper's name (`dispatcher.ts`'s sweepDue emits it
-// too) so this adds no new billed custom metric: CloudWatch merges data points under the same namespace, name
-// and dimension set regardless of which Lambda published them. No per-channel dimension, for the reason
-// `deliveriesDead` already has none in the dispatcher: six channels would be six billed metrics instead of one.
+// The one delivery-failure metric. Shares the reaper's name so there's no new billed custom metric;
+// CloudWatch merges points with the same namespace, name and dimensions. No per-channel dimension,
+// six channels would be six billed metrics.
 function countDead(deps: Pick<SenderPipelineDeps, 'metrics'>): void {
   deps.metrics?.singleMetric().addMetric('deliveriesDead', MetricUnit.Count, 1)
 }
@@ -58,14 +55,13 @@ export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef
   if (!delivery) return 'skipped'
   // another sender finished it first, or this one did and only the copy failed
   if (TERMINAL.has(delivery.status)) {
-    // markDead lands before the copy does, so a transient SQS error leaves a dead delivery the alarm cannot see;
-    // the redelivery arrives here and copies it. Nothing consumes the dead-letter queue - it is watched for its
-    // depth - so a second pointer for a copy that did land costs nothing, and a missing one costs the alarm.
+    // markDead lands before the copy, so a transient SQS error leaves a dead delivery the alarm
+    // can't see; the redelivery copies it. Nothing consumes the dead-letter queue (only its depth
+    // is watched), so a duplicate is free.
     if (delivery.status === 'dead') {
       await deps.deadLetters.send(ref, 0)
-      // the first pass may have died before it logged anything (that's the whole reason this copy is needed),
-      // so this line is the only trace of it; Task 14's metrics need to count this branch as dead too, not only
-      // the pass that called markDead
+      // the first pass may have died before logging, so this line is the only trace; the failure
+      // metric has to count this branch as dead too
       deps.log('re-sent a dead-letter copy for a delivery already marked dead', { deliveryId: delivery.deliveryId })
       countDead(deps)
     }
@@ -85,7 +81,7 @@ export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef
 
   const send = deps.senders[claimed.channel]
   if (!send) {
-    // a channel this build does not know is never going to work; retrying it for an hour helps nobody
+    // a channel this build doesn't know will never work, so don't retry it for an hour
     await deps.store.markDead(claimed, deps.now(), `no sender for channel ${claimed.channel}`)
     await deps.deadLetters.send(ref, 0)
     deps.log('no sender for channel', { deliveryId: claimed.deliveryId, channel: claimed.channel }, 'error')
@@ -97,7 +93,7 @@ export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef
   try {
     outcome = await send(deps, claimed)
   } catch (err) {
-    // a sender is supposed to return an outcome; one that throws is a bug, and the delivery is worth another go
+    // a sender should return an outcome; one that throws is a bug, worth another go
     deps.log('sender threw', { deliveryId: claimed.deliveryId, error: truncate((err as Error).message) }, 'error')
     outcome = { kind: 'retry' as const, error: truncate(`the sender failed: ${(err as Error).message}`) }
   }
@@ -105,9 +101,9 @@ export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef
   try {
     return await recordOutcome(deps, ref, claimed, outcome)
   } catch (err) {
-    // The send already happened. A conflict here means the lease moved on - the reaper requeued this delivery and
-    // another invocation claimed it - so that invocation owns the outcome now. Reporting an infrastructure
-    // failure instead would run claim and send again and the receiver would see the same body twice.
+    // The send already happened. A conflict means the lease moved on (reaper requeued, another
+    // invocation claimed it), so that one owns the outcome. Reporting an infra failure would send
+    // the same body twice.
     if (err instanceof DeliveryConflictError) {
       deps.log('another invocation owns this delivery now', { deliveryId: claimed.deliveryId }, 'warn')
       return 'skipped'
@@ -116,7 +112,7 @@ export async function processDelivery(deps: SenderPipelineDeps, ref: DeliveryRef
   }
 }
 
-// write the attempt's ending down and enqueue whatever follows from it
+// write the attempt's ending down and enqueue what follows
 async function recordOutcome(
   deps: SenderPipelineDeps,
   ref: DeliveryRef,
@@ -132,7 +128,7 @@ async function recordOutcome(
   const exhausted = claimed.attempts >= MAX_ATTEMPTS
   if (outcome.kind === 'permanent' || exhausted) {
     await deps.store.markDead(claimed, deps.now(), outcome.error, outcome.statusCode)
-    // the queue's depth is a free CloudWatch metric, which is what the dead-letter alarm watches
+    // queue depth is a free CloudWatch metric, which the dead-letter alarm watches
     await deps.deadLetters.send(ref, 0)
     deps.log(
       'delivery dead',
@@ -175,8 +171,8 @@ async function recordOutcome(
 export async function processMessages(
   deps: SenderPipelineDeps,
   records: SQSRecord[],
-  // remaining time on the Lambda invocation; required so a caller that forgets it fails to compile rather than
-  // silently running with no deadline margin at all
+  // remaining Lambda time; required so forgetting it fails to compile instead of running with no
+  // margin
   remainingMs: () => number,
 ): Promise<SQSBatchResponse> {
   const batchItemFailures: SQSBatchResponse['batchItemFailures'] = []
@@ -187,7 +183,7 @@ export async function processMessages(
       if (typeof parsed?.subject !== 'string' || typeof parsed?.sk !== 'string') throw new Error('not a delivery ref')
       ref = parsed
     } catch (err) {
-      // nothing will ever parse this; reporting it would only send it round the queue five more times
+      // nothing will ever parse this; reporting it would just send it round the queue again
       deps.log(
         'message is not a delivery reference',
         { messageId: record.messageId, error: (err as Error).message },
@@ -195,8 +191,7 @@ export async function processMessages(
       )
       continue
     }
-    // checked after the parse: an unparseable body is poison however much time is left, and handing it back
-    // would only send it round the queue again
+    // checked after the parse: an unparseable body is poison however much time is left
     if (remainingMs() < DEADLINE_MARGIN_MS) {
       deps.log('message not attempted; too little time remains before the Lambda timeout', {
         messageId: record.messageId,
@@ -207,7 +202,7 @@ export async function processMessages(
     try {
       await processDelivery(deps, ref)
     } catch (err) {
-      // DynamoDB or SQS; every other failure has already been turned into an outcome
+      // DynamoDB or SQS; every other failure has already become an outcome
       deps.log(
         'delivery could not be processed',
         { messageId: record.messageId, error: truncate((err as Error).message) },

@@ -1,5 +1,5 @@
-// A throwaway self-signed certificate for pinned.invalid, generated once for the TLS test. It is trusted by
-// nothing, signs nothing else, and is here so the test needs no toolchain of its own to make one.
+// A throwaway self-signed cert for pinned.invalid, generated once for the TLS test. Trusted by
+// nothing and signs nothing else.
 export const SELF_SIGNED_CERT = `-----BEGIN CERTIFICATE-----
 MIIDMDCCAhigAwIBAgIUEYlTcwCYhabfNCminOvonNRSYF8wDQYJKoZIhvcNAQEL
 BQAwGTEXMBUGA1UEAwwOcGlubmVkLmludmFsaWQwIBcNMjYwOTIwMDgxMTUwWhgP

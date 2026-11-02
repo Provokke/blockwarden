@@ -29,8 +29,9 @@ contract TopUpVaultInvariantTest is Test {
         targetContract(address(handler));
     }
 
-    /// @dev Drives the handler through every state once, in a fixed order. The fuzzer reaches these states by chance;
-    /// this shows the handler is wired to each of them, so a handler that stopped calling the vault cannot pass.
+    /// @dev Drives the handler through every state once, in order. The fuzzer reaches these by
+    /// chance; this shows the handler is wired to each, so one that stopped calling the vault can't
+    /// pass.
     function test_handlerReachesEveryState() public {
         uint256 unit = vault.topUpAmount();
 
@@ -44,7 +45,7 @@ contract TopUpVaultInvariantTest is Test {
         assertEq(handler.refusedByCooldown(), 1, "a top-up inside the cooldown was not refused as such");
         assertEq(handler.ghostCredited(), unit, "a refused top-up was credited");
 
-        // one cooldown on, each pass credits the account and takes from the pool until it cannot pay
+        // one cooldown on, each pass credits the account and takes from the pool until it can't pay
         for (uint256 i; i < 6 && vault.pool() >= unit; ++i) {
             handler.warp(1);
             handler.topUp(0, 0);
@@ -79,7 +80,8 @@ contract TopUpVaultInvariantTest is Test {
         invariant_anExecutedForwardRequestNeverExecutesAgain();
     }
 
-    /// @dev Invariant 1: nothing is spent or held that was not funded, and the pool is exactly what was not credited.
+    /// @dev Invariant 1: nothing is spent or held that wasn't funded, and the pool is exactly what
+    /// wasn't credited.
     function invariant_balancesAndSpendingNeverExceedFunding() public view {
         assertLe(handler.sumOfBalances() + handler.ghostSpent(), handler.ghostFunded());
         // exact, because funding is far too large for the bound above to catch over-crediting

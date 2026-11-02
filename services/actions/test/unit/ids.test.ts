@@ -89,12 +89,12 @@ describe('deliveryId', () => {
     expect(deliveryId('TX#a', 'b#c')).not.toBe(deliveryId('TX#a\nb', 'c'))
   })
 
-  // an outbound request id is the caller's own string, so a subject can carry a newline; what keeps the pair
-  // unambiguous is that the sort key's shape has nowhere for one to get in, so the last newline is the join
+  // an outbound request id is the caller's string, so a subject can carry a newline; the sort key's
+  // shape has no room for one, so the last newline is the join
   it('stays unambiguous because a sort key can never carry the separator', () => {
     const sk = keys.delivery('OUTBOUND#a\nb', 'a_0123456789abcdef', 'outbound', 0).SK
     expect(sk).not.toContain('\n')
-    // and that is the whole of the argument: a sort key with one in it would collide with a subject ending in it
+    // a sort key with one in it would collide with a subject ending in it
     expect(deliveryId('A\nB', sk)).toBe(deliveryId('A', `B\n${sk}`))
   })
 })

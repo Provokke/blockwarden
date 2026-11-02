@@ -10,7 +10,7 @@ await build({
   minify: true,
   sourcemap: 'linked',
   legalComments: 'none',
-  // Bundled CommonJS dependencies still call require(), which ESM output does not define.
+  // Bundled CommonJS deps still call require(), which ESM output doesn't define.
   banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
 })
 

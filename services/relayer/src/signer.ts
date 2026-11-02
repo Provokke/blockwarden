@@ -37,10 +37,13 @@ const MAX_NONCE_RESETS = 2
 // never sent again, so their bytes are dropped
 export const MAX_ABANDONED_ATTEMPTS = 4
 
-// A node picks the length of a revert payload, and the whole of it would land on the item, on every RelayerTxBody,
-// and in every webhook, where the dispatcher refuses a payload over 64 KB. 256 bytes is a selector plus several
-// 32-byte arguments, comfortably inside that and the item's 400 KB budget - milestone 2 capped the operator
-// message this data also feeds at the same number of characters.
+// A node picks the length of a revert payload, and all of it would land on the item, every
+// RelayerTxBody and every
+// webhook, where the dispatcher refuses a payload over 64 KB. 256 bytes is a selector plus several
+// 32-byte
+// arguments, well inside that and the item's 400 KB budget. The operator message this data feeds is
+// capped at the
+// same number of characters.
 const MAX_REVERT_DATA_BYTES = 256
 
 // truncates on a byte boundary so the stored value is still decodable hex; a payload at exactly the cap may have

@@ -4,8 +4,8 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { gunzipSync } from 'node:zlib'
 
-// Packs each published package the way `pnpm publish` would and checks the tarball itself: the manifest's
-// exports point at files that are in it, every entry imports under plain Node, and it exports what consumers use.
+// Packs each published package like `pnpm publish` would and checks the tarball: exports point at
+// files in it, every entry imports under plain Node, and it exports what consumers use.
 const packages = {
   'packages/kms-signer': {
     '.': ['toKmsAccount', 'toDigestSignerAccount', 'kmsDigestSigner', 'InvalidSignatureError', 'InvalidPublicKeyError'],
@@ -28,7 +28,8 @@ const packages = {
   },
 }
 
-// through a shell, because pnpm on Windows is a .cmd shim; the arguments are fixed strings from this file
+// through a shell, because pnpm on Windows is a .cmd shim; the args are fixed strings from this
+// file
 const pnpm = (args, cwd) => {
   const result = spawnSync(`pnpm ${args.join(' ')}`, { cwd, stdio: 'inherit', shell: true })
   if (result.status !== 0) process.exit(result.status ?? 1)
@@ -63,10 +64,10 @@ for (const [dir, entries] of Object.entries(packages)) {
   pnpm(['run', 'build'], root)
   pnpm(['pack', '--pack-destination', out], root)
   const tgz = readdirSync(out).find((f) => f.endsWith('.tgz'))
-  // extracted inside the package, so imports resolve through the package's own node_modules
+  // extracted inside the package so imports resolve through its own node_modules
   extract(join(out, tgz), out)
   const manifest = JSON.parse(readFileSync(join(out, 'package', 'package.json'), 'utf8'))
-  // a changelog a consumer can only read on GitHub is one they will not read, so one that exists must ship
+  // a changelog only readable on GitHub won't get read, so one that exists must ship
   const required = ['README.md', 'LICENSE', ...(existsSync(join(root, 'CHANGELOG.md')) ? ['CHANGELOG.md'] : [])]
   for (const file of required) {
     try {
@@ -95,7 +96,7 @@ for (const [dir, entries] of Object.entries(packages)) {
     console.error(`${manifest.name}: sideEffects is not false`)
     failures++
   }
-  // build clears dist first, so a file from a deleted source cannot ride along
+  // build clears dist first, so a file from a deleted source can't ride along
   if (readdirSync(join(out, 'package', 'dist')).includes('stale.js')) {
     console.error(`${manifest.name}: dist holds a file the build did not write`)
     failures++

@@ -16,14 +16,14 @@ export const sendTelegram: Sender = async (deps, delivery) => {
   } catch (err) {
     return { kind: 'retry', error: truncate(`the Telegram token could not be read: ${(err as Error).message}`) }
   }
-  // an empty parameter is a rotation half done more often than a decision, and the URL would otherwise be
-  // built with the word undefined where the token belongs
+  // an empty parameter is more often a half-done rotation, and the URL would get the word undefined
+  // where the token goes
   if (!first) {
     return { kind: 'retry', error: truncate(`parameter ${deps.telegramTokenParameter} holds no Telegram bot token`) }
   }
   const token = first
 
-  // summarise() already caps the text at 4096 characters, which is Telegram's own limit for one message
+  // summarise() already caps the text at Telegram's 4096-char limit
   const { text } = summarise(delivery.payload)
   const body = JSON.stringify({
     chat_id: delivery.target.chatId,
@@ -34,7 +34,7 @@ export const sendTelegram: Sender = async (deps, delivery) => {
   const resolve = deps.resolve ?? ((raw: string) => resolveDestination(raw, deps.resolver))
   const post = deps.post ?? postJson
   try {
-    // the host is ours, not a caller's, but it goes through the same resolve-and-pin path as everything else
+    // the host is ours, but it still goes through the same resolve-and-pin path
     const base = await resolve(`${deps.telegramApiBase ?? DEFAULT_API_BASE}/`)
     const target: Resolved = { ...base, url: new URL(`${base.url.origin}/bot${token}/sendMessage`) }
     const answer = await post(
@@ -46,11 +46,12 @@ export const sendTelegram: Sender = async (deps, delivery) => {
         ...(deps.deadlineMs === undefined ? {} : { deadlineMs: deps.deadlineMs }),
       },
     )
-    // the token is in the path, so nothing about this request other than the parsed answer goes into an error
+    // the token is in the path, so only the parsed answer goes into an error
     return classify(answer.statusCode, answer.body)
   } catch (err) {
     if (err instanceof DestinationError) {
-      // a base URL the guard refuses is refused again next time; a resolver that could not answer may not be
+      // a base URL the guard refuses is refused again; a resolver that couldn't answer may work
+      // next time
       return err.retryable
         ? { kind: 'retry', error: truncate(err.message) }
         : { kind: 'permanent', error: truncate(err.message) }
@@ -84,10 +85,9 @@ function classify(statusCode: number, body: string): SendOutcome {
     }
   }
   if (statusCode >= 500) return { kind: 'retry', error: description, statusCode }
-  // 401 and 404 answer our own bot token, which is operator configuration the secret cache holds for five
-  // minutes: a rotation would make every alert look like a dead token and dead-letter it. Retrying a token
-  // that really is dead costs eight attempts and dead-letters anyway, which is the cheaper mistake. A 400 is
-  // the chat id the tenant configured, and that does not improve on a retry.
+  // 401 and 404 are our own bot token, which the secret cache holds for five minutes: a rotation
+  // would make every alert look like a dead token. Retrying a really dead token costs eight
+  // attempts, the cheaper mistake. A 400 is the tenant's chat id, which a retry won't fix.
   if (statusCode === 401 || statusCode === 404) return { kind: 'retry', error: description, statusCode }
   return { kind: 'permanent', error: description, statusCode }
 }

@@ -44,7 +44,7 @@ const ACTIONS: Record<ActionType, FieldSpec[]> = {
 }
 const ACTION_TYPES = Object.keys(ACTIONS) as ActionType[]
 
-// The API refuses a longer list; stopping the button here saves a round trip for a rule it cannot accept.
+// The API refuses a longer list; stopping the button here saves a round trip.
 const MAX_ACTIONS = 5
 
 type ActionDraft = { type: ActionType; fields: Record<string, string> }
@@ -94,8 +94,8 @@ function draftFromRule(rule: RuleBody | undefined): Draft {
   }
 }
 
-// A count typed into a number field goes as a number; anything else goes as typed, so the API's own message
-// about the field is what the operator reads.
+// A count typed into a number field goes as a number; anything else goes as typed, so the operator
+// reads the API's own message about the field.
 function asNumber(text: string): number | string {
   return /^\s*\d+\s*$/.test(text) ? Number(text) : text
 }
@@ -138,8 +138,9 @@ function issueKeys(draft: Draft): string[] {
   return keys
 }
 
-// the field an issue belongs to is the longest rendered key it starts with, so `conditions.all.0.field` lands on
-// the conditions box and `actions.0.to.1` on the first action's recipients
+// the field an issue belongs to is the longest rendered key it starts with, so
+// `conditions.all.0.field` lands on the conditions box and `actions.0.to.1` on the first action's
+// recipients
 function keyFor(path: string, keys: string[]): string | undefined {
   let best: string | undefined
   for (const key of keys) {
@@ -184,7 +185,7 @@ export function RuleForm({ initial, onSaved }: { initial?: RuleBody; onSaved: (s
   const [issues, setIssues] = useState<ApiIssue[]>([])
   const [problem, setProblem] = useState<unknown>()
   const [busy, setBusy] = useState(false)
-  // state alone lets two clicks in the same tick both through, before the disabled button has rendered
+  // state alone lets two clicks in the same tick both through, before the disabled button renders
   const inFlight = useRef(false)
 
   const keys = issueKeys(draft)
@@ -213,7 +214,8 @@ export function RuleForm({ initial, onSaved }: { initial?: RuleBody; onSaved: (s
     setIssues([])
     setProblem(undefined)
     try {
-      // a patch carries the whole rule: the API compiles what it is sent and cannot compile a fragment
+      // a patch carries the whole rule: the API compiles what it's sent and can't compile a
+      // fragment
       const saved = initial
         ? await apiFetch<RuleBody>(`/v1/rules/${encodeURIComponent(initial.ruleId)}`, {
             method: 'PATCH',
