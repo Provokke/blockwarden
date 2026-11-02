@@ -19,7 +19,7 @@ function opensslKey() {
 }
 
 describe('DER signatures from OpenSSL', () => {
-  // 300 OpenSSL signatures and recoveries: about 2.5 s on a fast runner and twice that on a slow one, past vitest's 5 s default
+  // 300 OpenSSL signatures and recoveries can outrun vitest's default timeout on a slow runner
   it('parse, normalise to low s and recover to the key address', async () => {
     const key = opensslKey()
     const seen = { highS: 0, parity1: 0 }

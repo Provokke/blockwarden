@@ -46,8 +46,10 @@ function localForgeMatches() {
 
 export function forge(args, { rpcUrl } = {}) {
   if (localForgeMatches()) {
+    console.error(`forge: using forge ${FOUNDRY_VERSION} from PATH`)
     return spawnSync('forge', args, { cwd: contracts, stdio: 'inherit' }).status ?? 1
   }
+  console.error(`forge: using docker ${image}`)
   const workdir = containerPath(contracts)
   const dockerArgs = ['run', '--rm', '-v', `${repo}:${containerPath(repo)}`, '-w', workdir]
   // forge writes out/, cache/ and broadcast/ into the mount, which would otherwise belong to the image's user
