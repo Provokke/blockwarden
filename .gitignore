@@ -16,3 +16,7 @@ contracts/cache/
 contracts/.forge-home/
 contracts/broadcast/
 contracts/deployments/31337.json
+contracts/deployments/deploy-test.json
+contracts/deployments/424242.json
+contracts/deployments/424243.json
+contracts/deployments/84532.json

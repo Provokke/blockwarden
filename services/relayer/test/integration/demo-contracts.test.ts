@@ -92,7 +92,8 @@ describe('the relayer against the demo contracts', () => {
         chainIds: [anvil.chainId],
         policy: {
           ...signerRecord().policy,
-          // the policy sees only the outer target and selector: the forwarder's execute admits a request to any contract that trusts the forwarder, and topUp is admitted only on the vault
+          // the policy sees only the outer target and selector: the forwarder's execute admits a request to any
+          // contract that trusts the forwarder, and topUp is admitted only on the vault
           allowedTo: [
             {
               address: forwarder,
