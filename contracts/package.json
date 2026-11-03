@@ -19,7 +19,7 @@
     "@openzeppelin/contracts": "5.6.1"
   },
   "devDependencies": {
-    "forge-std": "github:foundry-rs/forge-std#v1.16.2",
+    "forge-std": "github:foundry-rs/forge-std#v1.17.0",
     "testcontainers": "12.1.0",
     "viem": "2.56.9"
   }
